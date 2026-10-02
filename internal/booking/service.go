@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/example/hotel-booking/internal/inventory"
@@ -126,8 +127,24 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	if !in.CheckIn.Before(in.CheckOut) {
 		return Booking{}, ChargeResult{}, ErrInvalidDateRange
 	}
-	if in.NumRooms < 1 || in.NumGuests < 1 {
+	nights := int(in.CheckOut.Sub(in.CheckIn).Hours() / 24)
+	if nights > 30 {
+		return Booking{}, ChargeResult{}, ErrExceedsMaxStay
+	}
+	if in.NumRooms < 1 || in.NumRooms > 8 || in.NumGuests < 1 {
 		return Booking{}, ChargeResult{}, ErrInvalidCapacity
+	}
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	checkInDate := time.Date(in.CheckIn.Year(), in.CheckIn.Month(), in.CheckIn.Day(), 0, 0, 0, 0, time.UTC)
+	if checkInDate.Before(today.Add(-24 * time.Hour)) {
+		return Booking{}, ChargeResult{}, ErrPastDate
+	}
+	if in.CheckOut.After(now.AddDate(0, 0, 366)) {
+		return Booking{}, ChargeResult{}, ErrExceedsHorizon
+	}
+	if strings.TrimSpace(in.GuestName) == "" || strings.TrimSpace(in.GuestEmail) == "" || !strings.Contains(in.GuestEmail, "@") {
+		return Booking{}, ChargeResult{}, ErrInvalidGuestInfo
 	}
 
 	// 1. Pre-flight check (tanpa lock) untuk fail-fast + hitung harga.

@@ -192,6 +192,9 @@ func NewInMemoryEnforcer(policies [][]string) (*casbin.SyncedEnforcer, error) {
 func DefaultTestEnforcer() *casbin.SyncedEnforcer {
 	policies := [][]string{
 		{"p", "guest", "/api/v1/availability", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms/:id", "GET"},
+		{"p", "guest", "/api/v1/search", "GET"},
 		{"p", "guest", "/api/v1/bookings", "POST"},
 		{"p", "guest", "/api/v1/bookings/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},
@@ -201,9 +204,12 @@ func DefaultTestEnforcer() *casbin.SyncedEnforcer {
 		{"p", "receptionist", "/api/v1/bookings/:id/no-show", "POST"},
 		{"p", "housekeeping", "/api/v1/rooms/housekeeping", "GET"},
 		{"p", "revenue_mgr", "/api/v1/rates", "PUT"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms", "POST"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms/:id", "PUT"},
 		{"p", "finance", "/api/v1/reports/*", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
+		{"g", "revenue_mgr", "guest"},
 	}
 	e, _ := NewInMemoryEnforcer(policies)
 	return e

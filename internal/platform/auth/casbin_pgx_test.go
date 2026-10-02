@@ -69,6 +69,8 @@ func TestCasbinRBACPolicyEvaluation(t *testing.T) {
 	// Sample seed policies for Pulang ke Uttara
 	policies := [][]string{
 		{"p", "guest", "/api/v1/availability", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings", "POST"},
 		{"p", "guest", "/api/v1/bookings/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},
@@ -79,6 +81,8 @@ func TestCasbinRBACPolicyEvaluation(t *testing.T) {
 		{"p", "housekeeping", "/api/v1/rooms/housekeeping", "GET"},
 		{"p", "housekeeping", "/api/v1/rooms/:room_number/housekeeping", "PUT"},
 		{"p", "revenue_mgr", "/api/v1/rates", "PUT"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms", "POST"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms/:id", "PUT"},
 		{"p", "finance", "/api/v1/reports/*", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
@@ -122,6 +126,9 @@ func TestCasbinRBACPolicyEvaluation(t *testing.T) {
 
 		// Revenue Manager tests
 		{"revenue_mgr can update rates", "revenue_mgr", "/api/v1/rates", "PUT", true},
+		{"revenue_mgr can create catalog room", "revenue_mgr", "/api/v1/catalog/rooms", "POST", true},
+		{"revenue_mgr can update catalog room", "revenue_mgr", "/api/v1/catalog/rooms/sup-king", "PUT", true},
+		{"revenue_mgr CANNOT delete catalog room", "revenue_mgr", "/api/v1/catalog/rooms/sup-king", "DELETE", false},
 		{"revenue_mgr CANNOT check-in", "revenue_mgr", "/api/v1/bookings/123/check-in", "POST", false},
 
 		// Finance tests
@@ -131,6 +138,7 @@ func TestCasbinRBACPolicyEvaluation(t *testing.T) {
 		// General Manager (Super Admin) tests
 		{"gm_admin can check-in", "gm_admin", "/api/v1/bookings/123/check-in", "POST", true},
 		{"gm_admin can update rates", "gm_admin", "/api/v1/rates", "PUT", true},
+		{"gm_admin can delete catalog room", "gm_admin", "/api/v1/catalog/rooms/sup-king", "DELETE", true},
 		{"gm_admin can access reports", "gm_admin", "/api/v1/reports/annual", "GET", true},
 		{"gm_admin can do anything", "gm_admin", "/api/v1/custom-admin-path", "DELETE", true},
 	}

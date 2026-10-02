@@ -112,11 +112,16 @@ flowchart TD
   - [x] Table-driven unit tests lulus 100%: API coverage 82.7%, Auth coverage 80.9%, Platform coverage 64.0%
   - [x] E2E test report dibuat di [`testing/e2e/report/2026-10-03-015430-boundary-api-security-batch-a-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-015430-boundary-api-security-batch-a-e2e-report.md) (13/13 passed)
 
-- [ ] **Fase 2: Batch BE-B (Katalog 95 Kamar & Pencarian - G01, G02, G03, G18)**
-  - [ ] Migrasi database `00004_catalog_parity.sql` (5 room families, 7 sellable variants, 95 kamar fisik)
-  - [ ] Implementasi endpoint `GET /api/v1/catalog/rooms` & `GET /api/v1/search`
-  - [ ] Validasi ketersediaan kontinu multi-malam & okupansi batas anak
-  - [ ] Unit & integration tests Batch BE-B ($\ge 80\%$ coverage)
+- [x] **Fase 2: Batch BE-B (Katalog 95 Kamar & Pencarian - G01, G02, G03, G18)** — **SELESAI (100% Passed)**
+  - [x] Migrasi database [`migrations/00005_catalog_parity.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00005_catalog_parity.sql) (5 room families, 7 sellable variants, 95 kamar fisik, 365-day inventory horizon)
+  - [x] Domain katalog [`internal/catalog`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/catalog) (`RoomVariant`, `Store`, `MemoryStore`, `PostgresStore`) — coverage 95.1%
+  - [x] Rolling inventory horizon provisioning [`internal/inventory/postgres.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/inventory/postgres.go) (`EnsureHorizon`)
+  - [x] Endpoint discovery publik `GET /api/v1/catalog/rooms` (7 sellable variants Pulang ke Uttara)
+  - [x] Engine pencarian multi-malam kontinu `GET /api/v1/search` dengan occupancy filtering & effective minimum rooms
+  - [x] Validasi batas booking domain: durasi menginap $\le 30$ malam, batas horizon $\le 365$ hari, batas usia anak $0-17$ tahun, validasi guest name/email
+  - [x] Room Variant Catalog CRUD Management: `GET /catalog/rooms`, `GET /catalog/rooms/:id`, `POST /catalog/rooms` (revenue_mgr), `PUT /catalog/rooms/:id` (revenue_mgr), `DELETE /catalog/rooms/:id` (gm_admin) dengan proteksi Casbin RBAC & RFC 7807 problem details
+  - [x] Table-driven unit tests lulus 100%: API coverage 88.2%, Catalog coverage 93.7%, Auth coverage 80.9%, Booking validation 100%
+  - [x] E2E test report dibuat di [`testing/e2e/report/2026-10-03-022000-catalog-crud-batch-b-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-022000-catalog-crud-batch-b-e2e-report.md) (18/18 passed)
 
 - [ ] **Fase 3: Batch BE-C (Tarif, Paket & Kebijakan - G04, G05, G06, G08, G19)**
   - [ ] Dukungan rate plans (Room Only & Bed and Breakfast)

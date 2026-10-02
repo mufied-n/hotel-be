@@ -136,5 +136,17 @@ var ErrNoRoomAvailable = errors.New("booking: no physical room available")
 // ErrInvalidDateRange diembalikan jika check_out <= check_in.
 var ErrInvalidDateRange = errors.New("booking: check_out must be after check_in")
 
-// ErrInvalidCapacity diembalikan bila num_rooms atau num_guests kurang dari 1.
-var ErrInvalidCapacity = errors.New("booking: num_rooms and num_guests must be positive")
+// ErrInvalidCapacity diembalikan bila num_rooms atau num_guests kurang dari 1 atau melebihi batas.
+var ErrInvalidCapacity = errors.New("booking: num_rooms (1-8) and num_guests must be positive")
+
+// ErrExceedsMaxStay diembalikan bila durasi menginap melebihi batas maksimal 30 malam (BE-G03).
+var ErrExceedsMaxStay = errors.New("booking: stay duration exceeds maximum 30 nights")
+
+// ErrPastDate diembalikan bila tanggal check_in berada di masa lampau (BE-G03).
+var ErrPastDate = errors.New("booking: check_in date cannot be in the past")
+
+// ErrExceedsHorizon diembalikan bila tanggal reservasi melebihi horizon 365 hari (BE-G03).
+var ErrExceedsHorizon = errors.New("booking: check_out date exceeds 365 days booking horizon")
+
+// ErrInvalidGuestInfo diembalikan bila guest_name kosong atau guest_email tidak valid (BE-G03).
+var ErrInvalidGuestInfo = errors.New("booking: guest_name and valid guest_email are required")

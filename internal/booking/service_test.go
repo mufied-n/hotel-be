@@ -361,25 +361,155 @@ func TestCreate_HappyPathAndReservationRoomNights(t *testing.T) {
 
 func TestCreate_InvalidInput(t *testing.T) {
 	svc := newTestService(newFakeTx(nil, nil), &fakeReader{})
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// CheckOut before CheckIn
-	_, _, err := svc.Create(context.Background(), CreateInput{
-		CheckIn:  date("2026-10-12"),
-		CheckOut: date("2026-10-10"),
-		NumRooms: 1, NumGuests: 1,
-	})
-	if !errors.Is(err, ErrInvalidDateRange) {
-		t.Errorf("err = %v, want ErrInvalidDateRange", err)
+	tests := []struct {
+		name    string
+		input   CreateInput
+		wantErr error
+	}{
+		{
+			name: "checkout before checkin",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 5),
+				CheckOut:   today.AddDate(0, 0, 3),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidDateRange,
+		},
+		{
+			name: "checkout same as checkin",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 5),
+				CheckOut:   today.AddDate(0, 0, 5),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidDateRange,
+		},
+		{
+			name: "exceeds max stay 30 nights",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 32),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrExceedsMaxStay,
+		},
+		{
+			name: "zero rooms",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   0,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidCapacity,
+		},
+		{
+			name: "more than 8 rooms",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   9,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidCapacity,
+		},
+		{
+			name: "zero guests",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   1,
+				NumGuests:  0,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidCapacity,
+		},
+		{
+			name: "past checkin date",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, -3),
+				CheckOut:   today.AddDate(0, 0, 1),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrPastDate,
+		},
+		{
+			name: "exceeds 365 day horizon",
+			input: CreateInput{
+				CheckIn:    today.AddDate(1, 0, 10),
+				CheckOut:   today.AddDate(1, 0, 15),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrExceedsHorizon,
+		},
+		{
+			name: "empty guest name",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "   ",
+				GuestEmail: "budi@example.com",
+			},
+			wantErr: ErrInvalidGuestInfo,
+		},
+		{
+			name: "empty guest email",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "   ",
+			},
+			wantErr: ErrInvalidGuestInfo,
+		},
+		{
+			name: "invalid guest email without at",
+			input: CreateInput{
+				CheckIn:    today.AddDate(0, 0, 1),
+				CheckOut:   today.AddDate(0, 0, 2),
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi",
+				GuestEmail: "invalid-email",
+			},
+			wantErr: ErrInvalidGuestInfo,
+		},
 	}
 
-	// Zero capacity
-	_, _, err = svc.Create(context.Background(), CreateInput{
-		CheckIn:  date("2026-10-10"),
-		CheckOut: date("2026-10-12"),
-		NumRooms: 0, NumGuests: 1,
-	})
-	if !errors.Is(err, ErrInvalidCapacity) {
-		t.Errorf("err = %v, want ErrInvalidCapacity", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := svc.Create(context.Background(), tt.input)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("%s: svc.Create() error = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -403,6 +533,7 @@ func TestCreate_PaymentFailureCompensation(t *testing.T) {
 		NumRooms:   1,
 		NumGuests:  1,
 		GuestName:  "Test",
+		GuestEmail: "test@example.com",
 	})
 	if err == nil {
 		t.Fatal("Create want error when payment fails")

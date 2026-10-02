@@ -77,6 +77,9 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 
 	policies := [][]string{
 		{"p", "guest", "/api/v1/availability", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms", "GET"},
+		{"p", "guest", "/api/v1/catalog/rooms/:id", "GET"},
+		{"p", "guest", "/api/v1/search", "GET"},
 		{"p", "guest", "/api/v1/bookings", "POST"},
 		{"p", "guest", "/api/v1/bookings/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},
@@ -86,9 +89,12 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "receptionist", "/api/v1/bookings/:id/no-show", "POST"},
 		{"p", "housekeeping", "/api/v1/rooms/housekeeping", "GET"},
 		{"p", "revenue_mgr", "/api/v1/rates", "PUT"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms", "POST"},
+		{"p", "revenue_mgr", "/api/v1/catalog/rooms/:id", "PUT"},
 		{"p", "finance", "/api/v1/reports/*", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
+		{"g", "revenue_mgr", "guest"},
 	}
 
 	enforcer, err := auth.NewInMemoryEnforcer(policies)
@@ -199,6 +205,238 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if res.StatusCode != http.StatusOK {
 			t.Errorf("availability status = %d, want 200", res.StatusCode)
+		}
+	})
+
+	// 2A. Public Catalog Room Discovery (BE-G01)
+	t.Run("E2E-02A: Public catalog room discovery (7 sellable variants, 95 rooms)", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/catalog/rooms")
+		if err != nil {
+			t.Fatalf("catalog request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("catalog status = %d, want 200", res.StatusCode)
+		}
+		var catalogResp struct {
+			Total int `json:"total"`
+			Rooms []struct {
+				Code string `json:"code"`
+				Name string `json:"name"`
+			} `json:"rooms"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&catalogResp); err != nil {
+			t.Fatalf("catalog decode failed: %v", err)
+		}
+		if catalogResp.Total != 7 || len(catalogResp.Rooms) != 7 {
+			t.Errorf("catalog total = %d, want 7 sellable variants", catalogResp.Total)
+		}
+	})
+
+	// 2B. Multi-night Cross-Variant Search Engine (BE-G02, BE-G03)
+	t.Run("E2E-02B: Multi-night cross-variant search", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1")
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("search status = %d, want 200", res.StatusCode)
+		}
+		var searchResp struct {
+			TotalVariants  int `json:"total_variants"`
+			AvailableCount int `json:"available_count"`
+			Results        []struct {
+				Available       bool  `json:"available"`
+				AvailableRooms  int   `json:"available_rooms"`
+				TotalPriceMinor int64 `json:"total_price_minor"`
+			} `json:"results"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&searchResp); err != nil {
+			t.Fatalf("search decode failed: %v", err)
+		}
+		if searchResp.TotalVariants != 7 {
+			t.Errorf("total_variants = %d, want 7", searchResp.TotalVariants)
+		}
+		if searchResp.AvailableCount == 0 {
+			t.Errorf("available_count = 0, want > 0")
+		}
+	})
+
+	// 2C. Search Validation Reject Exceeding Stay (BE-G03: LOS > 30 nights)
+	t.Run("E2E-02C: Search validation reject stay > 30 nights (400 Bad Request)", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/search?check_in=2026-10-10&check_out=2026-11-20&adults=2&rooms=1")
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("search validation status = %d, want 400", res.StatusCode)
+		}
+	})
+
+	// 2D. Search Validation Reject Invalid Child Age (BE-G03: Age > 17)
+	t.Run("E2E-02D: Search validation reject child age > 17 (400 Bad Request)", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&child_ages=19")
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("search child age status = %d, want 400", res.StatusCode)
+		}
+	})
+
+	var createdVariantID string
+
+	// 2E. Revenue Manager creates a new room variant (POST /api/v1/catalog/rooms)
+	t.Run("E2E-02E: Revenue Manager creates room variant (201 Created)", func(t *testing.T) {
+		payload := []byte(`{
+			"code": "villa-garden",
+			"name": "Garden Villa",
+			"family_name": "Villa",
+			"bed_type": "1 King Bed",
+			"room_size_sqm": 85,
+			"max_capacity": 4,
+			"max_adults": 2,
+			"max_children": 2,
+			"base_price_minor": 2500000,
+			"description": "Private villa with lush tropical garden view.",
+			"amenities": ["Private Pool", "Free Wi-Fi"],
+			"photos": [{"url": "https://example.com/villa.jpg", "alt": "Garden Villa"}]
+		}`)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/catalog/rooms", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-Role", "revenue_mgr")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("create variant request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create variant status = %d, want 201", res.StatusCode)
+		}
+		var created struct {
+			ID   string `json:"id"`
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+			t.Fatalf("decode created variant failed: %v", err)
+		}
+		if created.ID == "" || created.Code != "villa-garden" {
+			t.Fatalf("unexpected created variant: %+v", created)
+		}
+		createdVariantID = created.ID
+	})
+
+	// 2F. Revenue Manager updates room variant (PUT /api/v1/catalog/rooms/:id)
+	t.Run("E2E-02F: Revenue Manager updates room variant (200 OK)", func(t *testing.T) {
+		payload := []byte(`{
+			"code": "villa-garden",
+			"name": "Garden Villa Deluxe",
+			"family_name": "Villa",
+			"bed_type": "1 King Bed",
+			"room_size_sqm": 85,
+			"max_capacity": 4,
+			"max_adults": 2,
+			"max_children": 2,
+			"base_price_minor": 2750000,
+			"description": "Private villa with lush tropical garden view and floating breakfast.",
+			"amenities": ["Private Pool", "Free Wi-Fi", "Floating Breakfast"],
+			"photos": [{"url": "https://example.com/villa.jpg", "alt": "Garden Villa"}]
+		}`)
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-Role", "revenue_mgr")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("update variant request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("update variant status = %d, want 200", res.StatusCode)
+		}
+		var updated struct {
+			Name           string `json:"name"`
+			BasePriceMinor int64  `json:"base_price_minor"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&updated); err != nil {
+			t.Fatalf("decode updated variant failed: %v", err)
+		}
+		if updated.Name != "Garden Villa Deluxe" || updated.BasePriceMinor != 2750000 {
+			t.Errorf("unexpected updated variant: %+v", updated)
+		}
+	})
+
+	// 2G. Public Guest views single room variant (GET /api/v1/catalog/rooms/:id)
+	t.Run("E2E-02G: Public Guest views single room variant (200 OK)", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/catalog/rooms/" + createdVariantID)
+		if err != nil {
+			t.Fatalf("get single variant failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("get single variant status = %d, want 200", res.StatusCode)
+		}
+		var v struct {
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			BasePriceMinor int64  `json:"base_price_minor"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+			t.Fatalf("decode single variant failed: %v", err)
+		}
+		if v.ID != createdVariantID || v.BasePriceMinor != 2750000 {
+			t.Errorf("expected updated price 2750000, got %+v", v)
+		}
+	})
+
+	// 2H. Catalog RBAC Negative Tests (Guest cannot POST/PUT/DELETE, Revenue Mgr cannot DELETE)
+	t.Run("E2E-02H: Catalog RBAC Negative Tests (403 Forbidden)", func(t *testing.T) {
+		// Guest cannot POST
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/catalog/rooms", bytes.NewReader([]byte(`{"code":"hack"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		res, _ := client.Do(req)
+		if res.StatusCode != http.StatusForbidden {
+			t.Errorf("guest post catalog status = %d, want 403", res.StatusCode)
+		}
+
+		// Guest cannot PUT
+		req, _ = http.NewRequest(http.MethodPut, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, bytes.NewReader([]byte(`{"name":"hack"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		res, _ = client.Do(req)
+		if res.StatusCode != http.StatusForbidden {
+			t.Errorf("guest put catalog status = %d, want 403", res.StatusCode)
+		}
+
+		// Guest cannot DELETE
+		req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, nil)
+		res, _ = client.Do(req)
+		if res.StatusCode != http.StatusForbidden {
+			t.Errorf("guest delete catalog status = %d, want 403", res.StatusCode)
+		}
+
+		// Revenue Manager cannot DELETE
+		req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, nil)
+		req.Header.Set("X-User-Role", "revenue_mgr")
+		res, _ = client.Do(req)
+		if res.StatusCode != http.StatusForbidden {
+			t.Errorf("revenue_mgr delete catalog status = %d, want 403", res.StatusCode)
+		}
+	})
+
+	// 2I. GM Admin deletes room variant (DELETE /api/v1/catalog/rooms/:id)
+	t.Run("E2E-02I: GM Admin deletes room variant (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, nil)
+		req.Header.Set("Authorization", "Bearer gm_admin")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("gm_admin delete variant request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("delete variant status = %d, want 200", res.StatusCode)
+		}
+
+		// Verify subsequent GET returns 404 Not Found
+		res, err = client.Get(srv.URL + "/api/v1/catalog/rooms/" + createdVariantID)
+		if err != nil {
+			t.Fatalf("subsequent get variant failed: %v", err)
+		}
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("deleted variant status = %d, want 404", res.StatusCode)
 		}
 	})
 

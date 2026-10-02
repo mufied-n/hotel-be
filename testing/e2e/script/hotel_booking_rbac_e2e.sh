@@ -48,13 +48,132 @@ echo -e "${YELLOW}>> 1. System Health & Probes <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" "${BASE_URL}/healthz")
 assert_status "GET /healthz returns 200 OK" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
+
 # ------------------------------------------------------------------------------
-# Test 2: Public Availability Search
+# Test 2: Public Availability & Room Catalog Discovery
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}>> 2. Public Availability Search (Role: Guest / Anonymous) <<${NC}"
+echo -e "\n${YELLOW}>> 2A. Public Catalog Discovery (7 sellable variants, 95 rooms) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/catalog/rooms")
+assert_status "Public Guest can discover room catalog" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+echo -e "\n${YELLOW}>> 2B. Multi-Night Cross-Variant Search Engine (BE-G02, BE-G03) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1")
+assert_status "Cross-variant search returns continuous availability" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+echo -e "\n${YELLOW}>> 2C. Search Validation Boundaries (BE-G03: LOS & Child Age) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/search?check_in=2026-10-10&check_out=2026-11-20&adults=2&rooms=1")
+assert_status "Search rejects LOS > 30 nights with 400 Bad Request" 400 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&child_ages=19")
+assert_status "Search rejects child age > 17 with 400 Bad Request" 400 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+echo -e "\n${YELLOW}>> 2D. Single Room Availability (Legacy/Direct) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     "${BASE_URL}/api/v1/availability?room_type_id=01900000-0000-7000-8000-000000000001&check_in=2026-10-10&check_out=2026-10-12")
-assert_status "Public Guest can search availability" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+assert_status "Public Guest can search single room availability" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+echo -e "\n${YELLOW}>> 2E. Catalog Room CRUD Administration & RBAC Boundaries <<${NC}"
+# Public Guest gets single room
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/catalog/rooms/01900000-0000-7000-8000-000000000001")
+assert_status "Public Guest can view single room variant details" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# Revenue Manager creates new room variant
+NEW_ROOM_PAYLOAD='{
+  "code": "villa-garden",
+  "name": "Garden Villa",
+  "family_name": "Villa",
+  "bed_type": "1 King Bed",
+  "room_size_sqm": 85,
+  "max_capacity": 4,
+  "max_adults": 2,
+  "max_children": 2,
+  "base_price_minor": 2500000,
+  "description": "Private villa with lush tropical garden view.",
+  "amenities": ["Private Pool", "Free Wi-Fi"],
+  "photos": [{"url": "https://example.com/villa.jpg", "alt": "Garden Villa"}]
+}'
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -H "Content-Type: application/json" \
+    -H "X-User-Role: revenue_mgr" \
+    -d "$NEW_ROOM_PAYLOAD" \
+    "${BASE_URL}/api/v1/catalog/rooms")
+assert_status "Revenue Manager creates new room variant" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+CATALOG_VARIANT_ID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | head -1 | cut -d'"' -f4 || echo "")
+echo -e "       Created Room Variant ID: ${CATALOG_VARIANT_ID}"
+
+# Revenue Manager updates room variant
+UPDATE_ROOM_PAYLOAD='{
+  "code": "villa-garden",
+  "name": "Garden Villa Deluxe",
+  "family_name": "Villa",
+  "bed_type": "1 King Bed",
+  "room_size_sqm": 85,
+  "max_capacity": 4,
+  "max_adults": 2,
+  "max_children": 2,
+  "base_price_minor": 2750000,
+  "description": "Private villa with lush tropical garden view and floating breakfast.",
+  "amenities": ["Private Pool", "Free Wi-Fi", "Floating Breakfast"],
+  "photos": [{"url": "https://example.com/villa.jpg", "alt": "Garden Villa"}]
+}'
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X PUT \
+    -H "Content-Type: application/json" \
+    -H "X-User-Role: revenue_mgr" \
+    -d "$UPDATE_ROOM_PAYLOAD" \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Revenue Manager updates room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# Public Guest views updated room variant
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Public Guest views updated room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# RBAC Negative Tests for Catalog
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"code":"hack"}' \
+    "${BASE_URL}/api/v1/catalog/rooms")
+assert_status "Guest is FORBIDDEN from creating room variant" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X PUT \
+    -H "Content-Type: application/json" \
+    -d '{"name":"hack"}' \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Guest is FORBIDDEN from updating room variant" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X DELETE \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Guest is FORBIDDEN from deleting room variant" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X DELETE \
+    -H "X-User-Role: revenue_mgr" \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Revenue Manager is FORBIDDEN from deleting room variant" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# GM Admin deletes room variant
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X DELETE \
+    -H "Authorization: Bearer gm_admin" \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "GM Admin deletes room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# Subsequent GET returns 404
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
+assert_status "Deleted room variant returns 404 Not Found" 404 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
 # Test 3: Public Create Booking (Hold)

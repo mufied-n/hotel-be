@@ -62,6 +62,39 @@ func (s *PostgresStore) EnsureRows(ctx context.Context, roomTypeID string, from,
 	return nil
 }
 
+// EnsureHorizon memastikan seluruh varian kamar memiliki baris inventory hingga horizonDays ke depan (BE-G18).
+// Bersifat idempotent: tidak mengubah available_rooms yang sudah teralokasi sebelumnya.
+func (s *PostgresStore) EnsureHorizon(ctx context.Context, horizonDays int) error {
+	if horizonDays <= 0 {
+		horizonDays = 365
+	}
+	_, err := s.Pool.Exec(ctx, `
+		INSERT INTO inventory (room_type_id, date, total_rooms, available_rooms)
+		SELECT
+			rt.id,
+			d::date,
+			COALESCE(rc.cnt, 10),
+			COALESCE(rc.cnt, 10)
+		FROM room_types rt
+		LEFT JOIN (
+			SELECT room_type_id, count(*)::int AS cnt
+			FROM rooms
+			GROUP BY room_type_id
+		) rc ON rc.room_type_id = rt.id
+		CROSS JOIN generate_series(
+			date_trunc('day', now())::date,
+			date_trunc('day', now())::date + ($1::int - 1),
+			interval '1 day'
+		) AS d
+		ON CONFLICT (room_type_id, date) DO NOTHING`,
+		horizonDays)
+	if err != nil {
+		return fmt.Errorf("inventory: ensure horizon: %w", err)
+	}
+	return nil
+}
+
+
 var _ AvailabilityStore = (*PostgresStore)(nil)
 
 // pgxErrNoRows re-export agar pemanggil bisa errors.Is tanpa import pgx.

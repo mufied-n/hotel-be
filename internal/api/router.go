@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/casbin/casbin/v2"
@@ -15,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
@@ -25,6 +28,7 @@ type Deps struct {
 	BookingSvc    *booking.Service
 	InvStore      inventory.AvailabilityStore
 	RateSvc       rates.RateProvider
+	CatalogStore  catalog.Store
 	Enqueuer      *workers.Enqueuer
 	ReadyCheck    func(ctx context.Context) error
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
@@ -37,6 +41,9 @@ type Deps struct {
 
 // NewRouter merakit seluruh route.
 func NewRouter(d Deps) http.Handler {
+	if d.CatalogStore == nil {
+		d.CatalogStore = catalog.NewMemoryStore(catalog.DefaultVariants())
+	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -54,6 +61,12 @@ func NewRouter(d Deps) http.Handler {
 		api.Use(IdentifySubject())
 		api.Use(Authorize(d.Enforcer))
 
+		api.Get("/api/v1/catalog/rooms", getCatalogRooms(d))
+		api.Get("/api/v1/catalog/rooms/{id}", getCatalogRoom(d))
+		api.Post("/api/v1/catalog/rooms", createCatalogRoom(d))
+		api.Put("/api/v1/catalog/rooms/{id}", updateCatalogRoom(d))
+		api.Delete("/api/v1/catalog/rooms/{id}", deleteCatalogRoom(d))
+		api.Get("/api/v1/search", searchRooms(d))
 		api.Get("/api/v1/availability", getAvailability(d))
 		api.Post("/api/v1/bookings", createBooking(d))
 		api.Get("/api/v1/bookings/{id}", getBooking(d))
@@ -90,6 +103,293 @@ func ready(d Deps) http.HandlerFunc {
 	}
 }
 
+// GET /api/v1/catalog/rooms (BE-G01)
+func getCatalogRooms(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		variants, err := d.CatalogStore.ListVariants(r.Context())
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membaca katalog kamar", "CATALOG_ERROR")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total": len(variants),
+			"rooms": variants,
+		})
+	}
+}
+
+// GET /api/v1/catalog/rooms/{id}
+func getCatalogRoom(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		v, err := d.CatalogStore.GetVariant(r.Context(), id)
+		if errors.Is(err, catalog.ErrVariantNotFound) {
+			httpErrorCode(w, http.StatusNotFound, "varian kamar tidak ditemukan", "ROOM_VARIANT_NOT_FOUND")
+			return
+		}
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membaca varian kamar", "CATALOG_ERROR")
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	}
+}
+
+// POST /api/v1/catalog/rooms
+func createCatalogRoom(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var v catalog.RoomVariant
+		if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_ROOM_PAYLOAD")
+			return
+		}
+		created, err := d.CatalogStore.CreateVariant(r.Context(), v)
+		if errors.Is(err, catalog.ErrInvalidVariant) {
+			httpErrorCode(w, http.StatusBadRequest, "kode, nama, kapasitas, dan harga dasar wajib diisi", "INVALID_ROOM_DATA")
+			return
+		}
+		if errors.Is(err, catalog.ErrDuplicateCode) {
+			httpErrorCode(w, http.StatusConflict, "kode varian kamar sudah digunakan", "CONFLICT_ROOM_CODE")
+			return
+		}
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membuat varian kamar", "CATALOG_ERROR")
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
+	}
+}
+
+// PUT /api/v1/catalog/rooms/{id}
+func updateCatalogRoom(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		var v catalog.RoomVariant
+		if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_ROOM_PAYLOAD")
+			return
+		}
+		updated, err := d.CatalogStore.UpdateVariant(r.Context(), id, v)
+		if errors.Is(err, catalog.ErrVariantNotFound) {
+			httpErrorCode(w, http.StatusNotFound, "varian kamar tidak ditemukan", "ROOM_VARIANT_NOT_FOUND")
+			return
+		}
+		if errors.Is(err, catalog.ErrInvalidVariant) {
+			httpErrorCode(w, http.StatusBadRequest, "kode, nama, kapasitas, dan harga dasar wajib diisi", "INVALID_ROOM_DATA")
+			return
+		}
+		if errors.Is(err, catalog.ErrDuplicateCode) {
+			httpErrorCode(w, http.StatusConflict, "kode varian kamar sudah digunakan", "CONFLICT_ROOM_CODE")
+			return
+		}
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal memperbarui varian kamar", "CATALOG_ERROR")
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	}
+}
+
+// DELETE /api/v1/catalog/rooms/{id}
+func deleteCatalogRoom(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		err := d.CatalogStore.DeleteVariant(r.Context(), id)
+		if errors.Is(err, catalog.ErrVariantNotFound) {
+			httpErrorCode(w, http.StatusNotFound, "varian kamar tidak ditemukan", "ROOM_VARIANT_NOT_FOUND")
+			return
+		}
+		if errors.Is(err, catalog.ErrCannotDelete) {
+			httpErrorCode(w, http.StatusConflict, "tidak dapat menghapus varian yang masih digunakan dalam inventaris atau booking", "CANNOT_DELETE_ACTIVE_VARIANT")
+			return
+		}
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal menghapus varian kamar", "CATALOG_ERROR")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "id": id})
+	}
+}
+
+// SearchResultItem merepresentasikan opsi kamar hasil pencarian lintas varian (BE-G02).
+type SearchResultItem struct {
+	RoomVariant       catalog.RoomVariant `json:"room_variant"`
+	Available         bool                `json:"available"`
+	AvailableRooms    int                 `json:"available_rooms"`
+	UnavailableReason string              `json:"unavailable_reason,omitempty"`
+	TotalPriceMinor   int64               `json:"total_price_minor"`
+	Currency          string              `json:"currency"`
+	Quotes            []rates.Quote       `json:"quotes"`
+}
+
+// GET /api/v1/search?check_in=YYYY-MM-DD&check_out=YYYY-MM-DD&adults=1&children=0&rooms=1&child_ages=5,8
+func searchRooms(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		checkInStr := q.Get("check_in")
+		checkOutStr := q.Get("check_out")
+
+		from, err1 := parseDate(checkInStr)
+		to, err2 := parseDate(checkOutStr)
+		if checkInStr == "" || checkOutStr == "" || err1 != nil || err2 != nil {
+			httpErrorCode(w, http.StatusBadRequest, "check_in and check_out (YYYY-MM-DD) are required", "INVALID_DATE_FORMAT")
+			return
+		}
+		if !from.Before(to) {
+			httpErrorCode(w, http.StatusBadRequest, "check_out must be after check_in", "INVALID_DATE_RANGE")
+			return
+		}
+
+		nights := int(to.Sub(from).Hours() / 24)
+		if nights > 30 {
+			httpErrorCode(w, http.StatusBadRequest, "stay duration cannot exceed 30 nights", "EXCEEDS_MAX_LOS")
+			return
+		}
+
+		now := time.Now()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		checkInDate := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
+		if checkInDate.Before(today.Add(-24 * time.Hour)) {
+			httpErrorCode(w, http.StatusBadRequest, "check_in date cannot be in the past", "PAST_DATE")
+			return
+		}
+		if to.After(now.AddDate(0, 0, 366)) {
+			httpErrorCode(w, http.StatusBadRequest, "search dates cannot exceed 365 days booking horizon", "EXCEEDS_HORIZON")
+			return
+		}
+
+		adults := 1
+		if s := q.Get("adults"); s != "" {
+			var err error
+			adults, err = strconv.Atoi(s)
+			if err != nil || adults < 1 {
+				httpErrorCode(w, http.StatusBadRequest, "adults must be at least 1", "INVALID_GUEST_COUNT")
+				return
+			}
+		}
+
+		rooms := 1
+		if s := q.Get("rooms"); s != "" {
+			var err error
+			rooms, err = strconv.Atoi(s)
+			if err != nil || rooms < 1 || rooms > 8 {
+				httpErrorCode(w, http.StatusBadRequest, "rooms must be between 1 and 8", "INVALID_ROOM_COUNT")
+				return
+			}
+		}
+
+		children := 0
+		if s := q.Get("children"); s != "" {
+			var err error
+			children, err = strconv.Atoi(s)
+			if err != nil || children < 0 {
+				httpErrorCode(w, http.StatusBadRequest, "children cannot be negative", "INVALID_GUEST_COUNT")
+				return
+			}
+		}
+
+		if childAgesStr := q.Get("child_ages"); childAgesStr != "" {
+			for _, ageStr := range strings.Split(childAgesStr, ",") {
+				age, err := strconv.Atoi(strings.TrimSpace(ageStr))
+				if err != nil || age < 0 || age > 17 {
+					httpErrorCode(w, http.StatusBadRequest, "child age must be between 0 and 17", "INVALID_CHILD_AGE")
+					return
+				}
+			}
+		}
+
+		variants, err := d.CatalogStore.ListVariants(r.Context())
+		if err != nil {
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membaca varian kamar", "CATALOG_ERROR")
+			return
+		}
+
+		var results []SearchResultItem
+		availableCount := 0
+
+		for _, v := range variants {
+			item := SearchResultItem{
+				RoomVariant: v,
+				Currency:    "IDR",
+			}
+
+			// Kapasitas okupansi (BE-G03):
+			// - Tamu per kamar tidak boleh melebihi max_capacity
+			// - Dewasa per kamar tidak boleh melebihi max_adults
+			// - Minimal 1 dewasa per kamar yang dipesan
+			totalGuests := adults + children
+			if totalGuests > v.MaxCapacity*rooms || adults > v.MaxAdults*rooms || adults < rooms {
+				item.Available = false
+				item.UnavailableReason = "EXCEEDS_CAPACITY"
+				results = append(results, item)
+				continue
+			}
+
+			// Periksa ketersediaan multi-malam kontinu (BE-G02)
+			avail, err := d.InvStore.GetByDate(r.Context(), v.ID, from, to)
+			if errors.Is(err, inventory.ErrNotFound) {
+				item.Available = false
+				item.UnavailableReason = "MISSING_INVENTORY"
+				results = append(results, item)
+				continue
+			}
+			if err != nil {
+				httpErrorCode(w, http.StatusInternalServerError, "gagal memeriksa ketersediaan kamar", "INVENTORY_ERROR")
+				return
+			}
+			if len(avail) < nights {
+				item.Available = false
+				item.UnavailableReason = "MISSING_INVENTORY"
+				results = append(results, item)
+				continue
+			}
+
+			// Hitung kuotasi tarif
+			quotes, err := d.RateSvc.Quote(r.Context(), v.ID, from, to)
+			if err == nil {
+				item.Quotes = quotes
+				item.TotalPriceMinor = sumQuotes(quotes) * int64(rooms)
+			}
+
+			// Cari sisa kamar minimum sepanjang rentang menginap
+			minAvail := avail[0].AvailableRooms
+			for _, a := range avail {
+				if a.AvailableRooms < minAvail {
+					minAvail = a.AvailableRooms
+				}
+			}
+
+			item.AvailableRooms = minAvail
+			if minAvail >= rooms {
+				item.Available = true
+				availableCount++
+			} else if minAvail == 0 {
+				item.Available = false
+				item.UnavailableReason = "SOLD_OUT"
+			} else {
+				item.Available = false
+				item.UnavailableReason = "INSUFFICIENT_ROOMS"
+			}
+
+			results = append(results, item)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"search_criteria": map[string]any{
+				"check_in":  checkInStr,
+				"check_out": checkOutStr,
+				"nights":    nights,
+				"rooms":     rooms,
+				"adults":    adults,
+				"children":  children,
+			},
+			"total_variants":  len(results),
+			"available_count": availableCount,
+			"results":         results,
+		})
+	}
+}
+
 // GET /api/v1/availability?room_type_id=...&check_in=YYYY-MM-DD&check_out=YYYY-MM-DD
 func getAvailability(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -98,21 +398,21 @@ func getAvailability(d Deps) http.HandlerFunc {
 		from, err1 := parseDate(q.Get("check_in"))
 		to, err2 := parseDate(q.Get("check_out"))
 		if roomTypeID == "" || err1 != nil || err2 != nil || !from.Before(to) {
-			httpError(w, http.StatusBadRequest, "room_type_id, check_in, check_out (YYYY-MM-DD, check_in < check_out) wajib")
+			httpErrorCode(w, http.StatusBadRequest, "room_type_id, check_in, check_out (YYYY-MM-DD, check_in < check_out) wajib", "INVALID_QUERY")
 			return
 		}
 		avail, err := d.InvStore.GetByDate(r.Context(), roomTypeID, from, to)
 		if errors.Is(err, inventory.ErrNotFound) {
-			httpError(w, http.StatusNotFound, "inventory tidak ditemukan untuk rentang tsb")
+			httpErrorCode(w, http.StatusNotFound, "inventory tidak ditemukan untuk rentang tsb", "INVENTORY_NOT_FOUND")
 			return
 		}
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "gagal membaca availability")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membaca availability", "INTERNAL_ERROR")
 			return
 		}
 		quotes, err := d.RateSvc.Quote(r.Context(), roomTypeID, from, to)
 		if err != nil {
-			httpError(w, http.StatusNotFound, "tipe kamar tidak dikenal")
+			httpErrorCode(w, http.StatusNotFound, "tipe kamar tidak dikenal", "UNKNOWN_ROOM_TYPE")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -137,13 +437,13 @@ func createBooking(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in req
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			httpError(w, http.StatusBadRequest, "body JSON tidak valid")
+			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
 			return
 		}
 		from, err1 := parseDate(in.CheckIn)
 		to, err2 := parseDate(in.CheckOut)
 		if err1 != nil || err2 != nil {
-			httpError(w, http.StatusBadRequest, "check_in/check_out wajib format YYYY-MM-DD")
+			httpErrorCode(w, http.StatusBadRequest, "check_in/check_out wajib format YYYY-MM-DD", "INVALID_DATE_FORMAT")
 			return
 		}
 		b, charge, err := d.BookingSvc.Create(r.Context(), booking.CreateInput{
@@ -155,20 +455,40 @@ func createBooking(d Deps) http.HandlerFunc {
 			GuestName:  in.GuestName,
 			GuestEmail: in.GuestEmail,
 		})
-		if errors.Is(err, booking.ErrInvalidDateRange) || errors.Is(err, booking.ErrInvalidCapacity) {
-			httpError(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, booking.ErrInvalidDateRange) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_DATE_RANGE")
+			return
+		}
+		if errors.Is(err, booking.ErrInvalidCapacity) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_CAPACITY")
+			return
+		}
+		if errors.Is(err, booking.ErrExceedsMaxStay) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "EXCEEDS_MAX_LOS")
+			return
+		}
+		if errors.Is(err, booking.ErrPastDate) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "PAST_DATE")
+			return
+		}
+		if errors.Is(err, booking.ErrExceedsHorizon) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "EXCEEDS_HORIZON")
+			return
+		}
+		if errors.Is(err, booking.ErrInvalidGuestInfo) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_GUEST_INFO")
 			return
 		}
 		if errors.Is(err, inventory.ErrInsufficient) || errors.Is(err, booking.ErrInsufficient) {
-			httpError(w, http.StatusConflict, "kamar tidak tersedia untuk rentang tsb")
+			httpErrorCode(w, http.StatusConflict, "kamar tidak tersedia untuk rentang tsb", "INSUFFICIENT_ROOMS")
 			return
 		}
 		if errors.Is(err, inventory.ErrNotFound) {
-			httpError(w, http.StatusNotFound, "inventory tidak ditemukan")
+			httpErrorCode(w, http.StatusNotFound, "inventory tidak ditemukan", "INVENTORY_NOT_FOUND")
 			return
 		}
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "gagal membuat booking")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membuat booking", "INTERNAL_ERROR")
 			return
 		}
 		// Jadwalkan release-hold otomatis t+holdTimeout jika enqueuer aktif (asynq scheduled task).

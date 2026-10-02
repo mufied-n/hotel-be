@@ -5,17 +5,88 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
 )
+
+type mockCatalogStore struct {
+	variants []catalog.RoomVariant
+	err      error
+}
+
+func (m *mockCatalogStore) ListVariants(_ context.Context) ([]catalog.RoomVariant, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.variants, nil
+}
+
+func (m *mockCatalogStore) GetVariant(_ context.Context, idOrCode string) (catalog.RoomVariant, error) {
+	if m.err != nil {
+		return catalog.RoomVariant{}, m.err
+	}
+	for _, v := range m.variants {
+		if v.ID == idOrCode || v.Code == idOrCode {
+			return v, nil
+		}
+	}
+	return catalog.RoomVariant{}, catalog.ErrVariantNotFound
+}
+
+func (m *mockCatalogStore) CreateVariant(_ context.Context, v catalog.RoomVariant) (catalog.RoomVariant, error) {
+	if m.err != nil {
+		return catalog.RoomVariant{}, m.err
+	}
+	if v.Code == "dup" {
+		return catalog.RoomVariant{}, catalog.ErrDuplicateCode
+	}
+	if v.Code == "" {
+		return catalog.RoomVariant{}, catalog.ErrInvalidVariant
+	}
+	v.ID = "generated-variant-id"
+	m.variants = append(m.variants, v)
+	return v, nil
+}
+
+func (m *mockCatalogStore) UpdateVariant(_ context.Context, id string, v catalog.RoomVariant) (catalog.RoomVariant, error) {
+	if m.err != nil {
+		return catalog.RoomVariant{}, m.err
+	}
+	if id == "not-found" {
+		return catalog.RoomVariant{}, catalog.ErrVariantNotFound
+	}
+	if v.Code == "dup" {
+		return catalog.RoomVariant{}, catalog.ErrDuplicateCode
+	}
+	if v.Code == "" {
+		return catalog.RoomVariant{}, catalog.ErrInvalidVariant
+	}
+	v.ID = id
+	return v, nil
+}
+
+func (m *mockCatalogStore) DeleteVariant(_ context.Context, id string) error {
+	if m.err != nil {
+		return m.err
+	}
+	if id == "not-found" {
+		return catalog.ErrVariantNotFound
+	}
+	if id == "in-use" {
+		return catalog.ErrCannotDelete
+	}
+	return nil
+}
 
 type mockInvStore struct {
 	avail []inventory.Availability
@@ -594,5 +665,657 @@ func TestRouterErrorBranches(t *testing.T) {
 	rRateErr.ServeHTTP(rateRec, rateReq)
 	if rateRec.Code != http.StatusNotFound {
 		t.Errorf("rate err status = %d, want 404", rateRec.Code)
+	}
+}
+
+func TestGetCatalogRooms(t *testing.T) {
+	h, _ := setupTestRouter()
+
+	// Happy path: returns 7 variants
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/catalog/rooms", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var res struct {
+		Total int                   `json:"total"`
+		Rooms []catalog.RoomVariant `json:"rooms"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("decode err = %v", err)
+	}
+	if res.Total != 7 || len(res.Rooms) != 7 {
+		t.Errorf("total = %d, rooms len = %d, want 7", res.Total, len(res.Rooms))
+	}
+
+	// Error path: catalog store failure (500)
+	hFail := NewRouter(Deps{
+		Enforcer:     auth.DefaultTestEnforcer(),
+		CatalogStore: &mockCatalogStore{err: errors.New("db disk failure")},
+	})
+	recFail := httptest.NewRecorder()
+	hFail.ServeHTTP(recFail, req)
+	if recFail.Code != http.StatusInternalServerError {
+		t.Errorf("catalog error status = %d, want 500", recFail.Code)
+	}
+}
+
+func TestSearchRooms_Validation(t *testing.T) {
+	h, _ := setupTestRouter()
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	in10d := today.AddDate(0, 0, 10).Format("2006-01-02")
+	in12d := today.AddDate(0, 0, 12).Format("2006-01-02")
+	in45d := today.AddDate(0, 0, 45).Format("2006-01-02")
+	past := today.AddDate(0, 0, -5).Format("2006-01-02")
+	horizonExceedIn := today.AddDate(1, 0, 10).Format("2006-01-02")
+	horizonExceedOut := today.AddDate(1, 0, 12).Format("2006-01-02")
+
+	tests := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "missing dates",
+			query:      "",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_DATE_FORMAT",
+		},
+		{
+			name:       "malformed check_in",
+			query:      "check_in=invalid&check_out=" + in12d,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_DATE_FORMAT",
+		},
+		{
+			name:       "check_out before check_in",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s", in12d, in10d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_DATE_RANGE",
+		},
+		{
+			name:       "stay exceeds 30 nights",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s", in10d, in45d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "EXCEEDS_MAX_LOS",
+		},
+		{
+			name:       "check_in in the past",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s", past, in10d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "PAST_DATE",
+		},
+		{
+			name:       "check_out exceeds 365 days horizon",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s", horizonExceedIn, horizonExceedOut),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "EXCEEDS_HORIZON",
+		},
+		{
+			name:       "invalid adults count zero",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&adults=0", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_GUEST_COUNT",
+		},
+		{
+			name:       "non-numeric adults",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&adults=two", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_GUEST_COUNT",
+		},
+		{
+			name:       "invalid rooms count zero",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&rooms=0", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_COUNT",
+		},
+		{
+			name:       "rooms count exceeds 8",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&rooms=9", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_COUNT",
+		},
+		{
+			name:       "negative children count",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&children=-1", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_GUEST_COUNT",
+		},
+		{
+			name:       "child age exceeds 17",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&child_ages=5,18", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_CHILD_AGE",
+		},
+		{
+			name:       "negative child age",
+			query:      fmt.Sprintf("check_in=%s&check_out=%s&child_ages=-1", in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_CHILD_AGE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/search?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var prob ProblemDetails
+			_ = json.NewDecoder(rec.Body).Decode(&prob)
+			if prob.Code != tt.wantCode {
+				t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestSearchRooms_ContinuityAndStock(t *testing.T) {
+	// Case 1: Happy path with standard availability
+	h, _ := setupTestRouter()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		TotalVariants  int                `json:"total_variants"`
+		AvailableCount int                `json:"available_count"`
+		Results        []SearchResultItem `json:"results"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+		t.Fatalf("decode err = %v", err)
+	}
+	if res.TotalVariants != 7 {
+		t.Errorf("total_variants = %d, want 7", res.TotalVariants)
+	}
+	if res.AvailableCount == 0 {
+		t.Errorf("available_count = 0, want > 0")
+	}
+
+	// Case 2: Exceeds capacity
+	reqCap := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=5&rooms=1", nil)
+	recCap := httptest.NewRecorder()
+	h.ServeHTTP(recCap, reqCap)
+	var resCap struct {
+		Results []SearchResultItem `json:"results"`
+	}
+	_ = json.NewDecoder(recCap.Body).Decode(&resCap)
+	for _, item := range resCap.Results {
+		if item.RoomVariant.MaxAdults < 5 {
+			if item.Available {
+				t.Errorf("room %s with max_adults=%d should not be available for 5 adults", item.RoomVariant.Code, item.RoomVariant.MaxAdults)
+			}
+			if item.UnavailableReason != "EXCEEDS_CAPACITY" {
+				t.Errorf("room %s reason = %s, want EXCEEDS_CAPACITY", item.RoomVariant.Code, item.UnavailableReason)
+			}
+		}
+	}
+
+	// Case 3: Missing inventory (middle night missing or len(avail) < nights)
+	hMissing := NewRouter(Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
+		InvStore: &mockInvStore{
+			avail: []inventory.Availability{
+				{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), AvailableRooms: 5},
+				// 2026-10-11 is missing!
+			},
+		},
+		RateSvc: &mockRates{
+			quotes: []rates.Quote{{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), RateMinor: 500_000}},
+		},
+	})
+	reqMissing := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1", nil)
+	recMissing := httptest.NewRecorder()
+	hMissing.ServeHTTP(recMissing, reqMissing)
+	var resMissing struct {
+		AvailableCount int                `json:"available_count"`
+		Results        []SearchResultItem `json:"results"`
+	}
+	_ = json.NewDecoder(recMissing.Body).Decode(&resMissing)
+	if resMissing.AvailableCount != 0 {
+		t.Errorf("available_count = %d, want 0 on missing inventory", resMissing.AvailableCount)
+	}
+	if len(resMissing.Results) > 0 && resMissing.Results[0].UnavailableReason != "MISSING_INVENTORY" {
+		t.Errorf("reason = %s, want MISSING_INVENTORY", resMissing.Results[0].UnavailableReason)
+	}
+
+	// Case 4: Sold out (minAvail == 0)
+	hSoldOut := NewRouter(Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
+		InvStore: &mockInvStore{
+			avail: []inventory.Availability{
+				{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), AvailableRooms: 0},
+				{Date: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), AvailableRooms: 5},
+			},
+		},
+		RateSvc: &mockRates{
+			quotes: []rates.Quote{
+				{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), RateMinor: 500_000},
+				{Date: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), RateMinor: 500_000},
+			},
+		},
+	})
+	reqSold := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1", nil)
+	recSold := httptest.NewRecorder()
+	hSoldOut.ServeHTTP(recSold, reqSold)
+	var resSold struct {
+		Results []SearchResultItem `json:"results"`
+	}
+	_ = json.NewDecoder(recSold.Body).Decode(&resSold)
+	if len(resSold.Results) > 0 && resSold.Results[0].UnavailableReason != "SOLD_OUT" {
+		t.Errorf("reason = %s, want SOLD_OUT", resSold.Results[0].UnavailableReason)
+	}
+
+	// Case 5: Insufficient rooms (minAvail < requested rooms)
+	reqInsuff := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=6", nil)
+	recInsuff := httptest.NewRecorder()
+	h.ServeHTTP(recInsuff, reqInsuff)
+	var resInsuff struct {
+		Results []SearchResultItem `json:"results"`
+	}
+	_ = json.NewDecoder(recInsuff.Body).Decode(&resInsuff)
+	// We have 5 rooms available, but requested 6
+	for _, item := range resInsuff.Results {
+		if !item.Available && item.UnavailableReason != "EXCEEDS_CAPACITY" && item.UnavailableReason != "INSUFFICIENT_ROOMS" {
+			t.Errorf("unexpected reason %s for room %s", item.UnavailableReason, item.RoomVariant.Code)
+		}
+	}
+
+	// Case 6: Inventory store internal error (500)
+	hInvErr := NewRouter(Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
+		InvStore: &mockInvStore{err: errors.New("connection reset by peer")},
+		RateSvc:  &mockRates{},
+	})
+	reqInvErr := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1", nil)
+	recInvErr := httptest.NewRecorder()
+	hInvErr.ServeHTTP(recInvErr, reqInvErr)
+	if recInvErr.Code != http.StatusInternalServerError {
+		t.Errorf("inv error status = %d, want 500", recInvErr.Code)
+	}
+}
+
+func TestCreateBooking_NewValidationErrors(t *testing.T) {
+	h, _ := setupTestRouter()
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	in10d := today.AddDate(0, 0, 10).Format("2006-01-02")
+	in12d := today.AddDate(0, 0, 12).Format("2006-01-02")
+	in45d := today.AddDate(0, 0, 45).Format("2006-01-02")
+	past := today.AddDate(0, 0, -5).Format("2006-01-02")
+	horizonExceedIn := today.AddDate(1, 0, 10).Format("2006-01-02")
+	horizonExceedOut := today.AddDate(1, 0, 12).Format("2006-01-02")
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "exceeds max stay 30 nights",
+			body:       fmt.Sprintf(`{"room_type_id":"std","check_in":"%s","check_out":"%s","num_rooms":1,"num_guests":1,"guest_name":"Budi","guest_email":"budi@example.com"}`, in10d, in45d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "EXCEEDS_MAX_LOS",
+		},
+		{
+			name:       "check_in date in past",
+			body:       fmt.Sprintf(`{"room_type_id":"std","check_in":"%s","check_out":"%s","num_rooms":1,"num_guests":1,"guest_name":"Budi","guest_email":"budi@example.com"}`, past, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "PAST_DATE",
+		},
+		{
+			name:       "check_out exceeds 365 days horizon",
+			body:       fmt.Sprintf(`{"room_type_id":"std","check_in":"%s","check_out":"%s","num_rooms":1,"num_guests":1,"guest_name":"Budi","guest_email":"budi@example.com"}`, horizonExceedIn, horizonExceedOut),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "EXCEEDS_HORIZON",
+		},
+		{
+			name:       "invalid guest info empty name",
+			body:       fmt.Sprintf(`{"room_type_id":"std","check_in":"%s","check_out":"%s","num_rooms":1,"num_guests":1,"guest_name":"","guest_email":"budi@example.com"}`, in10d, in12d),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_GUEST_INFO",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", bytes.NewBufferString(tt.body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var prob ProblemDetails
+			_ = json.NewDecoder(rec.Body).Decode(&prob)
+			if prob.Code != tt.wantCode {
+				t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestCatalogRoomCRUD(t *testing.T) {
+	h, _ := setupTestRouter()
+
+	// 1. GET /api/v1/catalog/rooms/{id}
+	t.Run("GET by ID happy path", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/catalog/rooms/sup-king", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		var v catalog.RoomVariant
+		if err := json.NewDecoder(rec.Body).Decode(&v); err != nil {
+			t.Fatalf("decode err = %v", err)
+		}
+		if v.Code != "sup-king" {
+			t.Errorf("got code = %s, want sup-king", v.Code)
+		}
+	})
+
+	t.Run("GET by ID not found", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/catalog/rooms/non-existent", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("GET by ID store error", func(t *testing.T) {
+		hErr := NewRouter(Deps{
+			Enforcer:     auth.DefaultTestEnforcer(),
+			CatalogStore: &mockCatalogStore{err: errors.New("db error")},
+		})
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/catalog/rooms/sup-king", nil)
+		rec := httptest.NewRecorder()
+		hErr.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rec.Code)
+		}
+	})
+
+	// 2. POST /api/v1/catalog/rooms
+	postCases := []struct {
+		name       string
+		role       string
+		body       string
+		storeErr   error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "guest forbidden",
+			role:       "guest",
+			body:       `{"code":"test","name":"Test","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "receptionist forbidden",
+			role:       "receptionist",
+			body:       `{"code":"test","name":"Test","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "bad json payload",
+			role:       "revenue_mgr",
+			body:       `{bad-json`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_PAYLOAD",
+		},
+		{
+			name:       "invalid room data empty code",
+			role:       "revenue_mgr",
+			body:       `{"code":"","name":"Test","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_DATA",
+		},
+		{
+			name:       "conflict room code",
+			role:       "revenue_mgr",
+			body:       `{"code":"sup-king","name":"Test","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusConflict,
+			wantCode:   "CONFLICT_ROOM_CODE",
+		},
+		{
+			name:       "store internal error",
+			role:       "revenue_mgr",
+			body:       `{"code":"test","name":"Test","max_capacity":2,"base_price_minor":100}`,
+			storeErr:   errors.New("db insert fail"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "CATALOG_ERROR",
+		},
+		{
+			name:       "happy path create",
+			role:       "revenue_mgr",
+			body:       `{"code":"villa-pool","name":"Villa Pool Suite","max_capacity":4,"base_price_minor":2500000}`,
+			wantStatus: http.StatusCreated,
+		},
+	}
+
+	for _, tt := range postCases {
+		t.Run("POST "+tt.name, func(t *testing.T) {
+			routerToUse, _ := setupTestRouter()
+			if tt.storeErr != nil {
+				routerToUse = NewRouter(Deps{
+					Enforcer:     auth.DefaultTestEnforcer(),
+					CatalogStore: &mockCatalogStore{err: tt.storeErr},
+				})
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/catalog/rooms", bytes.NewBufferString(tt.body))
+			if tt.role != "" && tt.role != "guest" {
+				req.Header.Set("Authorization", "Bearer "+tt.role)
+			}
+			rec := httptest.NewRecorder()
+			routerToUse.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				var prob ProblemDetails
+				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				if prob.Code != tt.wantCode {
+					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+				}
+			}
+		})
+	}
+
+	// 3. PUT /api/v1/catalog/rooms/{id}
+	putCases := []struct {
+		name       string
+		id         string
+		role       string
+		body       string
+		storeErr   error
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "guest forbidden",
+			id:         "sup-king",
+			role:       "guest",
+			body:       `{"code":"sup-king","name":"Updated","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "bad json",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			body:       `{bad-json`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_PAYLOAD",
+		},
+		{
+			name:       "not found",
+			id:         "not-found",
+			role:       "revenue_mgr",
+			body:       `{"code":"code","name":"Name","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "ROOM_VARIANT_NOT_FOUND",
+		},
+		{
+			name:       "invalid data empty code",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			body:       `{"code":"","name":"Name","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_ROOM_DATA",
+		},
+		{
+			name:       "conflict code",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			body:       `{"code":"dlx-king","name":"Name","max_capacity":2,"base_price_minor":100}`,
+			wantStatus: http.StatusConflict,
+			wantCode:   "CONFLICT_ROOM_CODE",
+		},
+		{
+			name:       "store error",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			body:       `{"code":"code","name":"Name","max_capacity":2,"base_price_minor":100}`,
+			storeErr:   errors.New("db error"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "CATALOG_ERROR",
+		},
+		{
+			name:       "happy path update",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			body:       `{"code":"sup-king","name":"Superior King Renovated","max_capacity":3,"base_price_minor":650000}`,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range putCases {
+		t.Run("PUT "+tt.name, func(t *testing.T) {
+			routerToUse, _ := setupTestRouter()
+			if tt.storeErr != nil {
+				routerToUse = NewRouter(Deps{
+					Enforcer:     auth.DefaultTestEnforcer(),
+					CatalogStore: &mockCatalogStore{err: tt.storeErr},
+				})
+			}
+			req := httptest.NewRequest(http.MethodPut, "/api/v1/catalog/rooms/"+tt.id, bytes.NewBufferString(tt.body))
+			if tt.role != "" && tt.role != "guest" {
+				req.Header.Set("Authorization", "Bearer "+tt.role)
+			}
+			rec := httptest.NewRecorder()
+			routerToUse.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				var prob ProblemDetails
+				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				if prob.Code != tt.wantCode {
+					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+				}
+			}
+		})
+	}
+
+	// 4. DELETE /api/v1/catalog/rooms/{id}
+	delCases := []struct {
+		name        string
+		id          string
+		role        string
+		storeErr    error
+		customStore catalog.Store
+		wantStatus  int
+		wantCode    string
+	}{
+		{
+			name:       "guest forbidden",
+			id:         "sup-king",
+			role:       "guest",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "revenue_mgr forbidden to delete (only gm_admin)",
+			id:         "sup-king",
+			role:       "revenue_mgr",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "gm_admin not found",
+			id:         "not-found",
+			role:       "gm_admin",
+			wantStatus: http.StatusNotFound,
+			wantCode:   "ROOM_VARIANT_NOT_FOUND",
+		},
+		{
+			name:        "gm_admin in-use variant conflict",
+			id:          "in-use",
+			role:        "gm_admin",
+			customStore: &mockCatalogStore{},
+			wantStatus:  http.StatusConflict,
+			wantCode:    "CANNOT_DELETE_ACTIVE_VARIANT",
+		},
+		{
+			name:       "gm_admin store error",
+			id:         "sup-king",
+			role:       "gm_admin",
+			storeErr:   errors.New("db error"),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "CATALOG_ERROR",
+		},
+		{
+			name:       "gm_admin happy path delete",
+			id:         "sup-king",
+			role:       "gm_admin",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range delCases {
+		t.Run("DELETE "+tt.name, func(t *testing.T) {
+			routerToUse, _ := setupTestRouter()
+			if tt.customStore != nil {
+				routerToUse = NewRouter(Deps{
+					Enforcer:     auth.DefaultTestEnforcer(),
+					CatalogStore: tt.customStore,
+				})
+			} else if tt.storeErr != nil {
+				routerToUse = NewRouter(Deps{
+					Enforcer:     auth.DefaultTestEnforcer(),
+					CatalogStore: &mockCatalogStore{err: tt.storeErr},
+				})
+			}
+			req := httptest.NewRequest(http.MethodDelete, "/api/v1/catalog/rooms/"+tt.id, nil)
+			if tt.role != "" && tt.role != "guest" {
+				req.Header.Set("Authorization", "Bearer "+tt.role)
+			}
+			rec := httptest.NewRecorder()
+			routerToUse.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				var prob ProblemDetails
+				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				if prob.Code != tt.wantCode {
+					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+				}
+			}
+		})
 	}
 }

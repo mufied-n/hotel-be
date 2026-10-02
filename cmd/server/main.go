@@ -21,6 +21,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
@@ -50,15 +51,22 @@ func main() {
 	invStore := &inventory.PostgresStore{Pool: pool}
 	bkRunner := &booking.PostgresTxRunner{Pool: pool}
 	bkReader := &booking.PostgresReader{Pool: pool}
+	catalogStore := catalog.NewPostgresStore(pool)
 
-	// Base rate per tipe kamar (contoh IDR, satuan minor). Di produksi:
-	// taruh di tabel rates atau config admin.
+	// Ensure 365-day rolling inventory horizon (BE-G18)
+	if err := invStore.EnsureHorizon(ctx, 365); err != nil {
+		log.Error("inventory.ensure_horizon.warning", "err", err)
+	}
+
+	// Base rate per tipe kamar (7 varian Pulang ke Uttara — BE-G01).
 	baseRates := map[string]int64{
-		"01900000-0000-7000-8000-000000000001": 550_000,   // Standard
-		"01900000-0000-7000-8000-000000000002": 750_000,   // Superior
-		"01900000-0000-7000-8000-000000000003": 1_100_000, // Deluxe
-		"01900000-0000-7000-8000-000000000004": 1_450_000, // Family
-		"01900000-0000-7000-8000-000000000005": 2_200_000, // Suite
+		"01900000-0000-7000-8000-000000000001": 550_000,   // Superior King
+		"01900000-0000-7000-8000-000000000002": 550_000,   // Superior Twin
+		"01900000-0000-7000-8000-000000000003": 750_000,   // Deluxe King
+		"01900000-0000-7000-8000-000000000004": 750_000,   // Deluxe Twin
+		"01900000-0000-7000-8000-000000000005": 1_100_000, // Executive King
+		"01900000-0000-7000-8000-000000000006": 1_650_000, // Junior Suite
+		"01900000-0000-7000-8000-000000000007": 3_500_000, // Presidential Suite
 	}
 	rateEngine := rates.NewEngine(baseRates, 1.25) // weekend +25%
 
@@ -192,6 +200,7 @@ func main() {
 		BookingSvc:    bkSvc,
 		InvStore:      invStore,
 		RateSvc:       rateEngine,
+		CatalogStore:  catalogStore,
 		Enqueuer:      enqueuer,
 		Enforcer:      enforcer,
 		IsDevelopment: cfg.IsDevelopment(),
