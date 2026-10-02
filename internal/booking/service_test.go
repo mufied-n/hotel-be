@@ -658,3 +658,228 @@ func TestService_GetAndGuestTokenAndHoldTimeout(t *testing.T) {
 	}
 }
 
+func TestBatchC_QuoteLockingAndPolicies(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	t.Run("Create with valid quote locks price and breakdown", func(t *testing.T) {
+		qs := rates.NewMemoryQuoteStore(15 * time.Minute)
+		q := rates.LockedQuote{
+			ID:               "quote-valid-123",
+			CreatedAt:        now,
+			ExpiresAt:        now.Add(15 * time.Minute),
+			RoomTypeID:       "std",
+			RatePlanCode:     rates.RatePlanBedBreakfast,
+			RatePlanName:     "Bed & Breakfast",
+			CancellationCode: rates.PolicyFlexible48h,
+			CancellationDesc: "Flexible cancellation",
+			CheckIn:          date("2026-10-10"),
+			CheckOut:         date("2026-10-12"),
+			NumRooms:         1,
+			NumGuests:        2,
+			Pricing: rates.PricingBreakdown{
+				RoomSubtotalMinor:    1_000_000,
+				BreakfastChargeMinor: 400_000,
+				DiscountMinor:        0,
+				TaxMinor:             140_000,
+				TotalPriceMinor:      1_540_000,
+				Currency:             "IDR",
+			},
+		}
+		_ = qs.SaveQuote(ctx, q)
+
+		inv := &fakeInvStore{
+			avail: []inventory.Availability{
+				{Date: date("2026-10-10"), TotalRooms: 10, AvailableRooms: 5},
+				{Date: date("2026-10-11"), TotalRooms: 10, AvailableRooms: 5},
+			},
+		}
+		ratesSvc := &fakeRates{
+			quotes: []rates.Quote{
+				{Date: date("2026-10-10"), RateMinor: 500_000},
+				{Date: date("2026-10-11"), RateMinor: 500_000},
+			},
+		}
+		tx := newFakeTx(map[string]*Booking{}, map[string][]string{})
+		tx.inventory["std|2026-10-10"] = 5
+		tx.inventory["std|2026-10-11"] = 5
+		svc := NewService(tx, inv, ratesSvc, &fakePayment{}, &fakeNotifier{}, &fakeReader{}, 30*time.Minute, slog.Default())
+		svc.SetQuoteStore(qs)
+
+		b, _, err := svc.Create(ctx, CreateInput{
+			QuoteID:         "quote-valid-123",
+			RoomTypeID:      "std",
+			CheckIn:         date("2026-10-10"),
+			CheckOut:        date("2026-10-12"),
+			NumRooms:        1,
+			NumGuests:       2,
+			GuestName:       "Budi Santoso",
+			GuestEmail:      "budi@example.com",
+			TermsAccepted:   true,
+			PrivacyAccepted: true,
+		})
+		if err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+		if b.QuoteID != "quote-valid-123" {
+			t.Errorf("b.QuoteID = %s, want quote-valid-123", b.QuoteID)
+		}
+		if b.RatePlanCode != rates.RatePlanBedBreakfast {
+			t.Errorf("b.RatePlanCode = %s, want bed_and_breakfast", b.RatePlanCode)
+		}
+		if b.TotalPriceMinor != 1_540_000 {
+			t.Errorf("b.TotalPriceMinor = %d, want 1_540_000", b.TotalPriceMinor)
+		}
+		if !b.TermsAccepted || b.TermsAcceptedAt == nil {
+			t.Error("expected TermsAccepted to be recorded with timestamp")
+		}
+	})
+
+	t.Run("Create fails when consent not provided", func(t *testing.T) {
+		qs := rates.NewMemoryQuoteStore(15 * time.Minute)
+		q := rates.LockedQuote{
+			ID:        "quote-consent-test",
+			ExpiresAt: now.Add(15 * time.Minute),
+		}
+		_ = qs.SaveQuote(ctx, q)
+		svc := newTestService(newFakeTx(nil, nil), &fakeReader{})
+		svc.SetQuoteStore(qs)
+
+		_, _, err := svc.Create(ctx, CreateInput{
+			QuoteID:         "quote-consent-test",
+			RoomTypeID:      "std",
+			CheckIn:         date("2026-10-10"),
+			CheckOut:        date("2026-10-12"),
+			NumRooms:        1,
+			NumGuests:       2,
+			GuestName:       "Budi",
+			GuestEmail:      "budi@example.com",
+			TermsAccepted:   false,
+			PrivacyAccepted: true,
+		})
+		if !errors.Is(err, ErrConsentRequired) {
+			t.Errorf("expected ErrConsentRequired, got %v", err)
+		}
+	})
+
+	t.Run("Create fails when quote is expired", func(t *testing.T) {
+		qs := rates.NewMemoryQuoteStore(10 * time.Millisecond)
+		q := rates.LockedQuote{
+			ID:        "quote-expired-test",
+			ExpiresAt: now.Add(-1 * time.Minute), // expired in past
+		}
+		_ = qs.SaveQuote(ctx, q)
+		svc := newTestService(newFakeTx(nil, nil), &fakeReader{})
+		svc.SetQuoteStore(qs)
+
+		_, _, err := svc.Create(ctx, CreateInput{
+			QuoteID:         "quote-expired-test",
+			RoomTypeID:      "std",
+			CheckIn:         date("2026-10-10"),
+			CheckOut:        date("2026-10-12"),
+			NumRooms:        1,
+			NumGuests:       2,
+			GuestName:       "Budi",
+			GuestEmail:      "budi@example.com",
+			TermsAccepted:   true,
+			PrivacyAccepted: true,
+		})
+		if !errors.Is(err, ErrQuoteExpired) {
+			t.Errorf("expected ErrQuoteExpired, got %v", err)
+		}
+	})
+
+	t.Run("Create fails when parameters mismatch quote", func(t *testing.T) {
+		qs := rates.NewMemoryQuoteStore(15 * time.Minute)
+		q := rates.LockedQuote{
+			ID:         "quote-mismatch-test",
+			ExpiresAt:  now.Add(15 * time.Minute),
+			RoomTypeID: "std",
+			CheckIn:    date("2026-10-10"),
+			CheckOut:   date("2026-10-12"),
+			NumRooms:   1,
+			NumGuests:  2,
+		}
+		_ = qs.SaveQuote(ctx, q)
+		svc := newTestService(newFakeTx(nil, nil), &fakeReader{})
+		svc.SetQuoteStore(qs)
+
+		_, _, err := svc.Create(ctx, CreateInput{
+			QuoteID:         "quote-mismatch-test",
+			RoomTypeID:      "std",
+			CheckIn:         date("2026-10-10"),
+			CheckOut:        date("2026-10-12"),
+			NumRooms:        2, // Quote has 1 room!
+			NumGuests:       2,
+			GuestName:       "Budi",
+			GuestEmail:      "budi@example.com",
+			TermsAccepted:   true,
+			PrivacyAccepted: true,
+		})
+		if !errors.Is(err, ErrQuoteMismatch) {
+			t.Errorf("expected ErrQuoteMismatch, got %v", err)
+		}
+	})
+
+	t.Run("Cancel confirmed booking with non_refundable policy is rejected", func(t *testing.T) {
+		b := &Booking{
+			ID:                 "b-non-ref",
+			RoomTypeID:         "std",
+			CheckIn:            now.Add(72 * time.Hour),
+			CheckOut:           now.Add(96 * time.Hour),
+			NumRooms:           1,
+			Status:             StatusConfirmed,
+			CancellationPolicy: rates.PolicyNonRefundable,
+		}
+		tx := newFakeTx(map[string]*Booking{"b-non-ref": b}, nil)
+		svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-non-ref": b}})
+
+		err := svc.Cancel(ctx, "b-non-ref")
+		if !errors.Is(err, ErrNonRefundable) {
+			t.Errorf("expected ErrNonRefundable, got %v", err)
+		}
+	})
+
+	t.Run("Cancel confirmed booking with flexible_48h policy past deadline is rejected", func(t *testing.T) {
+		// Check-in is tomorrow (less than 48 hours away)
+		b := &Booking{
+			ID:                 "b-flex-past-deadline",
+			RoomTypeID:         "std",
+			CheckIn:            now.Add(24 * time.Hour),
+			CheckOut:           now.Add(48 * time.Hour),
+			NumRooms:           1,
+			Status:             StatusConfirmed,
+			CancellationPolicy: rates.PolicyFlexible48h,
+		}
+		tx := newFakeTx(map[string]*Booking{"b-flex-past-deadline": b}, nil)
+		svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-flex-past-deadline": b}})
+
+		err := svc.Cancel(ctx, "b-flex-past-deadline")
+		if !errors.Is(err, ErrCancellationDeadlineExceeded) {
+			t.Errorf("expected ErrCancellationDeadlineExceeded, got %v", err)
+		}
+	})
+
+	t.Run("Cancel pending booking with non_refundable policy is allowed (hold release)", func(t *testing.T) {
+		b := &Booking{
+			ID:                 "b-pending-non-ref",
+			RoomTypeID:         "std",
+			CheckIn:            now.Add(72 * time.Hour),
+			CheckOut:           now.Add(96 * time.Hour),
+			NumRooms:           1,
+			Status:             StatusPending,
+			CancellationPolicy: rates.PolicyNonRefundable,
+		}
+		tx := newFakeTx(map[string]*Booking{"b-pending-non-ref": b}, nil)
+		svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-pending-non-ref": b}})
+
+		err := svc.Cancel(ctx, "b-pending-non-ref")
+		if err != nil {
+			t.Fatalf("expected pending hold to be cancellable, got error = %v", err)
+		}
+		if b.Status != StatusCancelled {
+			t.Errorf("status = %s, want cancelled", b.Status)
+		}
+	})
+}
+

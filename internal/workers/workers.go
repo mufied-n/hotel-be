@@ -36,6 +36,9 @@ type NotifyPayload struct {
 type Enqueuer struct{ Client *asynq.Client }
 
 func (e *Enqueuer) EnqueueReleaseHold(ctx context.Context, bookingID string, delay time.Duration) error {
+	if e == nil || e.Client == nil {
+		return nil
+	}
 	payload, err := json.Marshal(ReleaseHoldPayload{BookingID: bookingID})
 	if err != nil {
 		return fmt.Errorf("workers: marshal: %w", err)
@@ -49,6 +52,9 @@ func (e *Enqueuer) EnqueueReleaseHold(ctx context.Context, bookingID string, del
 }
 
 func (e *Enqueuer) EnqueueNotify(ctx context.Context, bookingID string) error {
+	if e == nil || e.Client == nil {
+		return nil
+	}
 	payload, err := json.Marshal(NotifyPayload{BookingID: bookingID})
 	if err != nil {
 		return fmt.Errorf("workers: marshal: %w", err)

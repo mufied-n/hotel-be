@@ -200,6 +200,8 @@ func main() {
 		BookingSvc:    bkSvc,
 		InvStore:      invStore,
 		RateSvc:       rateEngine,
+		RateEngine:    rateEngine,
+		QuoteStore:    rateEngine.QuoteStore(),
 		CatalogStore:  catalogStore,
 		Enqueuer:      enqueuer,
 		Enforcer:      enforcer,

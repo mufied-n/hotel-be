@@ -195,6 +195,7 @@ func DefaultTestEnforcer() *casbin.SyncedEnforcer {
 		{"p", "guest", "/api/v1/catalog/rooms", "GET"},
 		{"p", "guest", "/api/v1/catalog/rooms/:id", "GET"},
 		{"p", "guest", "/api/v1/search", "GET"},
+		{"p", "guest", "/api/v1/quotes", "POST"},
 		{"p", "guest", "/api/v1/bookings", "POST"},
 		{"p", "guest", "/api/v1/bookings/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},

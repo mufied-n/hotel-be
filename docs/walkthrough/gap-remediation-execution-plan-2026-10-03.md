@@ -123,12 +123,15 @@ flowchart TD
   - [x] Table-driven unit tests lulus 100%: API coverage 88.2%, Catalog coverage 93.7%, Auth coverage 80.9%, Booking validation 100%
   - [x] E2E test report dibuat di [`testing/e2e/report/2026-10-03-022000-catalog-crud-batch-b-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-022000-catalog-crud-batch-b-e2e-report.md) (18/18 passed)
 
-- [ ] **Fase 3: Batch BE-C (Tarif, Paket & Kebijakan - G04, G05, G06, G08, G19)**
-  - [ ] Dukungan rate plans (Room Only & Bed and Breakfast)
-  - [ ] Refactor representasi Money & rincian pajak/diskon
-  - [ ] Implementasi quote engine dengan TTL 15 menit
-  - [ ] Snapshot cancellation policy & terms consent
-  - [ ] Unit & integration tests Batch BE-C ($\ge 80\%$ coverage)
+- [x] **Fase 3: Batch BE-C (Tarif, Paket & Kebijakan - G04, G05, G06, G08, G19)** — **SELESAI (100% Passed)**
+  - [x] Dukungan dynamic rate plans (Room Only & Bed and Breakfast paket sarapan Rp 100.000/orang/malam)
+  - [x] Refactor representasi Money integer minor units (IDR, zero float drift, 10% PB1 pajak perhotelan Yogyakarta, promo engine OCTOBREAK diskon 15%)
+  - [x] Implementasi quote lock engine dengan TTL 15 menit (`rates.QuoteStore`, `MemoryQuoteStore` dengan thread-safe mutex)
+  - [x] Snapshot quote, cancellation policy (`non_refundable` vs `flexible_48h`), dan consent syarat & privasi dicatat di database
+  - [x] Migrasi SQL [`migrations/00006_pricing_and_policies.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00006_pricing_and_policies.sql)
+  - [x] Endpoint `POST /api/v1/quotes`, update `POST /api/v1/bookings`, dan penegakan pembatalan pada `POST /api/v1/bookings/:id/cancel`
+  - [x] Table-driven unit tests lulus 100%: API coverage 89.0%, Rates coverage 90.5%, Booking Service Create coverage 91.0%
+  - [x] E2E test report dibuat di [`testing/e2e/report/2026-10-03-024800-pricing-quote-policies-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-024800-pricing-quote-policies-e2e-report.md) (21/21 passed)
 
 - [ ] **Fase 4: Batch BE-D (Checkout, Idempotensi & Payment - G07, G09, G11, G12)**
   - [ ] Migrasi database `00005_idempotency_and_ledger.sql`

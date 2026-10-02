@@ -90,14 +90,24 @@ func (t *txCtx) Increment(ctx context.Context, roomTypeID string, from, to time.
 }
 
 func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []rates.Quote, holdExpiresAt time.Time) error {
+	var quoteID any
+	if b.QuoteID != "" {
+		quoteID = b.QuoteID
+	}
 	err := t.tx.QueryRow(ctx, `
 		INSERT INTO bookings
 			(room_type_id, check_in, check_out, num_rooms, num_guests,
-			 status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			 status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at,
+			 quote_id, rate_plan_code, cancellation_policy, cancellation_desc,
+			 room_subtotal_minor, breakfast_charge_minor, discount_minor, tax_minor,
+			 terms_accepted, terms_accepted_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		RETURNING id`,
 		b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms, b.NumGuests,
 		string(b.Status), b.TotalPriceMinor, b.Currency, b.GuestName, b.GuestEmail, b.GuestToken, b.CreatedAt,
+		quoteID, b.RatePlanCode, b.CancellationPolicy, b.CancellationDesc,
+		b.RoomSubtotalMinor, b.BreakfastChargeMinor, b.DiscountMinor, b.TaxMinor,
+		b.TermsAccepted, b.TermsAcceptedAt,
 	).Scan(&b.ID)
 	if err != nil {
 		return fmt.Errorf("booking: insert: %w", err)
@@ -124,7 +134,12 @@ func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []
 func (t *txCtx) GetForUpdate(ctx context.Context, id string) (Booking, error) {
 	return scanBooking(t.tx.QueryRow(ctx, `
 		SELECT id, room_type_id, check_in, check_out, num_rooms, num_guests,
-		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at
+		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at,
+		       COALESCE(quote_id::text, ''), COALESCE(rate_plan_code, 'room_only'),
+		       COALESCE(cancellation_policy, 'flexible_48h'), COALESCE(cancellation_desc, ''),
+		       COALESCE(room_subtotal_minor, 0), COALESCE(breakfast_charge_minor, 0),
+		       COALESCE(discount_minor, 0), COALESCE(tax_minor, 0),
+		       COALESCE(terms_accepted, true), terms_accepted_at
 		FROM bookings WHERE id = $1 FOR UPDATE`, id))
 }
 
@@ -244,7 +259,12 @@ type PostgresReader struct{ Pool *pgxpool.Pool }
 func (r *PostgresReader) Get(ctx context.Context, id string) (Booking, error) {
 	return scanBooking(r.Pool.QueryRow(ctx, `
 		SELECT id, room_type_id, check_in, check_out, num_rooms, num_guests,
-		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at
+		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at,
+		       COALESCE(quote_id::text, ''), COALESCE(rate_plan_code, 'room_only'),
+		       COALESCE(cancellation_policy, 'flexible_48h'), COALESCE(cancellation_desc, ''),
+		       COALESCE(room_subtotal_minor, 0), COALESCE(breakfast_charge_minor, 0),
+		       COALESCE(discount_minor, 0), COALESCE(tax_minor, 0),
+		       COALESCE(terms_accepted, true), terms_accepted_at
 		FROM bookings WHERE id = $1`, id))
 }
 
@@ -255,7 +275,10 @@ func scanBooking(row rowScanner) (Booking, error) {
 	var status string
 	err := row.Scan(&b.ID, &b.RoomTypeID, &b.CheckIn, &b.CheckOut, &b.NumRooms,
 		&b.NumGuests, &status, &b.TotalPriceMinor, &b.Currency,
-		&b.GuestName, &b.GuestEmail, &b.GuestToken, &b.CreatedAt)
+		&b.GuestName, &b.GuestEmail, &b.GuestToken, &b.CreatedAt,
+		&b.QuoteID, &b.RatePlanCode, &b.CancellationPolicy, &b.CancellationDesc,
+		&b.RoomSubtotalMinor, &b.BreakfastChargeMinor, &b.DiscountMinor, &b.TaxMinor,
+		&b.TermsAccepted, &b.TermsAcceptedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Booking{}, ErrNotFound
 	}

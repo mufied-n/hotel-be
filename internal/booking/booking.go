@@ -62,19 +62,29 @@ func Transition(from, to Status) error {
 
 // Booking adalah agregat booking.
 type Booking struct {
-	ID              string    `json:"id"`
-	RoomTypeID      string    `json:"room_type_id"`
-	CheckIn         time.Time `json:"check_in"`
-	CheckOut        time.Time `json:"check_out"`
-	NumRooms        int       `json:"num_rooms"`
-	NumGuests       int       `json:"num_guests"`
-	Status          Status    `json:"status"`
-	TotalPriceMinor int64     `json:"total_price_minor"`
-	Currency        string    `json:"currency"`
-	GuestName       string    `json:"guest_name"`
-	GuestEmail      string    `json:"guest_email"`
-	GuestToken      string    `json:"guest_token,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                   string     `json:"id"`
+	RoomTypeID           string     `json:"room_type_id"`
+	CheckIn              time.Time  `json:"check_in"`
+	CheckOut             time.Time  `json:"check_out"`
+	NumRooms             int        `json:"num_rooms"`
+	NumGuests            int        `json:"num_guests"`
+	Status               Status     `json:"status"`
+	QuoteID              string     `json:"quote_id,omitempty"`
+	RatePlanCode         string     `json:"rate_plan_code"`
+	CancellationPolicy   string     `json:"cancellation_policy"`
+	CancellationDesc     string     `json:"cancellation_description"`
+	RoomSubtotalMinor    int64      `json:"room_subtotal_minor"`
+	BreakfastChargeMinor int64      `json:"breakfast_charge_minor"`
+	DiscountMinor        int64      `json:"discount_minor"`
+	TaxMinor             int64      `json:"tax_minor"`
+	TotalPriceMinor      int64      `json:"total_price_minor"`
+	Currency             string     `json:"currency"`
+	GuestName            string     `json:"guest_name"`
+	GuestEmail           string     `json:"guest_email"`
+	GuestToken           string     `json:"guest_token,omitempty"`
+	TermsAccepted        bool       `json:"terms_accepted"`
+	TermsAcceptedAt      *time.Time `json:"terms_accepted_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 // PublicDTO adalah representasi publik minimal tanpa kebocoran PII (BE-G13).
@@ -150,3 +160,21 @@ var ErrExceedsHorizon = errors.New("booking: check_out date exceeds 365 days boo
 
 // ErrInvalidGuestInfo diembalikan bila guest_name kosong atau guest_email tidak valid (BE-G03).
 var ErrInvalidGuestInfo = errors.New("booking: guest_name and valid guest_email are required")
+
+// ErrConsentRequired diembalikan bila tamu belum menyetujui syarat & ketentuan dan privasi (BE-G08).
+var ErrConsentRequired = errors.New("booking: terms and privacy consent are required")
+
+// ErrQuoteRequired diembalikan bila pembuatan booking tidak menyertakan quote_id (BE-G06).
+var ErrQuoteRequired = errors.New("booking: quote_id is required")
+
+// ErrQuoteExpired diembalikan bila quote sudah melewati batas TTL 15 menit (BE-G06).
+var ErrQuoteExpired = errors.New("booking: quote has expired (>15m)")
+
+// ErrQuoteMismatch diembalikan bila parameter booking berbeda dengan quote terkunci (BE-G06).
+var ErrQuoteMismatch = errors.New("booking: reservation parameters do not match quote")
+
+// ErrNonRefundable diembalikan saat tamu mencoba membatalkan booking bertarif non-refundable (BE-G08).
+var ErrNonRefundable = errors.New("booking: non-refundable reservation cannot be cancelled by guest")
+
+// ErrCancellationDeadlineExceeded diembalikan saat pembatalan melewati batas waktu H-2 (BE-G08).
+var ErrCancellationDeadlineExceeded = errors.New("booking: free cancellation deadline has passed (48h before check-in)")

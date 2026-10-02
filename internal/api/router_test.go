@@ -154,6 +154,7 @@ func (m *mockTx) GetRoomAssignments(_ context.Context, _ string) ([]string, erro
 func (m *mockTx) PublishTx(_ context.Context, _ string, _ []byte) error { return nil }
 
 type mockReader struct {
+	tx      *mockTx
 	booking booking.Booking
 	err     error
 }
@@ -164,6 +165,9 @@ func (m *mockReader) Get(_ context.Context, id string) (booking.Booking, error) 
 	}
 	if id == "not-found" {
 		return booking.Booking{}, booking.ErrNotFound
+	}
+	if m.tx != nil {
+		return m.tx.booking, nil
 	}
 	return m.booking, nil
 }
@@ -208,13 +212,22 @@ func setupTestRouter() (http.Handler, *mockTx) {
 			{Date: time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), RateMinor: 500_000},
 		},
 	}
-	reader := &mockReader{booking: txMock.booking}
+	reader := &mockReader{tx: txMock}
 	bkSvc := booking.NewService(runner, inv, ratesSvc, &mockPayment{}, &mockNotifier{}, reader, 30*time.Minute, nil)
+
+	rateEngine := rates.NewEngine(map[string]int64{
+		"std":                                  500_000,
+		"01900000-0000-7000-8000-000000000001": 550_000,
+	}, 1.25)
+	quoteStore := rateEngine.QuoteStore()
+	bkSvc.SetQuoteStore(quoteStore)
 
 	handler := NewRouter(Deps{
 		BookingSvc:    bkSvc,
 		InvStore:      inv,
 		RateSvc:       ratesSvc,
+		RateEngine:    rateEngine,
+		QuoteStore:    quoteStore,
 		Enqueuer:      &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: true,
@@ -1317,5 +1330,349 @@ func TestCatalogRoomCRUD(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestQuotes_TableDriven(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+		checkQuote func(t *testing.T, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name: "happy path room only",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"rate_plan_code": "room_only",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2
+			}`,
+			wantStatus: http.StatusOK,
+			checkQuote: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var q rates.LockedQuote
+				if err := json.NewDecoder(rec.Body).Decode(&q); err != nil {
+					t.Fatalf("failed to decode quote: %v", err)
+				}
+				if q.ID == "" {
+					t.Errorf("expected non-empty quote ID")
+				}
+				if q.RatePlanCode != rates.RatePlanRoomOnly {
+					t.Errorf("expected room_only, got %s", q.RatePlanCode)
+				}
+				if q.Pricing.RoomSubtotalMinor <= 0 {
+					t.Errorf("expected room subtotal > 0, got %d", q.Pricing.RoomSubtotalMinor)
+				}
+				if q.Pricing.TaxMinor != (q.Pricing.RoomSubtotalMinor*10)/100 {
+					t.Errorf("expected tax = 10%% of subtotal, got %d", q.Pricing.TaxMinor)
+				}
+			},
+		},
+		{
+			name: "happy path bed and breakfast with OCTOBREAK promo",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"rate_plan_code": "bed_and_breakfast",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2,
+				"promo_code": "OCTOBREAK"
+			}`,
+			wantStatus: http.StatusOK,
+			checkQuote: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var q rates.LockedQuote
+				if err := json.NewDecoder(rec.Body).Decode(&q); err != nil {
+					t.Fatalf("failed to decode quote: %v", err)
+				}
+				if q.CancellationCode != rates.PolicyNonRefundable {
+					t.Errorf("promo quote should be non_refundable, got %s", q.CancellationCode)
+				}
+				if q.Pricing.DiscountMinor <= 0 {
+					t.Errorf("expected discount > 0, got %d", q.Pricing.DiscountMinor)
+				}
+				if q.Pricing.BreakfastChargeMinor != 400_000 {
+					t.Errorf("expected breakfast charge 400_000, got %d", q.Pricing.BreakfastChargeMinor)
+				}
+			},
+		},
+		{
+			name: "invalid rate plan",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"rate_plan_code": "all_inclusive_vip",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12"
+			}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_RATE_PLAN",
+		},
+		{
+			name: "invalid promo code",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"promo_code": "INVALID_PROMO_XYZ"
+			}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_PROMO_CODE",
+		},
+		{
+			name: "unknown room type",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-999999999999",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12"
+			}`,
+			wantStatus: http.StatusNotFound,
+			wantCode:   "ROOM_NOT_FOUND",
+		},
+		{
+			name: "invalid date format",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "invalid-date",
+				"check_out": "2026-10-12"
+			}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_DATE_FORMAT",
+		},
+		{
+			name: "check out before check in",
+			body: `{
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-12",
+				"check_out": "2026-10-10"
+			}`,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_DATE_FORMAT",
+		},
+		{
+			name:       "bad json body",
+			body:       `{ invalid json `,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_JSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				var prob ProblemDetails
+				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				if prob.Code != tt.wantCode {
+					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+				}
+			}
+			if tt.checkQuote != nil {
+				tt.checkQuote(t, rec)
+			}
+		})
+	}
+}
+
+func TestCreateBooking_WithQuoteAndConsent(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	// Buat quote valid untuk pengujian
+	qReq := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(`{
+		"room_type_id": "01900000-0000-7000-8000-000000000001",
+		"rate_plan_code": "bed_and_breakfast",
+		"check_in": "2026-10-10",
+		"check_out": "2026-10-12",
+		"num_rooms": 1,
+		"num_guests": 2
+	}`))
+	qReq.Header.Set("Content-Type", "application/json")
+	qRec := httptest.NewRecorder()
+	router.ServeHTTP(qRec, qReq)
+	if qRec.Code != http.StatusOK {
+		t.Fatalf("setup quote failed: %s", qRec.Body.String())
+	}
+	var validQuote rates.LockedQuote
+	_ = json.NewDecoder(qRec.Body).Decode(&validQuote)
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name: "fails when consent not provided",
+			body: fmt.Sprintf(`{
+				"quote_id": "%s",
+				"terms_accepted": false,
+				"privacy_accepted": true,
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2,
+				"guest_name": "Budi Santoso",
+				"guest_email": "budi@example.com"
+			}`, validQuote.ID),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "CONSENT_REQUIRED",
+		},
+		{
+			name: "fails when quote expired or not found",
+			body: `{
+				"quote_id": "01900000-0000-7000-8000-nonexistent",
+				"terms_accepted": true,
+				"privacy_accepted": true,
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2,
+				"guest_name": "Budi Santoso",
+				"guest_email": "budi@example.com"
+			}`,
+			wantStatus: http.StatusGone,
+			wantCode:   "QUOTE_EXPIRED",
+		},
+		{
+			name: "fails when booking params mismatch quote",
+			body: fmt.Sprintf(`{
+				"quote_id": "%s",
+				"terms_accepted": true,
+				"privacy_accepted": true,
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 2,
+				"num_guests": 2,
+				"guest_name": "Budi Santoso",
+				"guest_email": "budi@example.com"
+			}`, validQuote.ID),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "QUOTE_MISMATCH",
+		},
+		{
+			name: "happy path booking with quote and consent",
+			body: fmt.Sprintf(`{
+				"quote_id": "%s",
+				"terms_accepted": true,
+				"privacy_accepted": true,
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2,
+				"guest_name": "Budi Santoso",
+				"guest_email": "budi@example.com"
+			}`, validQuote.ID),
+			wantStatus: http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantCode != "" {
+				var prob ProblemDetails
+				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				if prob.Code != tt.wantCode {
+					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
+				}
+			}
+		})
+	}
+}
+
+func TestCancelBooking_PolicyEnforcement(t *testing.T) {
+	router, txMock := setupTestRouter()
+	now := time.Now()
+
+	// Skenario 1: Confirmed booking non_refundable
+	txMock.booking = booking.Booking{
+		ID:                 "bk-non-ref",
+		Status:             booking.StatusConfirmed,
+		RoomTypeID:         "std",
+		CheckIn:            now.Add(72 * time.Hour),
+		CheckOut:           now.Add(96 * time.Hour),
+		NumRooms:           1,
+		GuestToken:         "gst_non_ref",
+		CancellationPolicy: rates.PolicyNonRefundable,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-non-ref/cancel", nil)
+	req.Header.Set("X-Guest-Token", "gst_non_ref")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for non_refundable cancel, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	var prob ProblemDetails
+	_ = json.NewDecoder(rec.Body).Decode(&prob)
+	if prob.Code != "NON_REFUNDABLE_BOOKING" {
+		t.Errorf("expected NON_REFUNDABLE_BOOKING, got %s", prob.Code)
+	}
+
+	// Skenario 2: Confirmed booking flexible_48h tapi sudah melewati deadline
+	txMock.booking = booking.Booking{
+		ID:                 "bk-past-deadline",
+		Status:             booking.StatusConfirmed,
+		RoomTypeID:         "std",
+		CheckIn:            now.Add(24 * time.Hour), // Kurang dari 48 jam
+		CheckOut:           now.Add(48 * time.Hour),
+		NumRooms:           1,
+		GuestToken:         "gst_past_deadline",
+		CancellationPolicy: rates.PolicyFlexible48h,
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-past-deadline/cancel", nil)
+	req2.Header.Set("X-Guest-Token", "gst_past_deadline")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for deadline exceeded cancel, got %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+	var prob2 ProblemDetails
+	_ = json.NewDecoder(rec2.Body).Decode(&prob2)
+	if prob2.Code != "CANCELLATION_DEADLINE_EXCEEDED" {
+		t.Errorf("expected CANCELLATION_DEADLINE_EXCEEDED, got %s", prob2.Code)
+	}
+
+	// Skenario 3: Pending booking dengan non_refundable policy -> hold release diperbolehkan
+	txMock.booking = booking.Booking{
+		ID:                 "bk-pending-non-ref",
+		Status:             booking.StatusPending,
+		RoomTypeID:         "std",
+		CheckIn:            now.Add(72 * time.Hour),
+		CheckOut:           now.Add(96 * time.Hour),
+		NumRooms:           1,
+		GuestToken:         "gst_pending_release",
+		CancellationPolicy: rates.PolicyNonRefundable,
+	}
+
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-pending-non-ref/cancel", nil)
+	req3.Header.Set("X-Guest-Token", "gst_pending_release")
+	rec3 := httptest.NewRecorder()
+	router.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("expected 200 for pending hold release, got %d (body: %s)", rec3.Code, rec3.Body.String())
 	}
 }

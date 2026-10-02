@@ -28,6 +28,8 @@ type Deps struct {
 	BookingSvc    *booking.Service
 	InvStore      inventory.AvailabilityStore
 	RateSvc       rates.RateProvider
+	RateEngine    *rates.Engine
+	QuoteStore    rates.QuoteStore
 	CatalogStore  catalog.Store
 	Enqueuer      *workers.Enqueuer
 	ReadyCheck    func(ctx context.Context) error
@@ -43,6 +45,15 @@ type Deps struct {
 func NewRouter(d Deps) http.Handler {
 	if d.CatalogStore == nil {
 		d.CatalogStore = catalog.NewMemoryStore(catalog.DefaultVariants())
+	}
+	if d.RateSvc == nil && d.RateEngine != nil {
+		d.RateSvc = d.RateEngine
+	}
+	if d.QuoteStore == nil && d.RateEngine != nil {
+		d.QuoteStore = d.RateEngine.QuoteStore()
+	}
+	if d.BookingSvc != nil && d.QuoteStore != nil {
+		d.BookingSvc.SetQuoteStore(d.QuoteStore)
 	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -68,6 +79,7 @@ func NewRouter(d Deps) http.Handler {
 		api.Delete("/api/v1/catalog/rooms/{id}", deleteCatalogRoom(d))
 		api.Get("/api/v1/search", searchRooms(d))
 		api.Get("/api/v1/availability", getAvailability(d))
+		api.Post("/api/v1/quotes", calculateQuote(d))
 		api.Post("/api/v1/bookings", createBooking(d))
 		api.Get("/api/v1/bookings/{id}", getBooking(d))
 		api.Post("/api/v1/bookings/{id}/cancel", cancelBooking(d))
@@ -423,16 +435,75 @@ func getAvailability(d Deps) http.HandlerFunc {
 	}
 }
 
+// POST /api/v1/quotes
+func calculateQuote(d Deps) http.HandlerFunc {
+	type req struct {
+		RoomTypeID   string `json:"room_type_id"`
+		RatePlanCode string `json:"rate_plan_code"`
+		CheckIn      string `json:"check_in"`
+		CheckOut     string `json:"check_out"`
+		NumRooms     int    `json:"num_rooms"`
+		NumGuests    int    `json:"num_guests"`
+		PromoCode    string `json:"promo_code"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
+			return
+		}
+		from, err1 := parseDate(in.CheckIn)
+		to, err2 := parseDate(in.CheckOut)
+		if in.RoomTypeID == "" || err1 != nil || err2 != nil || !from.Before(to) {
+			httpErrorCode(w, http.StatusBadRequest, "room_type_id, check_in, check_out (check_in < check_out) wajib valid", "INVALID_DATE_FORMAT")
+			return
+		}
+		if d.RateEngine == nil {
+			httpErrorCode(w, http.StatusInternalServerError, "rate engine not configured", "INTERNAL_ERROR")
+			return
+		}
+		q, err := d.RateEngine.CalculateLockedQuote(r.Context(), rates.QuoteRequest{
+			RoomTypeID:   in.RoomTypeID,
+			RatePlanCode: in.RatePlanCode,
+			CheckIn:      from,
+			CheckOut:     to,
+			NumRooms:     in.NumRooms,
+			NumGuests:    in.NumGuests,
+			PromoCode:    in.PromoCode,
+		})
+		if errors.Is(err, rates.ErrInvalidRatePlan) {
+			httpErrorCode(w, http.StatusBadRequest, "kode rate plan tidak valid", "INVALID_RATE_PLAN")
+			return
+		}
+		if errors.Is(err, rates.ErrInvalidPromoCode) {
+			httpErrorCode(w, http.StatusBadRequest, "kode promo tidak valid atau kedaluwarsa", "INVALID_PROMO_CODE")
+			return
+		}
+		if errors.Is(err, rates.ErrUnknownRoomType) {
+			httpErrorCode(w, http.StatusNotFound, "tipe kamar tidak ditemukan", "ROOM_NOT_FOUND")
+			return
+		}
+		if err != nil {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
+			return
+		}
+		writeJSON(w, http.StatusOK, q)
+	}
+}
+
 // POST /api/v1/bookings
 func createBooking(d Deps) http.HandlerFunc {
 	type req struct {
-		RoomTypeID string `json:"room_type_id"`
-		CheckIn    string `json:"check_in"`
-		CheckOut   string `json:"check_out"`
-		NumRooms   int    `json:"num_rooms"`
-		NumGuests  int    `json:"num_guests"`
-		GuestName  string `json:"guest_name"`
-		GuestEmail string `json:"guest_email"`
+		QuoteID         string `json:"quote_id"`
+		TermsAccepted   bool   `json:"terms_accepted"`
+		PrivacyAccepted bool   `json:"privacy_accepted"`
+		RoomTypeID      string `json:"room_type_id"`
+		CheckIn         string `json:"check_in"`
+		CheckOut        string `json:"check_out"`
+		NumRooms        int    `json:"num_rooms"`
+		NumGuests       int    `json:"num_guests"`
+		GuestName       string `json:"guest_name"`
+		GuestEmail      string `json:"guest_email"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in req
@@ -447,14 +518,33 @@ func createBooking(d Deps) http.HandlerFunc {
 			return
 		}
 		b, charge, err := d.BookingSvc.Create(r.Context(), booking.CreateInput{
-			RoomTypeID: in.RoomTypeID,
-			CheckIn:    from,
-			CheckOut:   to,
-			NumRooms:   in.NumRooms,
-			NumGuests:  in.NumGuests,
-			GuestName:  in.GuestName,
-			GuestEmail: in.GuestEmail,
+			QuoteID:         in.QuoteID,
+			TermsAccepted:   in.TermsAccepted,
+			PrivacyAccepted: in.PrivacyAccepted,
+			RoomTypeID:      in.RoomTypeID,
+			CheckIn:         from,
+			CheckOut:        to,
+			NumRooms:        in.NumRooms,
+			NumGuests:       in.NumGuests,
+			GuestName:       in.GuestName,
+			GuestEmail:      in.GuestEmail,
 		})
+		if errors.Is(err, booking.ErrConsentRequired) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "CONSENT_REQUIRED")
+			return
+		}
+		if errors.Is(err, booking.ErrQuoteRequired) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "QUOTE_REQUIRED")
+			return
+		}
+		if errors.Is(err, booking.ErrQuoteExpired) {
+			httpErrorCode(w, http.StatusGone, err.Error(), "QUOTE_EXPIRED")
+			return
+		}
+		if errors.Is(err, booking.ErrQuoteMismatch) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "QUOTE_MISMATCH")
+			return
+		}
 		if errors.Is(err, booking.ErrInvalidDateRange) {
 			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_DATE_RANGE")
 			return
@@ -558,6 +648,14 @@ func cancelBooking(d Deps) http.HandlerFunc {
 		}
 
 		if err := d.BookingSvc.Cancel(r.Context(), id); err != nil {
+			if errors.Is(err, booking.ErrNonRefundable) {
+				httpErrorCode(w, http.StatusConflict, "reservasi non-refundable tidak dapat dibatalkan oleh tamu", "NON_REFUNDABLE_BOOKING")
+				return
+			}
+			if errors.Is(err, booking.ErrCancellationDeadlineExceeded) {
+				httpErrorCode(w, http.StatusConflict, "batas waktu pembatalan gratis 48 jam sebelum check-in telah terlewati", "CANCELLATION_DEADLINE_EXCEEDED")
+				return
+			}
 			if errors.Is(err, booking.ErrIllegalTransition) {
 				httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
 				return

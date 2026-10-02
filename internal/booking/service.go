@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -67,13 +68,16 @@ type ChargeResult struct {
 
 // CreateInput adalah parameter use case Create.
 type CreateInput struct {
-	RoomTypeID string    `json:"room_type_id"`
-	CheckIn    time.Time `json:"check_in"`  // YYYY-MM-DD
-	CheckOut   time.Time `json:"check_out"` // YYYY-MM-DD
-	NumRooms   int       `json:"num_rooms"`
-	NumGuests  int       `json:"num_guests"`
-	GuestName  string    `json:"guest_name"`
-	GuestEmail string    `json:"guest_email"`
+	QuoteID         string    `json:"quote_id,omitempty"`
+	RoomTypeID      string    `json:"room_type_id"`
+	CheckIn         time.Time `json:"check_in"`  // YYYY-MM-DD
+	CheckOut        time.Time `json:"check_out"` // YYYY-MM-DD
+	NumRooms        int       `json:"num_rooms"`
+	NumGuests       int       `json:"num_guests"`
+	GuestName       string    `json:"guest_name"`
+	GuestEmail      string    `json:"guest_email"`
+	TermsAccepted   bool      `json:"terms_accepted"`
+	PrivacyAccepted bool      `json:"privacy_accepted"`
 }
 
 // Service adalah use case inti booking.
@@ -81,6 +85,7 @@ type Service struct {
 	tx          TxRunner // transaksi lintas modul (booking + inventory + outbox)
 	inv         inventory.AvailabilityStore
 	rates       rates.RateProvider
+	quoteStore  rates.QuoteStore
 	payment     PaymentGateway
 	notify      Notifier
 	reader      Reader
@@ -108,6 +113,11 @@ func NewService(tx TxRunner, inv inventory.AvailabilityStore, r rates.RateProvid
 		holdTimeout: holdTimeout,
 		log:         log,
 	}
+}
+
+// SetQuoteStore menyematkan quote repository untuk penguncian harga 15 menit (BE-G06).
+func (s *Service) SetQuoteStore(qs rates.QuoteStore) {
+	s.quoteStore = qs
 }
 
 func (s *Service) HoldTimeout() time.Duration { return s.holdTimeout }
@@ -147,40 +157,104 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		return Booking{}, ChargeResult{}, ErrInvalidGuestInfo
 	}
 
-	// 1. Pre-flight check (tanpa lock) untuk fail-fast + hitung harga.
-	avail, err := s.inv.GetByDate(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
-	if err != nil {
-		return Booking{}, ChargeResult{}, fmt.Errorf("booking: preflight: %w", err)
-	}
-	if err := inventory.Check(avail, in.CheckIn, in.CheckOut, in.NumRooms); err != nil {
-		return Booking{}, ChargeResult{}, err
-	}
-	quotes, err := s.rates.Quote(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
-	if err != nil {
-		return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote: %w", err)
-	}
+	// 1. Quote locking & Terms Consent validation (BE-G04, BE-G05, BE-G06)
+	var quotes []rates.Quote
 	var total int64
-	for _, q := range quotes {
-		total += q.RateMinor * int64(in.NumRooms)
+	var lockedQuote rates.LockedQuote
+
+	if in.QuoteID != "" {
+		if !in.TermsAccepted || !in.PrivacyAccepted {
+			return Booking{}, ChargeResult{}, ErrConsentRequired
+		}
+		if s.quoteStore == nil {
+			return Booking{}, ChargeResult{}, errors.New("booking: quote store not configured")
+		}
+		var err error
+		lockedQuote, err = s.quoteStore.GetQuote(ctx, in.QuoteID)
+		if err != nil {
+			if errors.Is(err, rates.ErrQuoteNotFound) || errors.Is(err, rates.ErrQuoteExpired) {
+				return Booking{}, ChargeResult{}, ErrQuoteExpired
+			}
+			return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote lookup: %w", err)
+		}
+		// Match parameters
+		if lockedQuote.RoomTypeID != in.RoomTypeID ||
+			!lockedQuote.CheckIn.Equal(in.CheckIn) ||
+			!lockedQuote.CheckOut.Equal(in.CheckOut) ||
+			lockedQuote.NumRooms != in.NumRooms ||
+			lockedQuote.NumGuests != in.NumGuests {
+			return Booking{}, ChargeResult{}, ErrQuoteMismatch
+		}
+		quotes = lockedQuote.NightlyRates
+		total = lockedQuote.Pricing.TotalPriceMinor
+	}
+
+	// 2. Pre-flight check (tanpa lock) untuk fail-fast
+	if s.inv != nil {
+		avail, err := s.inv.GetByDate(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
+		if err != nil {
+			return Booking{}, ChargeResult{}, fmt.Errorf("booking: preflight: %w", err)
+		}
+		if err := inventory.Check(avail, in.CheckIn, in.CheckOut, in.NumRooms); err != nil {
+			return Booking{}, ChargeResult{}, err
+		}
+	}
+
+	// 3. Rate fallback jika tanpa quote ID
+	if in.QuoteID == "" {
+		if s.rates != nil {
+			var err error
+			quotes, err = s.rates.Quote(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
+			if err != nil {
+				return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote: %w", err)
+			}
+			for _, q := range quotes {
+				total += q.RateMinor * int64(in.NumRooms)
+			}
+		}
 	}
 
 	b := Booking{
-		RoomTypeID:      in.RoomTypeID,
-		CheckIn:         in.CheckIn,
-		CheckOut:        in.CheckOut,
-		NumRooms:        in.NumRooms,
-		NumGuests:       in.NumGuests,
-		Status:          StatusPending,
-		TotalPriceMinor: total,
-		Currency:        "IDR",
-		GuestName:       in.GuestName,
-		GuestEmail:      in.GuestEmail,
-		GuestToken:      generateGuestToken(),
-		CreatedAt:       time.Now().UTC(),
+		RoomTypeID: in.RoomTypeID,
+		CheckIn:    in.CheckIn,
+		CheckOut:   in.CheckOut,
+		NumRooms:   in.NumRooms,
+		NumGuests:  in.NumGuests,
+		Status:     StatusPending,
+		Currency:   "IDR",
+		GuestName:  in.GuestName,
+		GuestEmail: in.GuestEmail,
+		GuestToken: generateGuestToken(),
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	if in.QuoteID != "" {
+		b.QuoteID = lockedQuote.ID
+		b.RatePlanCode = lockedQuote.RatePlanCode
+		b.CancellationPolicy = lockedQuote.CancellationCode
+		b.CancellationDesc = lockedQuote.CancellationDesc
+		b.RoomSubtotalMinor = lockedQuote.Pricing.RoomSubtotalMinor
+		b.BreakfastChargeMinor = lockedQuote.Pricing.BreakfastChargeMinor
+		b.DiscountMinor = lockedQuote.Pricing.DiscountMinor
+		b.TaxMinor = lockedQuote.Pricing.TaxMinor
+		b.TotalPriceMinor = lockedQuote.Pricing.TotalPriceMinor
+		b.Currency = lockedQuote.Pricing.Currency
+	} else {
+		b.RatePlanCode = rates.RatePlanRoomOnly
+		b.CancellationPolicy = rates.PolicyFlexible48h
+		b.CancellationDesc = "Pembatalan gratis hingga 48 jam sebelum check-in"
+		b.RoomSubtotalMinor = total
+		b.TotalPriceMinor = total
+	}
+
+	if in.TermsAccepted {
+		nowConsent := time.Now().UTC()
+		b.TermsAccepted = true
+		b.TermsAcceptedAt = &nowConsent
 	}
 
 	// 2. Transaksi kritis lokal: lock + decrement + insert + outbox.
-	err = s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
+	txErr := s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
 		if err := tx.LockAndDecrement(ctx, b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms); err != nil {
 			return err
 		}
@@ -198,8 +272,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		})
 		return events.PublishTx(ctx, "booking.created", payload)
 	})
-	if err != nil {
-		return Booking{}, ChargeResult{}, err
+	if txErr != nil {
+		return Booking{}, ChargeResult{}, txErr
 	}
 
 	// 3. Pemanggilan gateway eksternal di luar transaksi agar tidak menahan lock database.
@@ -245,6 +319,22 @@ func (s *Service) Cancel(ctx context.Context, bookingID string) error {
 		if b.Status == StatusCancelled {
 			return nil // idempotent
 		}
+
+		// Penegakan kebijakan pembatalan untuk pesanan confirmed (BE-G08)
+		if b.Status == StatusConfirmed {
+			if b.CancellationPolicy == rates.PolicyNonRefundable {
+				return ErrNonRefundable
+			}
+			if b.CancellationPolicy == rates.PolicyFlexible48h {
+				// Deadline 48 jam sebelum jam 14:00 WIB pada tanggal check-in
+				checkInTime := time.Date(b.CheckIn.Year(), b.CheckIn.Month(), b.CheckIn.Day(), 14, 0, 0, 0, time.UTC)
+				deadline := checkInTime.Add(-48 * time.Hour)
+				if time.Now().After(deadline) {
+					return ErrCancellationDeadlineExceeded
+				}
+			}
+		}
+
 		if err := Transition(b.Status, StatusCancelled); err != nil {
 			return err
 		}

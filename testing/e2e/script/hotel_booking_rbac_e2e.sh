@@ -289,6 +289,89 @@ HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
 assert_status "General Manager can inspect any booking" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
+# Test 9: Locked Quote Generation (BE-G04, BE-G05, BE-G06)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 9. 15-Minute Locked Quote with Promo & Breakdown (BE-G04, BE-G05, BE-G06) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d '{
+        "room_type_id": "01900000-0000-7000-8000-000000000001",
+        "rate_plan_code": "bed_and_breakfast",
+        "check_in": "2026-10-10",
+        "check_out": "2026-10-12",
+        "num_rooms": 1,
+        "num_guests": 2,
+        "promo_code": "OCTOBREAK"
+    }' \
+    "${BASE_URL}/api/v1/quotes")
+assert_status "Guest generates locked quote with Bed & Breakfast and OCTOBREAK promo" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+LOCKED_QUOTE_ID=$(grep -o '"quote_id":"[^"]*' /tmp/e2e_res.json | cut -d'"' -f4 || echo "")
+echo -e "       Locked Quote ID: ${LOCKED_QUOTE_ID}"
+
+# ------------------------------------------------------------------------------
+# Test 10: Consent Required Validation (BE-G19)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 10. Consent Required Validation (BE-G19) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"quote_id\": \"${LOCKED_QUOTE_ID}\",
+        \"terms_accepted\": false,
+        \"privacy_accepted\": true,
+        \"room_type_id\": \"01900000-0000-7000-8000-000000000001\",
+        \"check_in\": \"2026-10-10\",
+        \"check_out\": \"2026-10-12\",
+        \"num_rooms\": 1,
+        \"num_guests\": 2,
+        \"guest_name\": \"Dewi Lestari\",
+        \"guest_email\": \"dewi@example.com\"
+    }" \
+    "${BASE_URL}/api/v1/bookings")
+assert_status "Booking without consent rejected with 400 CONSENT_REQUIRED" 400 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 11: Booking Creation with Valid Quote & Consent (BE-G06, BE-G19)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 11. Booking Creation with Valid Quote Snapshot (BE-G06, BE-G19) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"quote_id\": \"${LOCKED_QUOTE_ID}\",
+        \"terms_accepted\": true,
+        \"privacy_accepted\": true,
+        \"room_type_id\": \"01900000-0000-7000-8000-000000000001\",
+        \"check_in\": \"2026-10-10\",
+        \"check_out\": \"2026-10-12\",
+        \"num_rooms\": 1,
+        \"num_guests\": 2,
+        \"guest_name\": \"Dewi Lestari\",
+        \"guest_email\": \"dewi@example.com\"
+    }" \
+    "${BASE_URL}/api/v1/bookings")
+assert_status "Booking created with verified locked quote snapshot" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+PROMO_BOOKING_ID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | head -n 1 | cut -d'"' -f4 || echo "")
+PROMO_GUEST_TOKEN=$(grep -o '"guest_access_token":"[^"]*' /tmp/e2e_res.json | cut -d'"' -f4 || echo "")
+echo -e "       Promo Booking ID: ${PROMO_BOOKING_ID}"
+
+# ------------------------------------------------------------------------------
+# Test 12: Cancellation Policy Enforcement (BE-G08)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 12. Non-Refundable Cancellation Rejection (BE-G08) <<${NC}"
+# Simulasikan pembayaran sukses terlebih dahulu
+curl -s -o /dev/null -X POST "${BASE_URL}/fake-pay/ref-promo?booking_id=${PROMO_BOOKING_ID}"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "X-Guest-Token: ${PROMO_GUEST_TOKEN}" \
+    "${BASE_URL}/api/v1/bookings/${PROMO_BOOKING_ID}/cancel")
+assert_status "Cancellation of confirmed non-refundable booking rejected with 409 Conflict" 409 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------------------
 echo -e "\n${BLUE}=================================================================${NC}"

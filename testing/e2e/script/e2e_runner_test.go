@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -80,6 +81,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "guest", "/api/v1/catalog/rooms", "GET"},
 		{"p", "guest", "/api/v1/catalog/rooms/:id", "GET"},
 		{"p", "guest", "/api/v1/search", "GET"},
+		{"p", "guest", "/api/v1/quotes", "POST"},
 		{"p", "guest", "/api/v1/bookings", "POST"},
 		{"p", "guest", "/api/v1/bookings/:id", "GET"},
 		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},
@@ -145,10 +147,18 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		nil,
 	)
 
+	rateEngine := rates.NewEngine(map[string]int64{
+		"01900000-0000-7000-8000-000000000001": 550_000,
+	}, 1.25)
+	quoteStore := rateEngine.QuoteStore()
+	bkSvc.SetQuoteStore(quoteStore)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:    bkSvc,
 		InvStore:      inv,
 		RateSvc:       ratesSvc,
+		RateEngine:    rateEngine,
+		QuoteStore:    quoteStore,
 		Enforcer:      enforcer,
 		IsDevelopment: true,
 		ReadyCheck:    func(ctx context.Context) error { return nil },
@@ -638,6 +648,134 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if res.StatusCode != http.StatusNotFound {
 			t.Errorf("production fake-pay status = %d, want 404", res.StatusCode)
+		}
+	})
+
+	checkIn := "2026-10-10"
+	checkOut := "2026-10-12"
+	var lockedPromoQuote rates.LockedQuote
+
+	// 14. BE-G04, BE-G05, BE-G06: Guest requests locked quote with BB and OCTOBREAK promo
+	t.Run("E2E-14: Guest requests locked quote with BB and OCTOBREAK promo", func(t *testing.T) {
+		payload := `{
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"rate_plan_code": "bed_and_breakfast",
+			"check_in": "` + checkIn + `",
+			"check_out": "` + checkOut + `",
+			"num_rooms": 1,
+			"num_guests": 2,
+			"promo_code": "OCTOBREAK"
+		}`
+		res, err := client.Post(srv.URL+"/api/v1/quotes", "application/json", bytes.NewBufferString(payload))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", res.StatusCode)
+		}
+		if err := json.NewDecoder(res.Body).Decode(&lockedPromoQuote); err != nil {
+			t.Fatalf("decode quote failed: %v", err)
+		}
+		if lockedPromoQuote.CancellationCode != rates.PolicyNonRefundable {
+			t.Errorf("expected non_refundable policy for promo quote, got %s", lockedPromoQuote.CancellationCode)
+		}
+		if lockedPromoQuote.Pricing.DiscountMinor <= 0 {
+			t.Errorf("expected discount > 0, got %d", lockedPromoQuote.Pricing.DiscountMinor)
+		}
+		if lockedPromoQuote.Pricing.BreakfastChargeMinor != 400_000 {
+			t.Errorf("expected breakfast charge 400_000, got %d", lockedPromoQuote.Pricing.BreakfastChargeMinor)
+		}
+	})
+
+	// 15. BE-G19: Guest attempts to book with quote but omits consent (400 CONSENT_REQUIRED)
+	t.Run("E2E-15: Guest attempts to book without consent (400 CONSENT_REQUIRED)", func(t *testing.T) {
+		payload := fmt.Sprintf(`{
+			"quote_id": "%s",
+			"terms_accepted": false,
+			"privacy_accepted": true,
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "%s",
+			"check_out": "%s",
+			"num_rooms": 1,
+			"num_guests": 2,
+			"guest_name": "Siti Rahma",
+			"guest_email": "siti@example.com"
+		}`, lockedPromoQuote.ID, checkIn, checkOut)
+		res, err := client.Post(srv.URL+"/api/v1/bookings", "application/json", bytes.NewBufferString(payload))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", res.StatusCode)
+		}
+		var pd api.ProblemDetails
+		_ = json.NewDecoder(res.Body).Decode(&pd)
+		if pd.Code != "CONSENT_REQUIRED" {
+			t.Errorf("expected code CONSENT_REQUIRED, got %s", pd.Code)
+		}
+	})
+
+	var promoBookingID string
+	var promoGuestToken string
+
+	// 16. BE-G06, BE-G19: Guest creates booking with locked quote snapshot and consent (201 Created)
+	t.Run("E2E-16: Guest creates booking with locked quote snapshot and consent", func(t *testing.T) {
+		payload := fmt.Sprintf(`{
+			"quote_id": "%s",
+			"terms_accepted": true,
+			"privacy_accepted": true,
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "%s",
+			"check_out": "%s",
+			"num_rooms": 1,
+			"num_guests": 2,
+			"guest_name": "Siti Rahma",
+			"guest_email": "siti@example.com"
+		}`, lockedPromoQuote.ID, checkIn, checkOut)
+		res, err := client.Post(srv.URL+"/api/v1/bookings", "application/json", bytes.NewBufferString(payload))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", res.StatusCode)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		bMap := body["booking"].(map[string]any)
+		promoBookingID = bMap["id"].(string)
+		promoGuestToken = body["guest_access_token"].(string)
+		if int64(bMap["total_price_minor"].(float64)) != lockedPromoQuote.Pricing.TotalPriceMinor {
+			t.Errorf("locked price mismatch: got %v, want %d", bMap["total_price_minor"], lockedPromoQuote.Pricing.TotalPriceMinor)
+		}
+	})
+
+	// 17. BE-G08: Confirmed promo booking cannot be cancelled by guest (409 NON_REFUNDABLE_BOOKING)
+	t.Run("E2E-17: Confirmed promo booking cannot be cancelled by guest (409 Conflict)", func(t *testing.T) {
+		// Konfirmasi booking promo terlebih dahulu
+		payRes, err := client.Post(srv.URL+"/fake-pay/ref-promo?booking_id="+promoBookingID, "application/json", nil)
+		if err != nil {
+			t.Fatalf("fake-pay failed: %v", err)
+		}
+		if payRes.StatusCode != http.StatusOK {
+			t.Fatalf("fake-pay status = %d, want 200", payRes.StatusCode)
+		}
+
+		// Update status mock booking di tx agar confirmed
+		tx.booking.Status = booking.StatusConfirmed
+
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/"+promoBookingID+"/cancel", nil)
+		req.Header.Set("X-Guest-Token", promoGuestToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("cancel request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 Conflict", res.StatusCode)
+		}
+		var pd api.ProblemDetails
+		_ = json.NewDecoder(res.Body).Decode(&pd)
+		if pd.Code != "NON_REFUNDABLE_BOOKING" {
+			t.Errorf("expected code NON_REFUNDABLE_BOOKING, got %s", pd.Code)
 		}
 	})
 }
