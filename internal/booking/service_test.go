@@ -27,11 +27,12 @@ type fakeTx struct {
 	bookings     map[string]*Booking       // bookingID → booking
 	rooms        map[string][]string       // roomTypeID → daftar nomor kamar
 	byBooking    map[string][]assignment   // bookingID → list assignment
-	byRoom       map[string][]assignment   // roomNumber → daftar assignment
-	events       []string                  // topic yang di-publish
-	failLock     bool
-	failInsert   bool
-	roomNights   map[string][]rates.Quote  // bookingID → quotes
+	byRoom                 map[string][]assignment   // roomNumber → daftar assignment
+	events                 []string                  // topic yang di-publish
+	failLock               bool
+	failInsert             bool
+	transientConflictCount int
+	roomNights             map[string][]rates.Quote  // bookingID → quotes
 }
 
 func date(s string) time.Time {
@@ -111,6 +112,10 @@ func (f *fakeTx) PublishTx(_ context.Context, topic string, _ []byte) error {
 }
 
 func (f *fakeTx) PickAndAssignRooms(_ context.Context, bookingID, roomTypeID string, checkIn, checkOut time.Time, count int) ([]string, error) {
+	if f.transientConflictCount > 0 {
+		f.transientConflictCount--
+		return nil, ErrTransientConflict
+	}
 	candidates := append([]string(nil), f.rooms[roomTypeID]...)
 	sort.Strings(candidates)
 	var assigned []string
@@ -311,6 +316,67 @@ func TestCheckIn_NonOverlapReuseSameRoom(t *testing.T) {
 	}
 	if len(res.RoomNumbers) != 1 || res.RoomNumbers[0] != "101" {
 		t.Errorf("rooms = %v, want [101]", res.RoomNumbers)
+	}
+}
+
+func TestCheckIn_TransientConflictRetry(t *testing.T) {
+	tests := []struct {
+		name              string
+		conflictCount     int
+		expectErr         error
+		expectRoomNumbers []string
+	}{
+		{
+			name:              "Single transient conflict recovers on second attempt",
+			conflictCount:     1,
+			expectErr:         nil,
+			expectRoomNumbers: []string{"101"},
+		},
+		{
+			name:              "Two transient conflicts recover on third attempt",
+			conflictCount:     2,
+			expectErr:         nil,
+			expectRoomNumbers: []string{"101"},
+		},
+		{
+			name:              "Three transient conflicts exhausts 3 attempts and returns ErrNoRoomAvailable",
+			conflictCount:     3,
+			expectErr:         ErrNoRoomAvailable,
+			expectRoomNumbers: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &Booking{
+				ID:         "b-test-retry",
+				RoomTypeID: "std",
+				CheckIn:    date("2026-10-10"),
+				CheckOut:   date("2026-10-12"),
+				NumRooms:   1,
+				Status:     StatusConfirmed,
+			}
+			tx := newFakeTx(
+				map[string]*Booking{"b-test-retry": b},
+				map[string][]string{"std": {"101"}},
+			)
+			tx.transientConflictCount = tc.conflictCount
+			svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-test-retry": b}})
+
+			res, err := svc.CheckIn(context.Background(), "b-test-retry")
+			if tc.expectErr != nil {
+				if !errors.Is(err, tc.expectErr) {
+					t.Fatalf("expected error %v, got %v", tc.expectErr, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if len(res.RoomNumbers) != len(tc.expectRoomNumbers) || res.RoomNumbers[0] != tc.expectRoomNumbers[0] {
+					t.Fatalf("expected rooms %v, got %v", tc.expectRoomNumbers, res.RoomNumbers)
+				}
+			}
+		})
 	}
 }
 

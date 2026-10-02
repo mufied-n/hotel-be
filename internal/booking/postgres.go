@@ -177,21 +177,21 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 			  AND NOT EXISTS (
 				SELECT 1 FROM room_assignments ra
 				WHERE ra.room_number = r.room_number
-				  AND ra.stay_dates && daterange($2, $3, '[)')
+				  AND ra.stay_dates && daterange($2::date, $3::date, '[)')
 			  )
 			ORDER BY r.room_number
 			LIMIT $4
 			FOR UPDATE OF r SKIP LOCKED
 		)
 		INSERT INTO room_assignments (booking_id, room_number, stay_dates)
-		SELECT $5, room_number, daterange($2, $3, '[)')
+		SELECT $5, room_number, daterange($2::date, $3::date, '[)')
 		FROM free_rooms
 		RETURNING room_number`,
 		roomTypeID, checkIn, checkOut, count, bookingID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && (pgErr.Code == "23P01" || pgErr.Code == "40001") { // exclusion_violation or serialization_failure
-			return nil, ErrNoRoomAvailable
+			return nil, ErrTransientConflict
 		}
 		return nil, fmt.Errorf("booking: assign rooms: %w", err)
 	}
@@ -208,7 +208,7 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 	if err := rows.Err(); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && (pgErr.Code == "23P01" || pgErr.Code == "40001") {
-			return nil, ErrNoRoomAvailable
+			return nil, ErrTransientConflict
 		}
 		return nil, fmt.Errorf("booking: assigned rows: %w", err)
 	}

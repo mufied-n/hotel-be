@@ -525,39 +525,57 @@ type CheckInResult struct {
 // database via EXCLUDE USING GIST (desain §13) — bukan oleh kode aplikasi.
 // Mendukung multi-kamar (num_rooms >= 1). Idempotent: booking yang sudah
 // checked_in mengembalikan daftar kamar yang sama.
+// Otomatis melakukan retry hingga 3 kali jika terjadi transient concurrency conflict.
 func (s *Service) CheckIn(ctx context.Context, bookingID string) (CheckInResult, error) {
 	var res CheckInResult
-	err := s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
-		b, err := tx.GetForUpdate(ctx, bookingID)
-		if err != nil {
-			return err
-		}
-		if b.Status == StatusCheckedIn {
-			rooms, err := tx.GetRoomAssignments(ctx, bookingID)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		err := s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
+			b, err := tx.GetForUpdate(ctx, bookingID)
 			if err != nil {
 				return err
 			}
-			res = CheckInResult{BookingID: bookingID, RoomNumbers: rooms, Already: true}
+			if b.Status == StatusCheckedIn {
+				rooms, err := tx.GetRoomAssignments(ctx, bookingID)
+				if err != nil {
+					return err
+				}
+				res = CheckInResult{BookingID: bookingID, RoomNumbers: rooms, Already: true}
+				return nil
+			}
+			if err := Transition(b.Status, StatusCheckedIn); err != nil {
+				return err
+			}
+			rooms, err := tx.PickAndAssignRooms(ctx, bookingID, b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms)
+			if err != nil {
+				return err
+			}
+			if err := tx.UpdateStatus(ctx, bookingID, StatusCheckedIn); err != nil {
+				return err
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"event": "booking.checked_in", "booking_id": bookingID, "room_numbers": rooms,
+			})
+			if err := events.PublishTx(ctx, "booking.checked_in", payload); err != nil {
+				return err
+			}
+			res = CheckInResult{BookingID: bookingID, RoomNumbers: rooms}
 			return nil
-		}
-		if err := Transition(b.Status, StatusCheckedIn); err != nil {
-			return err
-		}
-		rooms, err := tx.PickAndAssignRooms(ctx, bookingID, b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms)
-		if err != nil {
-			return err
-		}
-		if err := tx.UpdateStatus(ctx, bookingID, StatusCheckedIn); err != nil {
-			return err
-		}
-		payload, _ := json.Marshal(map[string]any{
-			"event": "booking.checked_in", "booking_id": bookingID, "room_numbers": rooms,
 		})
-		if err := events.PublishTx(ctx, "booking.checked_in", payload); err != nil {
-			return err
+		if err == nil {
+			return res, nil
 		}
-		res = CheckInResult{BookingID: bookingID, RoomNumbers: rooms}
-		return nil
-	})
-	return res, err
+		if errors.Is(err, ErrTransientConflict) {
+			lastErr = ErrNoRoomAvailable
+			select {
+			case <-ctx.Done():
+				return res, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 5 * time.Millisecond):
+			}
+			continue
+		}
+		return res, err
+	}
+	return res, lastErr
 }
+
