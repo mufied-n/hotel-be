@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev
+      # Postgres 18 async I/O aktif default; io_method di-set eksplisit untuk kejelasan.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command: postgres -c io_method=worker
+    # PG18+ official image: mount di /var/lib/postgresql (bukan .../data)
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # Tanpa binding host: app akses via network internal compose.
+    # (host 5432/6379 sering sudah terpakai di mesin dev)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d booking"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8
+    # AOF WAJIB: melindungi task asynq dari hilang saat restart (desain §6.3).
+    # Tidak ada maxmemory-policy allkeys-lru → default noeviction menjaga task queue.
+    command: valkey-server --appendonly yes --appendfsync everysec
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  migration:
+    build: .
+    entrypoint: ["migrate", "-dir=/migrations", "up"]
+    environment:
+      DATABASE_URL: postgres://postgres:dev@postgres:5432/booking?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      APP_PORT: "8080"
+      DATABASE_URL: postgres://postgres:dev@postgres:5432/booking?sslmode=disable
+      VALKEY_ADDR: valkey:6379
+      HOLD_TIMEOUT: 30m
+      FAKE_PAY_BASE_URL: http://localhost:18080   # agar payment_url bisa dibuka dari host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    ports:
+      - "18080:8080"   # host 8080 sering terpakai; app tetap listen di 8080 internal
+
+  asynqmon:
+    image: hibiken/asynqmon
+    environment:
+      REDIS_ADDR: valkey:6379
+    ports:
+      - "8081:8080"
+    depends_on:
+      - valkey
+
+volumes:
+  pgdata:
+  valkeydata:

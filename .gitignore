@@ -1,0 +1,19 @@
+# Binary
+/server
+/migrate
+/out/
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Env lokal
+.env
+.env.local
+
+# OS/IDE/Tool
+.DS_Store
+.idea/
+.vscode/
+.pi/
