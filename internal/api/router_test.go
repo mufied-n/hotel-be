@@ -331,3 +331,80 @@ func TestNoShow(t *testing.T) {
 		t.Errorf("status = %s, want no_show", tx.booking.Status)
 	}
 }
+
+func TestRouterErrorBranches(t *testing.T) {
+	// Ready check failure (503)
+	failingReadyDeps := Deps{
+		ReadyCheck: func(ctx context.Context) error {
+			return errors.New("db down")
+		},
+	}
+	rReadyFail := NewRouter(failingReadyDeps)
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	rReadyFail.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("ready fail status = %d, want 503", w.Code)
+	}
+
+	h, _ := setupTestRouter()
+
+	errorPaths := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{"check-in not found", http.MethodPost, "/api/v1/bookings/not-found/check-in", "", http.StatusNotFound},
+		{"check-out not found", http.MethodPost, "/api/v1/bookings/not-found/check-out", "", http.StatusNotFound},
+		{"no-show not found", http.MethodPost, "/api/v1/bookings/not-found/no-show", "", http.StatusNotFound},
+		{"cancel not found", http.MethodPost, "/api/v1/bookings/not-found/cancel", "", http.StatusNotFound},
+		{"availability invalid query", http.MethodGet, "/api/v1/availability?room_type_id=", "", http.StatusBadRequest},
+		{"availability invalid dates", http.MethodGet, "/api/v1/availability?room_type_id=1&check_in=2026-10-15&check_out=2026-10-10", "", http.StatusBadRequest},
+		{"create booking bad json", http.MethodPost, "/api/v1/bookings", "{invalid-json", http.StatusBadRequest},
+		{"create booking invalid date format", http.MethodPost, "/api/v1/bookings", `{"room_type_id":"std","check_in":"bad","check_out":"2026-10-12"}`, http.StatusBadRequest},
+	}
+
+	for _, tt := range errorPaths {
+		t.Run(tt.name, func(t *testing.T) {
+			var bodyReader *bytes.Buffer
+			if tt.body != "" {
+				bodyReader = bytes.NewBufferString(tt.body)
+			} else {
+				bodyReader = bytes.NewBuffer(nil)
+			}
+			r := httptest.NewRequest(tt.method, tt.path, bodyReader)
+			rw := httptest.NewRecorder()
+			h.ServeHTTP(rw, r)
+			if rw.Code != tt.wantStatus {
+				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rw.Code, tt.wantStatus, rw.Body.String())
+			}
+		})
+	}
+
+	// Test availability store not found (404)
+	rAvailNotFound := NewRouter(Deps{
+		InvStore: &mockInvStore{err: inventory.ErrNotFound},
+		RateSvc:  &mockRates{},
+	})
+	rReq := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
+	rRec := httptest.NewRecorder()
+	rAvailNotFound.ServeHTTP(rRec, rReq)
+	if rRec.Code != http.StatusNotFound {
+		t.Errorf("avail not found status = %d, want 404", rRec.Code)
+	}
+
+	// Test availability rate provider error (404)
+	now := time.Now()
+	rRateErr := NewRouter(Deps{
+		InvStore: &mockInvStore{avail: []inventory.Availability{{Date: now, AvailableRooms: 5}}},
+		RateSvc:  &mockRates{err: errors.New("rate error")},
+	})
+	rateReq := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
+	rateRec := httptest.NewRecorder()
+	rRateErr.ServeHTTP(rateRec, rateReq)
+	if rateRec.Code != http.StatusNotFound {
+		t.Errorf("rate err status = %d, want 404", rateRec.Code)
+	}
+}

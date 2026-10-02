@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/casbin/casbin/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -28,6 +29,8 @@ type Deps struct {
 	ReadyCheck func(ctx context.Context) error
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
 	FakePay func(w http.ResponseWriter, r *http.Request)
+	// Enforcer untuk evaluasi RBAC Casbin thread-safe.
+	Enforcer *casbin.SyncedEnforcer
 }
 
 // NewRouter merakit seluruh route.
@@ -41,18 +44,25 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", healthz)
 	r.Get("/ready", ready(d))
 
-	// Public API
-	r.Get("/api/v1/availability", getAvailability(d))
-	r.Post("/api/v1/bookings", createBooking(d))
-	r.Get("/api/v1/bookings/{id}", getBooking(d))
-	r.Post("/api/v1/bookings/{id}/cancel", cancelBooking(d))
-	r.Post("/api/v1/bookings/{id}/check-in", checkIn(d))
-	r.Post("/api/v1/bookings/{id}/check-out", checkOut(d))
-	r.Post("/api/v1/bookings/{id}/no-show", noShow(d))
+	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin
+	r.Group(func(api chi.Router) {
+		api.Use(IdentifySubject())
+		if d.Enforcer != nil {
+			api.Use(Authorize(d.Enforcer))
+		}
 
-	// Dev-only: simulasi pembayaran sukses → memicu path webhook yang sama
-	// dengan gateway nyata (idempotent — §12.4).
-	r.Post("/fake-pay/{ref}", d.FakePay)
+		api.Get("/api/v1/availability", getAvailability(d))
+		api.Post("/api/v1/bookings", createBooking(d))
+		api.Get("/api/v1/bookings/{id}", getBooking(d))
+		api.Post("/api/v1/bookings/{id}/cancel", cancelBooking(d))
+		api.Post("/api/v1/bookings/{id}/check-in", checkIn(d))
+		api.Post("/api/v1/bookings/{id}/check-out", checkOut(d))
+		api.Post("/api/v1/bookings/{id}/no-show", noShow(d))
+
+		// Dev-only: simulasi pembayaran sukses → memicu path webhook yang sama
+		// dengan gateway nyata (idempotent — §12.4).
+		api.Post("/fake-pay/{ref}", d.FakePay)
+	})
 
 	return r
 }
@@ -157,8 +167,10 @@ func createBooking(d Deps) http.HandlerFunc {
 			httpError(w, http.StatusInternalServerError, "gagal membuat booking")
 			return
 		}
-		// Jadwalkan release-hold otomatis t+holdTimeout (asynq scheduled task).
-		_ = d.Enqueuer.EnqueueReleaseHold(r.Context(), b.ID, d.BookingSvc.HoldTimeout())
+		// Jadwalkan release-hold otomatis t+holdTimeout jika enqueuer aktif (asynq scheduled task).
+		if d.Enqueuer != nil {
+			_ = d.Enqueuer.EnqueueReleaseHold(r.Context(), b.ID, d.BookingSvc.HoldTimeout())
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"booking":     b,
 			"payment_url": charge.PaymentURL,

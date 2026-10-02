@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
+	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
 )
@@ -173,12 +174,21 @@ func main() {
 		}
 	}()
 
+	// ---- Casbin RBAC Enforcer ----
+	enforcer, err := auth.NewEnforcer(pool, "config/rbac_model.conf")
+	if err != nil {
+		log.Error("casbin.enforcer.init", "err", err)
+	} else {
+		log.Info("casbin.enforcer.ready")
+	}
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc: bkSvc,
 		InvStore:   invStore,
 		RateSvc:    rateEngine,
 		Enqueuer:   enqueuer,
+		Enforcer:   enforcer,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
