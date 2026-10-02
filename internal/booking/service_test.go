@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,9 @@ func date(s string) time.Time {
 }
 
 func newFakeTx(bookings map[string]*Booking, rooms map[string][]string) *fakeTx {
+	if bookings == nil {
+		bookings = map[string]*Booking{}
+	}
 	return &fakeTx{
 		inventory:  map[string]int{},
 		bookings:   bookings,
@@ -73,11 +77,12 @@ func (f *fakeTx) Increment(_ context.Context, roomTypeID string, from, to time.T
 	return nil
 }
 
-func (f *fakeTx) InsertBookingWithHold(_ context.Context, b *Booking, quotes []rates.Quote, _ time.Time) error {
+func (f *fakeTx) InsertBookingWithHold(_ context.Context, b *Booking, quotes []rates.Quote, holdExpiresAt time.Time) error {
 	if f.failInsert {
 		return errors.New("insert failed")
 	}
 	b.ID = "generated-" + b.GuestName
+	b.ExpiresAt = &holdExpiresAt
 	f.bookings[b.ID] = b
 	f.roomNights[b.ID] = quotes
 	return nil
@@ -562,16 +567,18 @@ func TestCheckOut_HappyPath(t *testing.T) {
 }
 
 func TestMarkNoShow_ReleasesInventory(t *testing.T) {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	b := &Booking{
 		ID:         "b1",
 		RoomTypeID: "std",
-		CheckIn:    date("2026-10-10"),
-		CheckOut:   date("2026-10-11"),
+		CheckIn:    today,
+		CheckOut:   today.Add(24 * time.Hour),
 		NumRooms:   1,
 		Status:     StatusConfirmed,
 	}
 	tx := newFakeTx(map[string]*Booking{"b1": b}, nil)
-	tx.inventory["std|2026-10-10"] = 0
+	dateKey := "std|" + today.Format("2006-01-02")
+	tx.inventory[dateKey] = 0
 	svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b1": b}})
 
 	if err := svc.MarkNoShow(context.Background(), "b1"); err != nil {
@@ -580,8 +587,8 @@ func TestMarkNoShow_ReleasesInventory(t *testing.T) {
 	if b.Status != StatusNoShow {
 		t.Errorf("status = %s, want no_show", b.Status)
 	}
-	if tx.inventory["std|2026-10-10"] != 1 {
-		t.Errorf("inventory = %d, want 1 (restored)", tx.inventory["std|2026-10-10"])
+	if tx.inventory[dateKey] != 1 {
+		t.Errorf("inventory = %d, want 1 (restored)", tx.inventory[dateKey])
 	}
 }
 
@@ -882,4 +889,344 @@ func TestBatchC_QuoteLockingAndPolicies(t *testing.T) {
 		}
 	})
 }
+
+func TestBatchD_GuestProfileAndHoldExpiry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Truncate(24 * time.Hour).Add(24 * time.Hour)
+
+	t.Run("GuestPhone E.164 table test", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			phone   string
+			wantErr error
+		}{
+			{name: "empty phone is optional", phone: "", wantErr: nil},
+			{name: "valid Indonesian E.164", phone: "+6281234567890", wantErr: nil},
+			{name: "valid US E.164", phone: "+12025550123", wantErr: nil},
+			{name: "invalid domestic 08 format", phone: "081234567890", wantErr: ErrInvalidPhone},
+			{name: "invalid leading zero country code", phone: "+012345678", wantErr: ErrInvalidPhone},
+			{name: "invalid letters", phone: "+62abc1234", wantErr: ErrInvalidPhone},
+			{name: "invalid spaces and dashes", phone: "+62 812-345-678", wantErr: ErrInvalidPhone},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				tx := newFakeTx(nil, nil)
+				tx.inventory["std|"+now.Format("2006-01-02")] = 5
+				svc := newTestService(tx, &fakeReader{})
+				in := CreateInput{
+					RoomTypeID: "std",
+					CheckIn:    now,
+					CheckOut:   now.Add(24 * time.Hour),
+					NumRooms:   1,
+					NumGuests:  1,
+					GuestName:  "Budi Santoso",
+					GuestEmail: "budi@example.com",
+					GuestPhone: tc.phone,
+				}
+				_, _, err := svc.Create(ctx, in)
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("expected error %v, got %v", tc.wantErr, err)
+					}
+				} else if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("EstimatedArrivalTime HH:MM table test", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			arrival string
+			wantErr error
+		}{
+			{name: "empty arrival is optional", arrival: "", wantErr: nil},
+			{name: "valid standard checkin 14:00", arrival: "14:00", wantErr: nil},
+			{name: "valid midnight 00:00", arrival: "00:00", wantErr: nil},
+			{name: "valid late night 23:59", arrival: "23:59", wantErr: nil},
+			{name: "invalid 24:00", arrival: "24:00", wantErr: ErrInvalidArrivalTime},
+			{name: "invalid minute 14:60", arrival: "14:60", wantErr: ErrInvalidArrivalTime},
+			{name: "invalid single digit hour 9:00", arrival: "9:00", wantErr: ErrInvalidArrivalTime},
+			{name: "invalid 12h format 2:00pm", arrival: "2:00pm", wantErr: ErrInvalidArrivalTime},
+			{name: "invalid no colon 1400", arrival: "1400", wantErr: ErrInvalidArrivalTime},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				tx := newFakeTx(nil, nil)
+				tx.inventory["std|"+now.Format("2006-01-02")] = 5
+				svc := newTestService(tx, &fakeReader{})
+				in := CreateInput{
+					RoomTypeID:           "std",
+					CheckIn:              now,
+					CheckOut:             now.Add(24 * time.Hour),
+					NumRooms:             1,
+					NumGuests:            1,
+					GuestName:            "Budi Santoso",
+					GuestEmail:           "budi@example.com",
+					EstimatedArrivalTime: tc.arrival,
+				}
+				_, _, err := svc.Create(ctx, in)
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("expected error %v, got %v", tc.wantErr, err)
+					}
+				} else if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("SpecialRequests 500-char limit table test", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			requests string
+			wantErr  error
+		}{
+			{name: "empty requests allowed", requests: "", wantErr: nil},
+			{name: "under 500 chars allowed", requests: "High floor, quiet room please.", wantErr: nil},
+			{name: "exactly 500 chars allowed", requests: strings.Repeat("A", 500), wantErr: nil},
+			{name: "501 chars rejected", requests: strings.Repeat("A", 501), wantErr: ErrSpecialRequestTooLong},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				tx := newFakeTx(nil, nil)
+				tx.inventory["std|"+now.Format("2006-01-02")] = 5
+				svc := newTestService(tx, &fakeReader{})
+				in := CreateInput{
+					RoomTypeID:      "std",
+					CheckIn:         now,
+					CheckOut:        now.Add(24 * time.Hour),
+					NumRooms:        1,
+					NumGuests:       1,
+					GuestName:       "Budi Santoso",
+					GuestEmail:      "budi@example.com",
+					SpecialRequests: tc.requests,
+				}
+				_, _, err := svc.Create(ctx, in)
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("expected error %v, got %v", tc.wantErr, err)
+					}
+				} else if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("Hold Expiry on Confirm table test", func(t *testing.T) {
+		pastExpiry := time.Now().Add(-5 * time.Minute)
+		futureExpiry := time.Now().Add(15 * time.Minute)
+
+		tests := []struct {
+			name      string
+			status    Status
+			expiresAt *time.Time
+			wantErr   error
+			wantFinal Status
+		}{
+			{
+				name:      "pending hold expired should be rejected with ErrHoldExpired",
+				status:    StatusPending,
+				expiresAt: &pastExpiry,
+				wantErr:   ErrHoldExpired,
+				wantFinal: StatusPending,
+			},
+			{
+				name:      "pending hold active should transition to confirmed",
+				status:    StatusPending,
+				expiresAt: &futureExpiry,
+				wantErr:   nil,
+				wantFinal: StatusConfirmed,
+			},
+			{
+				name:      "already confirmed booking returns nil idempotently even if expiresAt past",
+				status:    StatusConfirmed,
+				expiresAt: &pastExpiry,
+				wantErr:   nil,
+				wantFinal: StatusConfirmed,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				b := &Booking{
+					ID:        "b-hold-test",
+					Status:    tc.status,
+					ExpiresAt: tc.expiresAt,
+				}
+				tx := newFakeTx(map[string]*Booking{"b-hold-test": b}, nil)
+				svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-hold-test": b}})
+
+				err := svc.Confirm(ctx, "b-hold-test")
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("expected error %v, got %v", tc.wantErr, err)
+					}
+				} else if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if b.Status != tc.wantFinal {
+					t.Errorf("expected final status %v, got %v", tc.wantFinal, b.Status)
+				}
+			})
+		}
+	})
+}
+
+func TestBatchE_OperationalReliabilityAndConcurrency(t *testing.T) {
+	ctx := context.Background()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+
+	t.Run("Early check-out inventory restitution table test", func(t *testing.T) {
+		tests := []struct {
+			name           string
+			checkIn        time.Time
+			checkOut       time.Time
+			initialStatus  Status
+			expectEarly    bool
+			expectRestored int
+		}{
+			{
+				name:           "early checkout restores future nights",
+				checkIn:        today.Add(-24 * time.Hour), // Check-in kemarin
+				checkOut:       today.Add(48 * time.Hour),  // Rencana checkout lusa (masih ada 2 malam ke depan)
+				initialStatus:  StatusCheckedIn,
+				expectEarly:    true,
+				expectRestored: 1, // Untuk malam ini dan besok
+			},
+			{
+				name:           "normal checkout on schedule date does not restitute extra",
+				checkIn:        today.Add(-48 * time.Hour),
+				checkOut:       today, // Checkout tepat hari ini
+				initialStatus:  StatusCheckedIn,
+				expectEarly:    false,
+				expectRestored: 0,
+			},
+			{
+				name:           "already checked out is idempotent",
+				checkIn:        today.Add(-48 * time.Hour),
+				checkOut:       today.Add(-24 * time.Hour),
+				initialStatus:  StatusCheckedOut,
+				expectEarly:    false,
+				expectRestored: 0,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				b := &Booking{
+					ID:         "b-early-co",
+					RoomTypeID: "std",
+					CheckIn:    tc.checkIn,
+					CheckOut:   tc.checkOut,
+					NumRooms:   1,
+					Status:     tc.initialStatus,
+				}
+				tx := newFakeTx(map[string]*Booking{"b-early-co": b}, nil)
+				futureKey := "std|" + today.Format("2006-01-02")
+				tx.inventory[futureKey] = 0
+
+				svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-early-co": b}})
+				err := svc.CheckOut(ctx, "b-early-co")
+				if err != nil {
+					t.Fatalf("unexpected CheckOut error: %v", err)
+				}
+				if b.Status != StatusCheckedOut {
+					t.Errorf("status = %v, want checked_out", b.Status)
+				}
+				if tc.expectEarly {
+					if tx.inventory[futureKey] != tc.expectRestored {
+						t.Errorf("inventory for %s = %d, want %d", futureKey, tx.inventory[futureKey], tc.expectRestored)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("No-show cutoff table test", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			checkIn     time.Time
+			checkOut    time.Time
+			status      Status
+			wantErr     error
+			wantFinal   Status
+			wantRestore bool
+		}{
+			{
+				name:        "cannot mark no-show for future check-in date",
+				checkIn:     today.Add(24 * time.Hour), // Besok
+				checkOut:    today.Add(48 * time.Hour),
+				status:      StatusConfirmed,
+				wantErr:     ErrNoShowTooEarly,
+				wantFinal:   StatusConfirmed,
+				wantRestore: false,
+			},
+			{
+				name:        "can mark no-show on check-in date",
+				checkIn:     today, // Hari ini
+				checkOut:    today.Add(24 * time.Hour),
+				status:      StatusConfirmed,
+				wantErr:     nil,
+				wantFinal:   StatusNoShow,
+				wantRestore: true,
+			},
+			{
+				name:        "can mark no-show for past check-in date",
+				checkIn:     today.Add(-24 * time.Hour), // Kemarin
+				checkOut:    today.Add(24 * time.Hour),
+				status:      StatusConfirmed,
+				wantErr:     nil,
+				wantFinal:   StatusNoShow,
+				wantRestore: true,
+			},
+			{
+				name:        "already no-show returns nil idempotently",
+				checkIn:     today.Add(-24 * time.Hour),
+				checkOut:    today.Add(24 * time.Hour),
+				status:      StatusNoShow,
+				wantErr:     nil,
+				wantFinal:   StatusNoShow,
+				wantRestore: false,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				b := &Booking{
+					ID:         "b-noshow",
+					RoomTypeID: "std",
+					CheckIn:    tc.checkIn,
+					CheckOut:   tc.checkOut,
+					NumRooms:   1,
+					Status:     tc.status,
+				}
+				tx := newFakeTx(map[string]*Booking{"b-noshow": b}, nil)
+				dateKey := "std|" + today.Format("2006-01-02")
+				tx.inventory[dateKey] = 0
+
+				svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-noshow": b}})
+				err := svc.MarkNoShow(ctx, "b-noshow")
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("expected error %v, got %v", tc.wantErr, err)
+					}
+				} else if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if b.Status != tc.wantFinal {
+					t.Errorf("status = %v, want %v", b.Status, tc.wantFinal)
+				}
+			})
+		}
+	})
+}
+
+
 

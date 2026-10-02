@@ -1,6 +1,8 @@
 package workers
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -47,3 +49,36 @@ func TestParsePayloadBookingID(t *testing.T) {
 		t.Error("ParsePayloadBookingID empty booking_id want error")
 	}
 }
+
+func TestOutboxRelay_Run_CanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	relay := &OutboxRelay{
+		BatchSize:   10,
+		MaxAttempts: 3,
+		Log:         slog.Default(),
+	}
+
+	// Should return immediately without hanging or panic
+	relay.Run(ctx, 0)
+}
+
+func TestEnqueuer_Nil(t *testing.T) {
+	var e *Enqueuer
+	if err := e.EnqueueReleaseHold(context.Background(), "bk-1", 1*time.Minute); err != nil {
+		t.Errorf("expected nil error on nil enqueuer, got %v", err)
+	}
+	if err := e.EnqueueNotify(context.Background(), "bk-1"); err != nil {
+		t.Errorf("expected nil error on nil enqueuer, got %v", err)
+	}
+
+	e2 := &Enqueuer{Client: nil}
+	if err := e2.EnqueueReleaseHold(context.Background(), "bk-1", 1*time.Minute); err != nil {
+		t.Errorf("expected nil error on enqueuer with nil client, got %v", err)
+	}
+	if err := e2.EnqueueNotify(context.Background(), "bk-1"); err != nil {
+		t.Errorf("expected nil error on enqueuer with nil client, got %v", err)
+	}
+}
+

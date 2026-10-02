@@ -5,8 +5,11 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,14 +28,15 @@ import (
 
 // Deps adalah dependensi transport layer — semuanya interface domain.
 type Deps struct {
-	BookingSvc    *booking.Service
-	InvStore      inventory.AvailabilityStore
-	RateSvc       rates.RateProvider
-	RateEngine    *rates.Engine
-	QuoteStore    rates.QuoteStore
-	CatalogStore  catalog.Store
-	Enqueuer      *workers.Enqueuer
-	ReadyCheck    func(ctx context.Context) error
+	BookingSvc       *booking.Service
+	InvStore         inventory.AvailabilityStore
+	RateSvc          rates.RateProvider
+	RateEngine       *rates.Engine
+	QuoteStore       rates.QuoteStore
+	CatalogStore     catalog.Store
+	Enqueuer         *workers.Enqueuer
+	IdempotencyStore IdempotencyStore
+	ReadyCheck       func(ctx context.Context) error
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
 	FakePay       func(w http.ResponseWriter, r *http.Request)
 	// Enforcer untuk evaluasi RBAC Casbin thread-safe.
@@ -54,6 +58,9 @@ func NewRouter(d Deps) http.Handler {
 	}
 	if d.BookingSvc != nil && d.QuoteStore != nil {
 		d.BookingSvc.SetQuoteStore(d.QuoteStore)
+	}
+	if d.IdempotencyStore == nil {
+		d.IdempotencyStore = NewMemoryIdempotencyStore()
 	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -494,20 +501,53 @@ func calculateQuote(d Deps) http.HandlerFunc {
 // POST /api/v1/bookings
 func createBooking(d Deps) http.HandlerFunc {
 	type req struct {
-		QuoteID         string `json:"quote_id"`
-		TermsAccepted   bool   `json:"terms_accepted"`
-		PrivacyAccepted bool   `json:"privacy_accepted"`
-		RoomTypeID      string `json:"room_type_id"`
-		CheckIn         string `json:"check_in"`
-		CheckOut        string `json:"check_out"`
-		NumRooms        int    `json:"num_rooms"`
-		NumGuests       int    `json:"num_guests"`
-		GuestName       string `json:"guest_name"`
-		GuestEmail      string `json:"guest_email"`
+		QuoteID              string `json:"quote_id"`
+		TermsAccepted        bool   `json:"terms_accepted"`
+		PrivacyAccepted      bool   `json:"privacy_accepted"`
+		RoomTypeID           string `json:"room_type_id"`
+		CheckIn              string `json:"check_in"`
+		CheckOut             string `json:"check_out"`
+		NumRooms             int    `json:"num_rooms"`
+		NumGuests            int    `json:"num_guests"`
+		GuestName            string `json:"guest_name"`
+		GuestEmail           string `json:"guest_email"`
+		GuestPhone           string `json:"guest_phone,omitempty"`
+		EstimatedArrivalTime string `json:"estimated_arrival_time,omitempty"`
+		SpecialRequests      string `json:"special_requests,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpErrorCode(w, http.StatusBadRequest, "gagal membaca request body", "INVALID_BODY")
+			return
+		}
+
+		idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		var reqHash string
+		if idempotencyKey != "" {
+			h := sha256.Sum256(bodyBytes)
+			reqHash = hex.EncodeToString(h[:])
+			if d.IdempotencyStore != nil {
+				cached, err := d.IdempotencyStore.Get(r.Context(), idempotencyKey)
+				if err == nil {
+					// Key ditemukan
+					if cached.RequestHash == reqHash {
+						// Payload identik: replay response per IETF draft
+						w.Header().Set("Content-Type", "application/json; charset=utf-8")
+						w.Header().Set("Idempotency-Replayed", "true")
+						w.WriteHeader(cached.ResponseCode)
+						_, _ = w.Write([]byte(cached.ResponseBody))
+						return
+					}
+					// Payload berbeda: 409 Conflict per IETF spec
+					httpErrorCode(w, http.StatusConflict, "idempotency key reused with different request payload", "IDEMPOTENCY_CONFLICT")
+					return
+				}
+			}
+		}
+
 		var in req
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		if err := json.Unmarshal(bodyBytes, &in); err != nil {
 			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
 			return
 		}
@@ -518,16 +558,19 @@ func createBooking(d Deps) http.HandlerFunc {
 			return
 		}
 		b, charge, err := d.BookingSvc.Create(r.Context(), booking.CreateInput{
-			QuoteID:         in.QuoteID,
-			TermsAccepted:   in.TermsAccepted,
-			PrivacyAccepted: in.PrivacyAccepted,
-			RoomTypeID:      in.RoomTypeID,
-			CheckIn:         from,
-			CheckOut:        to,
-			NumRooms:        in.NumRooms,
-			NumGuests:       in.NumGuests,
-			GuestName:       in.GuestName,
-			GuestEmail:      in.GuestEmail,
+			QuoteID:              in.QuoteID,
+			TermsAccepted:        in.TermsAccepted,
+			PrivacyAccepted:      in.PrivacyAccepted,
+			RoomTypeID:           in.RoomTypeID,
+			CheckIn:              from,
+			CheckOut:             to,
+			NumRooms:             in.NumRooms,
+			NumGuests:            in.NumGuests,
+			GuestName:            in.GuestName,
+			GuestEmail:           in.GuestEmail,
+			GuestPhone:           in.GuestPhone,
+			EstimatedArrivalTime: in.EstimatedArrivalTime,
+			SpecialRequests:      in.SpecialRequests,
 		})
 		if errors.Is(err, booking.ErrConsentRequired) {
 			httpErrorCode(w, http.StatusBadRequest, err.Error(), "CONSENT_REQUIRED")
@@ -543,6 +586,18 @@ func createBooking(d Deps) http.HandlerFunc {
 		}
 		if errors.Is(err, booking.ErrQuoteMismatch) {
 			httpErrorCode(w, http.StatusBadRequest, err.Error(), "QUOTE_MISMATCH")
+			return
+		}
+		if errors.Is(err, booking.ErrInvalidPhone) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_PHONE")
+			return
+		}
+		if errors.Is(err, booking.ErrInvalidArrivalTime) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_ARRIVAL_TIME")
+			return
+		}
+		if errors.Is(err, booking.ErrSpecialRequestTooLong) {
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "SPECIAL_REQUEST_TOO_LONG")
 			return
 		}
 		if errors.Is(err, booking.ErrInvalidDateRange) {
@@ -585,12 +640,31 @@ func createBooking(d Deps) http.HandlerFunc {
 		if d.Enqueuer != nil {
 			_ = d.Enqueuer.EnqueueReleaseHold(r.Context(), b.ID, d.BookingSvc.HoldTimeout())
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
+
+		respObj := map[string]any{
 			"booking":            b,
 			"guest_access_token": b.GuestToken,
 			"payment_url":        charge.PaymentURL,
 			"reference":          charge.Reference,
-		})
+			"expires_at":         b.ExpiresAt,
+			"server_time":        time.Now().UTC(),
+		}
+		respBytes, _ := json.Marshal(respObj)
+
+		if idempotencyKey != "" && d.IdempotencyStore != nil {
+			_ = d.IdempotencyStore.Save(r.Context(), IdempotencyRecord{
+				Key:          idempotencyKey,
+				RequestHash:  reqHash,
+				ResponseCode: http.StatusCreated,
+				ResponseBody: string(respBytes),
+				CreatedAt:    time.Now().UTC(),
+				ExpiresAt:    time.Now().UTC().Add(24 * time.Hour),
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(respBytes)
 	}
 }
 
@@ -678,16 +752,16 @@ func checkIn(d Deps) http.HandlerFunc {
 		res, err := d.BookingSvc.CheckIn(r.Context(), chi.URLParam(r, "id"))
 		switch {
 		case errors.Is(err, booking.ErrNotFound):
-			httpError(w, http.StatusNotFound, "booking tidak ditemukan")
+			httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 			return
 		case errors.Is(err, booking.ErrIllegalTransition):
-			httpError(w, http.StatusConflict, err.Error())
+			httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
 			return
 		case errors.Is(err, booking.ErrNoRoomAvailable):
-			httpError(w, http.StatusConflict, "tidak ada kamar fisik bebas untuk rentang menginap ini")
+			httpErrorCode(w, http.StatusConflict, "tidak ada kamar fisik bebas untuk rentang menginap ini", "NO_ROOM_AVAILABLE")
 			return
 		case err != nil:
-			httpError(w, http.StatusInternalServerError, "gagal check-in")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal check-in", "INTERNAL_ERROR")
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
@@ -700,14 +774,14 @@ func checkOut(d Deps) http.HandlerFunc {
 		id := chi.URLParam(r, "id")
 		if err := d.BookingSvc.CheckOut(r.Context(), id); err != nil {
 			if errors.Is(err, booking.ErrIllegalTransition) {
-				httpError(w, http.StatusConflict, err.Error())
+				httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
 				return
 			}
 			if errors.Is(err, booking.ErrNotFound) {
-				httpError(w, http.StatusNotFound, "booking tidak ditemukan")
+				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 				return
 			}
-			httpError(w, http.StatusInternalServerError, "gagal check-out")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal check-out", "INTERNAL_ERROR")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "checked_out", "id": id})
@@ -719,15 +793,19 @@ func noShow(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
 		if err := d.BookingSvc.MarkNoShow(r.Context(), id); err != nil {
+			if errors.Is(err, booking.ErrNoShowTooEarly) {
+				httpErrorCode(w, http.StatusBadRequest, "reservasi belum mencapai tanggal check-in untuk ditandai no-show", "NO_SHOW_TOO_EARLY")
+				return
+			}
 			if errors.Is(err, booking.ErrIllegalTransition) {
-				httpError(w, http.StatusConflict, err.Error())
+				httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
 				return
 			}
 			if errors.Is(err, booking.ErrNotFound) {
-				httpError(w, http.StatusNotFound, "booking tidak ditemukan")
+				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 				return
 			}
-			httpError(w, http.StatusInternalServerError, "gagal memproses no-show")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal memproses no-show", "INTERNAL_ERROR")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "no_show", "id": id})

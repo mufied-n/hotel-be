@@ -35,6 +35,10 @@ func main() {
 
 	log := platform.NewLogger()
 	cfg := platform.LoadConfig()
+	if err := cfg.Validate(); err != nil {
+		log.Error("config invalid", "err", err)
+		os.Exit(1)
+	}
 
 	// ---- Infrastruktur ----
 	pool, err := platform.NewDB(ctx, cfg)
@@ -74,6 +78,7 @@ func main() {
 	notifier := notifier.NewLog(log)
 
 	bkSvc := booking.NewService(bkRunner, invStore, rateEngine, payGateway, notifier, bkReader, cfg.HoldTimeout, log)
+	bkSvc.SetPaymentAttemptStore(booking.NewPostgresPaymentAttemptStore(pool))
 
 	// ---- asynq (job queue di Valkey — §5.4, §6) ----
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: cfg.ValkeyAddr})
@@ -197,16 +202,17 @@ func main() {
 
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
-		BookingSvc:    bkSvc,
-		InvStore:      invStore,
-		RateSvc:       rateEngine,
-		RateEngine:    rateEngine,
-		QuoteStore:    rateEngine.QuoteStore(),
-		CatalogStore:  catalogStore,
-		Enqueuer:      enqueuer,
-		Enforcer:      enforcer,
-		IsDevelopment: cfg.IsDevelopment(),
-		RateLimiter:   api.NewRateLimiter(20, 40), // 20 req/s, burst 40
+		BookingSvc:       bkSvc,
+		InvStore:         invStore,
+		RateSvc:          rateEngine,
+		RateEngine:       rateEngine,
+		QuoteStore:       rateEngine.QuoteStore(),
+		CatalogStore:     catalogStore,
+		Enqueuer:         enqueuer,
+		Enforcer:         enforcer,
+		IdempotencyStore: api.NewPostgresIdempotencyStore(pool),
+		IsDevelopment:    cfg.IsDevelopment(),
+		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
@@ -227,6 +233,12 @@ func main() {
 				return
 			}
 			if err := bkSvc.Confirm(r.Context(), bookingID); err != nil {
+				if errors.Is(err, booking.ErrHoldExpired) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
+					return
+				}
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -244,6 +256,7 @@ func main() {
 		log.Info("http.listening", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server", "err", err)
+			stop() // Fail-fast: batalkan context jika HTTP server gagal listen
 		}
 	}()
 
@@ -252,6 +265,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	asynqSrv.Shutdown()
 }
 
 // releaseHold: expiring pending booking → kembalikan inventory + status expired.

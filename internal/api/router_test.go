@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,8 +131,9 @@ type mockTx struct {
 
 func (m *mockTx) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error { return nil }
 func (m *mockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error        { return nil }
-func (m *mockTx) InsertBookingWithHold(_ context.Context, b *booking.Booking, _ []rates.Quote, _ time.Time) error {
+func (m *mockTx) InsertBookingWithHold(_ context.Context, b *booking.Booking, _ []rates.Quote, holdExpiresAt time.Time) error {
 	b.ID = "bk-123"
+	b.ExpiresAt = &holdExpiresAt
 	m.booking = *b
 	return nil
 }
@@ -496,20 +498,46 @@ func TestCheckOut(t *testing.T) {
 }
 
 func TestNoShow(t *testing.T) {
-	h, tx := setupTestRouter()
-	tx.booking.Status = booking.StatusConfirmed
+	t.Run("success on check-in date", func(t *testing.T) {
+		h, tx := setupTestRouter()
+		tx.booking.Status = booking.StatusConfirmed
+		tx.booking.CheckIn = time.Now()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/no-show", nil)
-	req.Header.Set("Authorization", "Bearer receptionist")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/no-show", nil)
+		req.Header.Set("Authorization", "Bearer receptionist")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("no-show status = %d, want 200; body: %s", w.Code, w.Body.String())
-	}
-	if tx.booking.Status != booking.StatusNoShow {
-		t.Errorf("status = %s, want no_show", tx.booking.Status)
-	}
+		if w.Code != http.StatusOK {
+			t.Errorf("no-show status = %d, want 200; body: %s", w.Code, w.Body.String())
+		}
+		if tx.booking.Status != booking.StatusNoShow {
+			t.Errorf("status = %s, want no_show", tx.booking.Status)
+		}
+	})
+
+	t.Run("rejected before check-in date", func(t *testing.T) {
+		h, tx := setupTestRouter()
+		tx.booking.Status = booking.StatusConfirmed
+		tx.booking.CheckIn = time.Now().Add(48 * time.Hour)
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/no-show", nil)
+		req.Header.Set("Authorization", "Bearer receptionist")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("no-show status = %d, want 400; body: %s", w.Code, w.Body.String())
+		}
+		var pd ProblemDetails
+		_ = json.NewDecoder(w.Body).Decode(&pd)
+		if pd.Code != "NO_SHOW_TOO_EARLY" {
+			t.Errorf("expected code NO_SHOW_TOO_EARLY, got %s", pd.Code)
+		}
+		if tx.booking.Status != booking.StatusConfirmed {
+			t.Errorf("expected status confirmed, got %s", tx.booking.Status)
+		}
+	})
 }
 
 func TestDevRouteGating(t *testing.T) {
@@ -1676,3 +1704,223 @@ func TestCancelBooking_PolicyEnforcement(t *testing.T) {
 		t.Fatalf("expected 200 for pending hold release, got %d (body: %s)", rec3.Code, rec3.Body.String())
 	}
 }
+
+func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
+	router, txMock := setupTestRouter()
+
+	t.Run("Idempotency-Key IETF flow", func(t *testing.T) {
+		validPayload := `{
+			"room_type_id": "std",
+			"check_in": "2026-10-10",
+			"check_out": "2026-10-12",
+			"num_rooms": 1,
+			"num_guests": 1,
+			"guest_name": "Budi Santoso",
+			"guest_email": "budi@example.com",
+			"guest_phone": "+6281234567890",
+			"estimated_arrival_time": "14:00",
+			"special_requests": "Quiet room"
+		}`
+
+		// 1. Initial request with Idempotency-Key
+		req1 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(validPayload))
+		req1.Header.Set("Content-Type", "application/json")
+		req1.Header.Set("Idempotency-Key", "ik-sample-12345")
+		rec1 := httptest.NewRecorder()
+		router.ServeHTTP(rec1, req1)
+
+		if rec1.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created on first call, got %d (body: %s)", rec1.Code, rec1.Body.String())
+		}
+		var resp1 map[string]any
+		_ = json.NewDecoder(rec1.Body).Decode(&resp1)
+		if resp1["expires_at"] == nil {
+			t.Errorf("expected expires_at in response, got nil")
+		}
+		if resp1["server_time"] == nil {
+			t.Errorf("expected server_time in response, got nil")
+		}
+
+		// 2. Replayed request with SAME key and SAME payload
+		req2 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(validPayload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Idempotency-Key", "ik-sample-12345")
+		rec2 := httptest.NewRecorder()
+		router.ServeHTTP(rec2, req2)
+
+		if rec2.Code != http.StatusCreated {
+			t.Fatalf("expected 201 Created on replay, got %d", rec2.Code)
+		}
+		if rec2.Header().Get("Idempotency-Replayed") != "true" {
+			t.Errorf("expected Idempotency-Replayed header = true, got %q", rec2.Header().Get("Idempotency-Replayed"))
+		}
+
+		// 3. Conflicting request with SAME key but DIFFERENT payload
+		diffPayload := `{
+			"room_type_id": "std",
+			"check_in": "2026-10-10",
+			"check_out": "2026-10-12",
+			"num_rooms": 2,
+			"num_guests": 2,
+			"guest_name": "Different Guest",
+			"guest_email": "diff@example.com"
+		}`
+		req3 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(diffPayload))
+		req3.Header.Set("Content-Type", "application/json")
+		req3.Header.Set("Idempotency-Key", "ik-sample-12345")
+		rec3 := httptest.NewRecorder()
+		router.ServeHTTP(rec3, req3)
+
+		if rec3.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict for mismatched payload, got %d", rec3.Code)
+		}
+		var prob ProblemDetails
+		_ = json.NewDecoder(rec3.Body).Decode(&prob)
+		if prob.Code != "IDEMPOTENCY_CONFLICT" {
+			t.Errorf("expected IDEMPOTENCY_CONFLICT, got %s", prob.Code)
+		}
+	})
+
+	t.Run("Guest profile validations table test", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			phone      string
+			arrival    string
+			requests   string
+			wantStatus int
+			wantCode   string
+		}{
+			{
+				name:       "invalid phone domestic",
+				phone:      "081234567890",
+				arrival:    "14:00",
+				requests:   "None",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_PHONE",
+			},
+			{
+				name:       "invalid arrival time hour",
+				phone:      "+6281234567890",
+				arrival:    "25:00",
+				requests:   "None",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_ARRIVAL_TIME",
+			},
+			{
+				name:       "special requests exceeds 500 chars",
+				phone:      "+6281234567890",
+				arrival:    "14:00",
+				requests:   strings.Repeat("X", 501),
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "SPECIAL_REQUEST_TOO_LONG",
+			},
+			{
+				name:       "valid profile values",
+				phone:      "+6281234567890",
+				arrival:    "14:00",
+				requests:   "Late check-in requested",
+				wantStatus: http.StatusCreated,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				body, _ := json.Marshal(map[string]any{
+					"room_type_id":           "std",
+					"check_in":               "2026-10-10",
+					"check_out":              "2026-10-12",
+					"num_rooms":              1,
+					"num_guests":             1,
+					"guest_name":             "Budi Santoso",
+					"guest_email":            "budi@example.com",
+					"guest_phone":            tc.phone,
+					"estimated_arrival_time": tc.arrival,
+					"special_requests":       tc.requests,
+				})
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(string(body)))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+				}
+				if tc.wantCode != "" {
+					var prob ProblemDetails
+					_ = json.NewDecoder(rec.Body).Decode(&prob)
+					if prob.Code != tc.wantCode {
+						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("UU PDP Privacy on GET booking", func(t *testing.T) {
+		txMock.booking = booking.Booking{
+			ID:                   "bk-privacy-test",
+			Status:               booking.StatusConfirmed,
+			RoomTypeID:           "std",
+			CheckIn:              time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
+			CheckOut:             time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+			NumRooms:             1,
+			GuestName:            "Siti Rahma",
+			GuestEmail:           "siti@example.com",
+			GuestPhone:           "+6281987654321",
+			EstimatedArrivalTime: "15:00",
+			SpecialRequests:      "Quiet corner",
+			GuestToken:           "gst_siti_secure",
+		}
+
+		// 1. Unauthenticated / guest without token -> PublicDTO returned
+		req1 := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-privacy-test", nil)
+		rec1 := httptest.NewRecorder()
+		router.ServeHTTP(rec1, req1)
+
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec1.Code)
+		}
+		var publicDTO map[string]any
+		_ = json.NewDecoder(rec1.Body).Decode(&publicDTO)
+
+		// Sensitive PII must NOT be present
+		if _, exists := publicDTO["guest_phone"]; exists {
+			t.Errorf("guest_phone MUST NOT be returned in PublicDTO")
+		}
+		if _, exists := publicDTO["guest_email"]; exists {
+			t.Errorf("guest_email MUST NOT be returned in PublicDTO")
+		}
+		if _, exists := publicDTO["guest_name"]; exists {
+			t.Errorf("guest_name MUST NOT be returned in PublicDTO")
+		}
+		if _, exists := publicDTO["guest_token"]; exists {
+			t.Errorf("guest_token MUST NOT be returned in PublicDTO")
+		}
+		// Non-PII booking info is present
+		if publicDTO["estimated_arrival_time"] != "15:00" {
+			t.Errorf("expected estimated_arrival_time = 15:00, got %v", publicDTO["estimated_arrival_time"])
+		}
+		if publicDTO["special_requests"] != "Quiet corner" {
+			t.Errorf("expected special_requests = Quiet corner, got %v", publicDTO["special_requests"])
+		}
+
+		// 2. Guest with valid X-Guest-Token -> full Booking returned
+		req2 := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-privacy-test", nil)
+		req2.Header.Set("X-Guest-Token", "gst_siti_secure")
+		rec2 := httptest.NewRecorder()
+		router.ServeHTTP(rec2, req2)
+
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("expected 200 with token, got %d", rec2.Code)
+		}
+		var fullDTO map[string]any
+		_ = json.NewDecoder(rec2.Body).Decode(&fullDTO)
+		if fullDTO["guest_phone"] != "+6281987654321" {
+			t.Errorf("expected guest_phone = +6281987654321, got %v", fullDTO["guest_phone"])
+		}
+		if fullDTO["guest_email"] != "siti@example.com" {
+			t.Errorf("expected guest_email = siti@example.com, got %v", fullDTO["guest_email"])
+		}
+	})
+}
+

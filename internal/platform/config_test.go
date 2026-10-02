@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
@@ -107,5 +108,79 @@ func TestNewValkeyAndLogger(t *testing.T) {
 	logger := NewLogger()
 	if logger == nil {
 		t.Fatal("NewLogger returned nil")
+	}
+
+	_, err := NewDB(context.Background(), Config{DatabaseDSN: "invalid://dsn"})
+	if err == nil {
+		t.Error("expected error from NewDB with invalid dsn, got nil")
+	}
+}
+
+func TestConfig_Validate(t *testing.T) {
+	validCfg := Config{
+		Environment:    "production",
+		Port:           "8080",
+		DatabaseDSN:    "postgres://localhost:5432/booking",
+		ValkeyAddr:     "localhost:6379",
+		HoldTimeout:    15 * time.Minute,
+		OutboxInterval: 1 * time.Second,
+	}
+
+	tests := []struct {
+		name    string
+		modify  func(c *Config)
+		wantErr bool
+	}{
+		{
+			name:    "valid config",
+			modify:  func(c *Config) {},
+			wantErr: false,
+		},
+		{
+			name:    "empty port",
+			modify:  func(c *Config) { c.Port = "" },
+			wantErr: true,
+		},
+		{
+			name:    "empty database DSN",
+			modify:  func(c *Config) { c.DatabaseDSN = "" },
+			wantErr: true,
+		},
+		{
+			name:    "empty valkey addr",
+			modify:  func(c *Config) { c.ValkeyAddr = "" },
+			wantErr: true,
+		},
+		{
+			name:    "zero hold timeout",
+			modify:  func(c *Config) { c.HoldTimeout = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "negative hold timeout",
+			modify:  func(c *Config) { c.HoldTimeout = -5 * time.Minute },
+			wantErr: true,
+		},
+		{
+			name:    "zero outbox interval",
+			modify:  func(c *Config) { c.OutboxInterval = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "negative outbox interval",
+			modify:  func(c *Config) { c.OutboxInterval = -1 * time.Second },
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validCfg
+			tt.modify(&cfg)
+			err := cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }

@@ -119,6 +119,11 @@ func SweepExpiredHolds(ctx context.Context, pool *pgxpool.Pool, release func(ctx
 		}
 		ids = append(ids, id)
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		log.ErrorContext(ctx, "sweep.rows", "err", err)
+		return
+	}
 	rows.Close()
 
 	for _, id := range ids {

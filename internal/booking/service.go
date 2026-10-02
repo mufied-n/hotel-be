@@ -8,11 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
+)
+
+var (
+	phoneRegex   = regexp.MustCompile(`^\+[1-9]\d{1,14}$`)
+	arrivalRegex = regexp.MustCompile(`^(?:[01]\d|2[0-3]):[0-5]\d$`)
 )
 
 func generateGuestToken() string {
@@ -68,16 +74,19 @@ type ChargeResult struct {
 
 // CreateInput adalah parameter use case Create.
 type CreateInput struct {
-	QuoteID         string    `json:"quote_id,omitempty"`
-	RoomTypeID      string    `json:"room_type_id"`
-	CheckIn         time.Time `json:"check_in"`  // YYYY-MM-DD
-	CheckOut        time.Time `json:"check_out"` // YYYY-MM-DD
-	NumRooms        int       `json:"num_rooms"`
-	NumGuests       int       `json:"num_guests"`
-	GuestName       string    `json:"guest_name"`
-	GuestEmail      string    `json:"guest_email"`
-	TermsAccepted   bool      `json:"terms_accepted"`
-	PrivacyAccepted bool      `json:"privacy_accepted"`
+	QuoteID              string    `json:"quote_id,omitempty"`
+	RoomTypeID           string    `json:"room_type_id"`
+	CheckIn              time.Time `json:"check_in"`  // YYYY-MM-DD
+	CheckOut             time.Time `json:"check_out"` // YYYY-MM-DD
+	NumRooms             int       `json:"num_rooms"`
+	NumGuests            int       `json:"num_guests"`
+	GuestName            string    `json:"guest_name"`
+	GuestEmail           string    `json:"guest_email"`
+	GuestPhone           string    `json:"guest_phone,omitempty"`
+	EstimatedArrivalTime string    `json:"estimated_arrival_time,omitempty"`
+	SpecialRequests      string    `json:"special_requests,omitempty"`
+	TermsAccepted        bool      `json:"terms_accepted"`
+	PrivacyAccepted      bool      `json:"privacy_accepted"`
 }
 
 // Service adalah use case inti booking.
@@ -87,6 +96,7 @@ type Service struct {
 	rates       rates.RateProvider
 	quoteStore  rates.QuoteStore
 	payment     PaymentGateway
+	attempts    PaymentAttemptStore
 	notify      Notifier
 	reader      Reader
 	holdTimeout time.Duration
@@ -118,6 +128,11 @@ func NewService(tx TxRunner, inv inventory.AvailabilityStore, r rates.RateProvid
 // SetQuoteStore menyematkan quote repository untuk penguncian harga 15 menit (BE-G06).
 func (s *Service) SetQuoteStore(qs rates.QuoteStore) {
 	s.quoteStore = qs
+}
+
+// SetPaymentAttemptStore menyematkan store buku besar percobaan pembayaran (BE-G11).
+func (s *Service) SetPaymentAttemptStore(pas PaymentAttemptStore) {
+	s.attempts = pas
 }
 
 func (s *Service) HoldTimeout() time.Duration { return s.holdTimeout }
@@ -155,6 +170,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	}
 	if strings.TrimSpace(in.GuestName) == "" || strings.TrimSpace(in.GuestEmail) == "" || !strings.Contains(in.GuestEmail, "@") {
 		return Booking{}, ChargeResult{}, ErrInvalidGuestInfo
+	}
+	if in.GuestPhone != "" && !phoneRegex.MatchString(in.GuestPhone) {
+		return Booking{}, ChargeResult{}, ErrInvalidPhone
+	}
+	if in.EstimatedArrivalTime != "" && !arrivalRegex.MatchString(in.EstimatedArrivalTime) {
+		return Booking{}, ChargeResult{}, ErrInvalidArrivalTime
+	}
+	if len([]rune(in.SpecialRequests)) > 500 {
+		return Booking{}, ChargeResult{}, ErrSpecialRequestTooLong
 	}
 
 	// 1. Quote locking & Terms Consent validation (BE-G04, BE-G05, BE-G06)
@@ -215,17 +239,20 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	}
 
 	b := Booking{
-		RoomTypeID: in.RoomTypeID,
-		CheckIn:    in.CheckIn,
-		CheckOut:   in.CheckOut,
-		NumRooms:   in.NumRooms,
-		NumGuests:  in.NumGuests,
-		Status:     StatusPending,
-		Currency:   "IDR",
-		GuestName:  in.GuestName,
-		GuestEmail: in.GuestEmail,
-		GuestToken: generateGuestToken(),
-		CreatedAt:  time.Now().UTC(),
+		RoomTypeID:           in.RoomTypeID,
+		CheckIn:              in.CheckIn,
+		CheckOut:             in.CheckOut,
+		NumRooms:             in.NumRooms,
+		NumGuests:            in.NumGuests,
+		Status:               StatusPending,
+		Currency:             "IDR",
+		GuestName:            in.GuestName,
+		GuestEmail:           in.GuestEmail,
+		GuestPhone:           in.GuestPhone,
+		EstimatedArrivalTime: in.EstimatedArrivalTime,
+		SpecialRequests:      in.SpecialRequests,
+		GuestToken:           generateGuestToken(),
+		CreatedAt:            time.Now().UTC(),
 	}
 
 	if in.QuoteID != "" {
@@ -279,9 +306,34 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	// 3. Pemanggilan gateway eksternal di luar transaksi agar tidak menahan lock database.
 	charge, err := s.payment.CreateCharge(ctx, b, b.TotalPriceMinor, b.Currency)
 	if err != nil {
+		if s.attempts != nil {
+			_ = s.attempts.RecordAttempt(ctx, PaymentAttempt{
+				BookingID:         b.ID,
+				Provider:          "gateway",
+				ProviderReference: "",
+				AmountMinor:       b.TotalPriceMinor,
+				Currency:          b.Currency,
+				Status:            "failed",
+				CreatedAt:         time.Now().UTC(),
+				UpdatedAt:         time.Now().UTC(),
+			})
+		}
 		// Kompensasi: batalkan booking dan rilis inventory jika charge token gagal
 		_ = s.Cancel(ctx, b.ID)
 		return Booking{}, ChargeResult{}, fmt.Errorf("booking: payment charge: %w", err)
+	}
+
+	if s.attempts != nil {
+		_ = s.attempts.RecordAttempt(ctx, PaymentAttempt{
+			BookingID:         b.ID,
+			Provider:          "gateway",
+			ProviderReference: charge.Reference,
+			AmountMinor:       b.TotalPriceMinor,
+			Currency:          b.Currency,
+			Status:            "initiated",
+			CreatedAt:         time.Now().UTC(),
+			UpdatedAt:         time.Now().UTC(),
+		})
 	}
 
 	return b, charge, nil
@@ -298,11 +350,20 @@ func (s *Service) Confirm(ctx context.Context, bookingID string) error {
 		if b.Status == StatusConfirmed {
 			return nil // idempotent — webhook duplikat
 		}
+		if b.Status == StatusPending && b.ExpiresAt != nil && time.Now().UTC().After(*b.ExpiresAt) {
+			if s.attempts != nil {
+				_ = s.attempts.UpdateAttemptStatus(ctx, bookingID, "received_after_expiry")
+			}
+			return ErrHoldExpired
+		}
 		if err := Transition(b.Status, StatusConfirmed); err != nil {
 			return err
 		}
 		if err := tx.UpdateStatus(ctx, bookingID, StatusConfirmed); err != nil {
 			return err
+		}
+		if s.attempts != nil {
+			_ = s.attempts.UpdateAttemptStatus(ctx, bookingID, "success")
 		}
 		payload, _ := json.Marshal(map[string]any{"event": "booking.confirmed", "booking_id": bookingID})
 		return events.PublishTx(ctx, "booking.confirmed", payload)
@@ -352,7 +413,9 @@ func (s *Service) Cancel(ctx context.Context, bookingID string) error {
 	})
 }
 
-// CheckOut mentransisikan checked_in → checked_out.
+// CheckOut mentransisikan checked_in → checked_out (BE-G22).
+// Bila tamu check-out lebih awal daripada tanggal yang dijadwalkan (early check-out),
+// sisa kamar [today, scheduled_checkout) dikembalikan ke inventaris agar dapat dijual kembali.
 func (s *Service) CheckOut(ctx context.Context, bookingID string) error {
 	return s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
 		b, err := tx.GetForUpdate(ctx, bookingID)
@@ -368,12 +431,40 @@ func (s *Service) CheckOut(ctx context.Context, bookingID string) error {
 		if err := tx.UpdateStatus(ctx, bookingID, StatusCheckedOut); err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(map[string]any{"event": "booking.checked_out", "booking_id": bookingID})
+
+		// Restitusi inventaris jika early check-out (BE-G22)
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		checkOutUTC := b.CheckOut.UTC()
+		scheduledOut := time.Date(checkOutUTC.Year(), checkOutUTC.Month(), checkOutUTC.Day(), 0, 0, 0, 0, time.UTC)
+		isEarly := false
+		if today.Before(scheduledOut) {
+			releaseFrom := today
+			checkInUTC := b.CheckIn.UTC()
+			scheduledIn := time.Date(checkInUTC.Year(), checkInUTC.Month(), checkInUTC.Day(), 0, 0, 0, 0, time.UTC)
+			if releaseFrom.Before(scheduledIn) {
+				releaseFrom = scheduledIn
+			}
+			if releaseFrom.Before(scheduledOut) {
+				if err := tx.Increment(ctx, b.RoomTypeID, releaseFrom, scheduledOut, b.NumRooms); err != nil {
+					return err
+				}
+				isEarly = true
+			}
+		}
+
+		payload, _ := json.Marshal(map[string]any{
+			"event":          "booking.checked_out",
+			"booking_id":     bookingID,
+			"early_checkout": isEarly,
+		})
 		return events.PublishTx(ctx, "booking.checked_out", payload)
 	})
 }
 
-// MarkNoShow mentransisikan confirmed → no_show dan mengembalikan inventory.
+// MarkNoShow mentransisikan confirmed → no_show dan mengembalikan inventory (BE-G22).
+// Penandaan no-show hanya dapat dilakukan terhitung sejak tanggal check-in tiba.
+// Upaya menandai no-show sebelum tanggal check-in ditolak dengan ErrNoShowTooEarly.
 func (s *Service) MarkNoShow(ctx context.Context, bookingID string) error {
 	return s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
 		b, err := tx.GetForUpdate(ctx, bookingID)
@@ -383,15 +474,35 @@ func (s *Service) MarkNoShow(ctx context.Context, bookingID string) error {
 		if b.Status == StatusNoShow {
 			return nil // idempotent
 		}
+
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		checkInUTC := b.CheckIn.UTC()
+		checkInDate := time.Date(checkInUTC.Year(), checkInUTC.Month(), checkInUTC.Day(), 0, 0, 0, 0, time.UTC)
+		if today.Before(checkInDate) {
+			return ErrNoShowTooEarly
+		}
+
 		if err := Transition(b.Status, StatusNoShow); err != nil {
 			return err
 		}
 		if err := tx.UpdateStatus(ctx, bookingID, StatusNoShow); err != nil {
 			return err
 		}
-		if err := tx.Increment(ctx, b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms); err != nil {
-			return err
+
+		// Kembalikan sisa inventaris dari tanggal hari ini hingga check-out
+		releaseFrom := today
+		if releaseFrom.Before(checkInDate) {
+			releaseFrom = checkInDate
 		}
+		checkOutUTC := b.CheckOut.UTC()
+		scheduledOut := time.Date(checkOutUTC.Year(), checkOutUTC.Month(), checkOutUTC.Day(), 0, 0, 0, 0, time.UTC)
+		if releaseFrom.Before(scheduledOut) {
+			if err := tx.Increment(ctx, b.RoomTypeID, releaseFrom, scheduledOut, b.NumRooms); err != nil {
+				return err
+			}
+		}
+
 		payload, _ := json.Marshal(map[string]any{"event": "booking.no_show", "booking_id": bookingID})
 		return events.PublishTx(ctx, "booking.no_show", payload)
 	})

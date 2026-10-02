@@ -2,6 +2,7 @@ package booking
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -94,20 +95,23 @@ func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []
 	if b.QuoteID != "" {
 		quoteID = b.QuoteID
 	}
+	b.ExpiresAt = &holdExpiresAt
 	err := t.tx.QueryRow(ctx, `
 		INSERT INTO bookings
 			(room_type_id, check_in, check_out, num_rooms, num_guests,
 			 status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at,
 			 quote_id, rate_plan_code, cancellation_policy, cancellation_desc,
 			 room_subtotal_minor, breakfast_charge_minor, discount_minor, tax_minor,
-			 terms_accepted, terms_accepted_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+			 terms_accepted, terms_accepted_at,
+			 guest_phone, estimated_arrival_time, special_requests, expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 		RETURNING id`,
 		b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms, b.NumGuests,
 		string(b.Status), b.TotalPriceMinor, b.Currency, b.GuestName, b.GuestEmail, b.GuestToken, b.CreatedAt,
 		quoteID, b.RatePlanCode, b.CancellationPolicy, b.CancellationDesc,
 		b.RoomSubtotalMinor, b.BreakfastChargeMinor, b.DiscountMinor, b.TaxMinor,
 		b.TermsAccepted, b.TermsAcceptedAt,
+		b.GuestPhone, b.EstimatedArrivalTime, b.SpecialRequests, b.ExpiresAt,
 	).Scan(&b.ID)
 	if err != nil {
 		return fmt.Errorf("booking: insert: %w", err)
@@ -139,7 +143,9 @@ func (t *txCtx) GetForUpdate(ctx context.Context, id string) (Booking, error) {
 		       COALESCE(cancellation_policy, 'flexible_48h'), COALESCE(cancellation_desc, ''),
 		       COALESCE(room_subtotal_minor, 0), COALESCE(breakfast_charge_minor, 0),
 		       COALESCE(discount_minor, 0), COALESCE(tax_minor, 0),
-		       COALESCE(terms_accepted, true), terms_accepted_at
+		       COALESCE(terms_accepted, true), terms_accepted_at,
+		       COALESCE(guest_phone, ''), COALESCE(estimated_arrival_time, ''),
+		       COALESCE(special_requests, ''), expires_at
 		FROM bookings WHERE id = $1 FOR UPDATE`, id))
 }
 
@@ -156,11 +162,12 @@ func (t *txCtx) UpdateStatus(ctx context.Context, id string, to Status) error {
 	return nil
 }
 
-// PickAndAssignRooms memilih kamar fisik bebas sejumlah count dan memasang assignment.
+// PickAndAssignRooms memilih kamar fisik bebas sejumlah count dan memasang assignment (BE-G17).
 //   - NOT EXISTS: hindari kamar yang sudah ter-assign untuk rentang overlap.
-//   - EXCLUDE USING GIST (di DB): backstop — bila dua check-in paralel lolos
-//     NOT EXISTS bersamaan, database MENOLAK insert kedua dengan SQLSTATE
-//     23P01 (exclusion_violation). Keduanya dipetakan ke ErrNoRoomAvailable.
+//   - FOR UPDATE OF r SKIP LOCKED: kunci baris kandidat kamar sehingga check-in paralel
+//     memilih kamar fisik berikutnya secara otomatis tanpa saling menggagalkan.
+//   - EXCLUDE USING GIST: backstop bila terjadi exclusion_violation (23P01) pada query/rows.Err,
+//     keduanya dipetakan ke ErrNoRoomAvailable.
 func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID string, checkIn, checkOut time.Time, count int) ([]string, error) {
 	rows, err := t.tx.Query(ctx, `
 		WITH free_rooms AS (
@@ -174,6 +181,7 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 			  )
 			ORDER BY r.room_number
 			LIMIT $4
+			FOR UPDATE OF r SKIP LOCKED
 		)
 		INSERT INTO room_assignments (booking_id, room_number, stay_dates)
 		SELECT $5, room_number, daterange($2, $3, '[)')
@@ -182,7 +190,7 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 		roomTypeID, checkIn, checkOut, count, bookingID)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23P01" { // exclusion_violation
+		if errors.As(err, &pgErr) && (pgErr.Code == "23P01" || pgErr.Code == "40001") { // exclusion_violation or serialization_failure
 			return nil, ErrNoRoomAvailable
 		}
 		return nil, fmt.Errorf("booking: assign rooms: %w", err)
@@ -198,6 +206,10 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 		assigned = append(assigned, room)
 	}
 	if err := rows.Err(); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && (pgErr.Code == "23P01" || pgErr.Code == "40001") {
+			return nil, ErrNoRoomAvailable
+		}
 		return nil, fmt.Errorf("booking: assigned rows: %w", err)
 	}
 
@@ -264,7 +276,9 @@ func (r *PostgresReader) Get(ctx context.Context, id string) (Booking, error) {
 		       COALESCE(cancellation_policy, 'flexible_48h'), COALESCE(cancellation_desc, ''),
 		       COALESCE(room_subtotal_minor, 0), COALESCE(breakfast_charge_minor, 0),
 		       COALESCE(discount_minor, 0), COALESCE(tax_minor, 0),
-		       COALESCE(terms_accepted, true), terms_accepted_at
+		       COALESCE(terms_accepted, true), terms_accepted_at,
+		       COALESCE(guest_phone, ''), COALESCE(estimated_arrival_time, ''),
+		       COALESCE(special_requests, ''), expires_at
 		FROM bookings WHERE id = $1`, id))
 }
 
@@ -278,7 +292,8 @@ func scanBooking(row rowScanner) (Booking, error) {
 		&b.GuestName, &b.GuestEmail, &b.GuestToken, &b.CreatedAt,
 		&b.QuoteID, &b.RatePlanCode, &b.CancellationPolicy, &b.CancellationDesc,
 		&b.RoomSubtotalMinor, &b.BreakfastChargeMinor, &b.DiscountMinor, &b.TaxMinor,
-		&b.TermsAccepted, &b.TermsAcceptedAt)
+		&b.TermsAccepted, &b.TermsAcceptedAt,
+		&b.GuestPhone, &b.EstimatedArrivalTime, &b.SpecialRequests, &b.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Booking{}, ErrNotFound
 	}
@@ -288,3 +303,71 @@ func scanBooking(row rowScanner) (Booking, error) {
 	b.Status = Status(status)
 	return b, nil
 }
+
+// PostgresPaymentAttemptStore mencatat audit percobaan pembayaran ke tabel payment_attempts (BE-G11).
+type PostgresPaymentAttemptStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewPostgresPaymentAttemptStore(pool *pgxpool.Pool) *PostgresPaymentAttemptStore {
+	return &PostgresPaymentAttemptStore{pool: pool}
+}
+
+func (s *PostgresPaymentAttemptStore) RecordAttempt(ctx context.Context, attempt PaymentAttempt) error {
+	if s.pool == nil {
+		return nil
+	}
+	var payloadBytes []byte
+	if attempt.Payload != nil {
+		payloadBytes, _ = json.Marshal(attempt.Payload)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO payment_attempts
+			(booking_id, provider, provider_reference, amount_minor, currency, status, payload, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		attempt.BookingID, attempt.Provider, attempt.ProviderReference,
+		attempt.AmountMinor, attempt.Currency, attempt.Status, payloadBytes,
+		attempt.CreatedAt, attempt.UpdatedAt,
+	)
+	return err
+}
+
+func (s *PostgresPaymentAttemptStore) UpdateAttemptStatus(ctx context.Context, bookingID string, status string) error {
+	if s.pool == nil {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE payment_attempts
+		SET status = $1, updated_at = $2
+		WHERE booking_id = $3`,
+		status, time.Now().UTC(), bookingID,
+	)
+	return err
+}
+
+func (s *PostgresPaymentAttemptStore) GetAttemptsByBookingID(ctx context.Context, bookingID string) ([]PaymentAttempt, error) {
+	if s.pool == nil {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, booking_id, provider, provider_reference, amount_minor, currency, status, created_at, updated_at
+		FROM payment_attempts
+		WHERE booking_id = $1
+		ORDER BY created_at ASC`, bookingID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var attempts []PaymentAttempt
+	for rows.Next() {
+		var a PaymentAttempt
+		if err := rows.Scan(&a.ID, &a.BookingID, &a.Provider, &a.ProviderReference, &a.AmountMinor, &a.Currency, &a.Status, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, a)
+	}
+	return attempts, rows.Err()
+}
+

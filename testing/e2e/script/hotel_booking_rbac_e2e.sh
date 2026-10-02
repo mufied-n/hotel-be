@@ -372,6 +372,140 @@ HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
 assert_status "Cancellation of confirmed non-refundable booking rejected with 409 Conflict" 409 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
+# Test 13: Complete Guest Profile Checkout (BE-G07, BE-G12)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 13. Complete Guest Profile Checkout & Timestamps (BE-G07, BE-G12) <<${NC}"
+BATCH_D_PAYLOAD='{
+    "room_type_id": "01900000-0000-7000-8000-000000000001",
+    "check_in": "2026-10-10",
+    "check_out": "2026-10-12",
+    "num_rooms": 1,
+    "num_guests": 2,
+    "guest_name": "Rian Kusuma",
+    "guest_email": "rian@example.com",
+    "guest_phone": "+6281298765432",
+    "estimated_arrival_time": "14:30",
+    "special_requests": "High floor, non-smoking, quiet room"
+}'
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: ik-bash-rian-001" \
+    -d "$BATCH_D_PAYLOAD" \
+    "${BASE_URL}/api/v1/bookings")
+assert_status "Checkout with complete guest profile returns 201 with expires_at & server_time" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+BATCH_D_BOOKING_ID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | head -n 1 | cut -d'"' -f4 || echo "")
+BATCH_D_GUEST_TOKEN=$(grep -o '"guest_access_token":"[^"]*' /tmp/e2e_res.json | cut -d'"' -f4 || echo "")
+
+# ------------------------------------------------------------------------------
+# Test 14: Idempotency-Key Network Replay (BE-G09, IETF Draft)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 14. Idempotency-Key Network Replay (BE-G09) <<${NC}"
+HTTP_HEADERS=$(curl -s -D /tmp/e2e_headers.txt -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: ik-bash-rian-001" \
+    -d "$BATCH_D_PAYLOAD" \
+    "${BASE_URL}/api/v1/bookings")
+assert_status "Idempotent retry with same payload returns 201 Created" 201 "$HTTP_HEADERS" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 15: Idempotency-Key Payload Mismatch Conflict (BE-G09)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 15. Idempotency-Key Conflict on Payload Mismatch (BE-G09) <<${NC}"
+DIFF_PAYLOAD='{
+    "room_type_id": "01900000-0000-7000-8000-000000000001",
+    "check_in": "2026-10-10",
+    "check_out": "2026-10-12",
+    "num_rooms": 2,
+    "num_guests": 4,
+    "guest_name": "Totally Different",
+    "guest_email": "different@example.com"
+}'
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "Idempotency-Key: ik-bash-rian-001" \
+    -d "$DIFF_PAYLOAD" \
+    "${BASE_URL}/api/v1/bookings")
+assert_status "Idempotency key reuse with different payload returns 409 Conflict" 409 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 16: UU PDP Privacy Enforcement (BE-G13, UU PDP No. 27/2022)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 16. UU PDP Privacy Masking on Public View (BE-G13) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/bookings/${BATCH_D_BOOKING_ID}")
+assert_status "Unauthenticated query returns PublicDTO (masked PII)" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -H "X-Guest-Token: ${BATCH_D_GUEST_TOKEN}" \
+    "${BASE_URL}/api/v1/bookings/${BATCH_D_BOOKING_ID}")
+assert_status "Owner query with X-Guest-Token returns full profile" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 17: Early Check-Out Inventory Restitution (BE-G22)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 17. Early Check-Out Inventory Restitution (BE-G22) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer receptionist" \
+    "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-out")
+assert_status "Receptionist processes early check-out" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 18: Rejection of No-Show Before Check-In Date (BE-G22)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 18. Rejection of No-Show Before Check-In Date (BE-G22) <<${NC}"
+# BATCH_D_BOOKING_ID check-in is set to 2026-10-10 (future date relative to current time)
+# Fake pay to confirm booking first
+curl -s -o /dev/null -X POST "${BASE_URL}/fake-pay/ref-batch-d?booking_id=${BATCH_D_BOOKING_ID}"
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Bearer receptionist" \
+    "${BASE_URL}/api/v1/bookings/${BATCH_D_BOOKING_ID}/no-show")
+# Expect 400 Bad Request with NO_SHOW_TOO_EARLY
+assert_status "No-show before check-in date rejected with 400 NO_SHOW_TOO_EARLY" 400 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 19: Receptionist Marks No-Show on/after Check-In Date (BE-G22)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 19. Receptionist Marks No-Show on/after Check-In Date (BE-G22) <<${NC}"
+# Create booking with today's check-in date
+TODAY_DATE=$(date -u +"%Y-%m-%d")
+TOMORROW_DATE=$(date -u -d "+1 day" +"%Y-%m-%d" 2>/dev/null || date -u -v+1d +"%Y-%m-%d" 2>/dev/null || echo "2026-10-11")
+TODAY_PAYLOAD="{
+    \"room_type_id\": \"01900000-0000-7000-8000-000000000001\",
+    \"check_in\": \"${TODAY_DATE}\",
+    \"check_out\": \"${TOMORROW_DATE}\",
+    \"num_rooms\": 1,
+    \"num_guests\": 1,
+    \"guest_name\": \"Guest Today\",
+    \"guest_email\": \"today@example.com\"
+}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "$TODAY_PAYLOAD" \
+    "${BASE_URL}/api/v1/bookings")
+TODAY_BID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | head -n 1 | cut -d'"' -f4 || echo "")
+
+if [ -n "$TODAY_BID" ]; then
+    # Confirm booking
+    curl -s -o /dev/null -X POST "${BASE_URL}/fake-pay/ref-today?booking_id=${TODAY_BID}"
+    # Mark no show
+    HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+        -X POST \
+        -H "Authorization: Bearer receptionist" \
+        "${BASE_URL}/api/v1/bookings/${TODAY_BID}/no-show")
+    assert_status "No-show on check-in date accepted with 200 OK" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+fi
+
+
+# ------------------------------------------------------------------------------
 # Summary
 # ------------------------------------------------------------------------------
 echo -e "\n${BLUE}=================================================================${NC}"

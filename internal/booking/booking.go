@@ -81,33 +81,44 @@ type Booking struct {
 	Currency             string     `json:"currency"`
 	GuestName            string     `json:"guest_name"`
 	GuestEmail           string     `json:"guest_email"`
+	GuestPhone           string     `json:"guest_phone,omitempty"`
+	EstimatedArrivalTime string     `json:"estimated_arrival_time,omitempty"`
+	SpecialRequests      string     `json:"special_requests,omitempty"`
 	GuestToken           string     `json:"guest_token,omitempty"`
 	TermsAccepted        bool       `json:"terms_accepted"`
 	TermsAcceptedAt      *time.Time `json:"terms_accepted_at,omitempty"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
 	CreatedAt            time.Time  `json:"created_at"`
 }
 
 // PublicDTO adalah representasi publik minimal tanpa kebocoran PII (BE-G13).
+// guest_phone dan guest_email disembunyikan untuk memenuhi UU PDP No. 27/2022.
 type PublicDTO struct {
-	ID         string    `json:"id"`
-	RoomTypeID string    `json:"room_type_id"`
-	CheckIn    time.Time `json:"check_in"`
-	CheckOut   time.Time `json:"check_out"`
-	NumRooms   int       `json:"num_rooms"`
-	Status     Status    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID                   string     `json:"id"`
+	RoomTypeID           string     `json:"room_type_id"`
+	CheckIn              time.Time  `json:"check_in"`
+	CheckOut             time.Time  `json:"check_out"`
+	NumRooms             int        `json:"num_rooms"`
+	Status               Status     `json:"status"`
+	EstimatedArrivalTime string     `json:"estimated_arrival_time,omitempty"`
+	SpecialRequests      string     `json:"special_requests,omitempty"`
+	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
-// ToPublicDTO menyaring field sensitif (nama, email, guest_token) untuk akses unauthenticated.
+// ToPublicDTO menyaring field sensitif (nama, email, telepon, guest_token) untuk akses unauthenticated.
 func (b Booking) ToPublicDTO() PublicDTO {
 	return PublicDTO{
-		ID:         b.ID,
-		RoomTypeID: b.RoomTypeID,
-		CheckIn:    b.CheckIn,
-		CheckOut:   b.CheckOut,
-		NumRooms:   b.NumRooms,
-		Status:     b.Status,
-		CreatedAt:  b.CreatedAt,
+		ID:                   b.ID,
+		RoomTypeID:           b.RoomTypeID,
+		CheckIn:              b.CheckIn,
+		CheckOut:             b.CheckOut,
+		NumRooms:             b.NumRooms,
+		Status:               b.Status,
+		EstimatedArrivalTime: b.EstimatedArrivalTime,
+		SpecialRequests:      b.SpecialRequests,
+		ExpiresAt:            b.ExpiresAt,
+		CreatedAt:            b.CreatedAt,
 	}
 }
 
@@ -178,3 +189,18 @@ var ErrNonRefundable = errors.New("booking: non-refundable reservation cannot be
 
 // ErrCancellationDeadlineExceeded diembalikan saat pembatalan melewati batas waktu H-2 (BE-G08).
 var ErrCancellationDeadlineExceeded = errors.New("booking: free cancellation deadline has passed (48h before check-in)")
+
+// ErrInvalidPhone dikembalikan jika nomor telepon bukan format E.164 (BE-G07).
+var ErrInvalidPhone = errors.New("booking: invalid phone number, must be in E.164 format (e.g. +6281234567890)")
+
+// ErrInvalidArrivalTime dikembalikan jika jam kedatangan bukan format HH:MM 24-jam (BE-G07).
+var ErrInvalidArrivalTime = errors.New("booking: invalid estimated arrival time, must be HH:MM format (e.g. 14:00)")
+
+// ErrSpecialRequestTooLong dikembalikan jika special requests melebihi 500 karakter (BE-G07).
+var ErrSpecialRequestTooLong = errors.New("booking: special requests exceeds 500 characters limit")
+
+// ErrHoldExpired dikembalikan jika pembayaran tiba setelah batas waktu hold kamar kedaluwarsa (BE-G12).
+var ErrHoldExpired = errors.New("booking: hold has expired, room availability was released")
+
+// ErrNoShowTooEarly dikembalikan saat no-show dipicu sebelum tanggal check-in tiba (BE-G22).
+var ErrNoShowTooEarly = errors.New("booking: cannot mark no-show before check-in date")

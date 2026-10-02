@@ -33,6 +33,26 @@ func (c Config) IsProduction() bool {
 	return c.Environment == "production"
 }
 
+// Validate memeriksa kelengkapan dan validitas konfigurasi runtime (BE-G21).
+func (c Config) Validate() error {
+	if c.Port == "" {
+		return fmt.Errorf("config: APP_PORT cannot be empty")
+	}
+	if c.DatabaseDSN == "" {
+		return fmt.Errorf("config: DATABASE_URL cannot be empty")
+	}
+	if c.ValkeyAddr == "" {
+		return fmt.Errorf("config: VALKEY_ADDR cannot be empty")
+	}
+	if c.HoldTimeout <= 0 {
+		return fmt.Errorf("config: HOLD_TIMEOUT must be positive duration")
+	}
+	if c.OutboxInterval <= 0 {
+		return fmt.Errorf("config: OUTBOX_INTERVAL must be positive duration")
+	}
+	return nil
+}
+
 func LoadConfig() Config {
 	holdTimeout := getDuration("HOLD_TIMEOUT", 30*time.Minute)
 	if holdTimeout <= 0 {

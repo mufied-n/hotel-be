@@ -3,11 +3,13 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -24,8 +26,11 @@ type OutboxRelay struct {
 	Handlers map[string]func(ctx context.Context, payload []byte) error
 }
 
-// Run menjalankan loop polling sampai ctx dibatalkan.
+// Run menjalankan loop polling sampai ctx dibatalkan (BE-G21: fail-safe interval).
 func (r *OutboxRelay) Run(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -70,7 +75,11 @@ func (r *OutboxRelay) processOne(ctx context.Context) bool {
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`).Scan(&id, &topic, &payload, &attempts)
 	if err != nil {
-		_ = tx.Rollback(ctx) // ErrNoRows = antrian kosong (normal)
+		_ = tx.Rollback(ctx)
+		// ErrNoRows = antrian kosong (normal), jika error lain catat ke log
+		if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, context.Canceled) {
+			r.Log.ErrorContext(ctx, "outbox.query", "err", err)
+		}
 		return false
 	}
 
@@ -85,17 +94,23 @@ func (r *OutboxRelay) processOne(ctx context.Context) bool {
 	if err := handler(ctx, payload); err != nil {
 		attempts++
 		if attempts >= r.MaxAttempts {
-			_, _ = tx.Exec(ctx,
-				`UPDATE outbox SET status='failed', attempts=$2 WHERE id=$1`, id, attempts)
+			if _, errExec := tx.Exec(ctx,
+				`UPDATE outbox SET status='failed', attempts=$2 WHERE id=$1`, id, attempts); errExec != nil {
+				r.Log.ErrorContext(ctx, "outbox.mark_dead_letter_failed", "err", errExec, "id", id)
+			}
 			r.Log.ErrorContext(ctx, "outbox.dead_letter", "topic", topic, "id", id, "attempts", attempts, "err", err)
 		} else {
 			delay := backoff(attempts)
-			_, _ = tx.Exec(ctx,
+			if _, errExec := tx.Exec(ctx,
 				`UPDATE outbox SET attempts=$2, next_retry_at=now()+$3 WHERE id=$1`,
-				id, attempts, delay)
+				id, attempts, delay); errExec != nil {
+				r.Log.ErrorContext(ctx, "outbox.schedule_retry_failed", "err", errExec, "id", id)
+			}
 			r.Log.WarnContext(ctx, "outbox.retry_scheduled", "topic", topic, "id", id, "attempt", attempts, "delay", delay.String())
 		}
-		_ = tx.Commit(ctx)
+		if errCommit := tx.Commit(ctx); errCommit != nil {
+			r.Log.ErrorContext(ctx, "outbox.commit_error_state", "err", errCommit, "id", id)
+		}
 		return true
 	}
 
