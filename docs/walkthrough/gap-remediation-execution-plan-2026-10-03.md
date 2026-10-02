@@ -133,20 +133,27 @@ flowchart TD
   - [x] Table-driven unit tests lulus 100%: API coverage 89.0%, Rates coverage 90.5%, Booking Service Create coverage 91.0%
   - [x] E2E test report dibuat di [`testing/e2e/report/2026-10-03-024800-pricing-quote-policies-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-024800-pricing-quote-policies-e2e-report.md) (21/21 passed)
 
-- [ ] **Fase 4: Batch BE-D (Checkout, Idempotensi & Payment - G07, G09, G11, G12)**
-  - [ ] Migrasi database `00005_idempotency_and_ledger.sql`
-  - [ ] Middleware idempotensi transaksi (`Idempotency-Key`)
-  - [ ] Ledger percobaan pembayaran (`payment_attempts`)
-  - [ ] Otoritas mutlak hold deadline server
-  - [ ] Unit & integration tests Batch BE-D ($\ge 80\%$ coverage)
+- [x] **Fase 4: Batch BE-D (Checkout, Idempotensi & Payment - G07, G09, G11, G12)** — **SELESAI (100% Passed, Commit 6160e0b)**
+  - [x] Migrasi database [`migrations/00007_checkout_idempotency_ledger.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00007_checkout_idempotency_ledger.sql)
+  - [x] Middleware idempotensi transaksi (`Idempotency-Key`) dengan deteksi replay & conflict mismatch
+  - [x] Ledger percobaan pembayaran (`payment_attempts`) untuk audit PCI-DSS SAQ A
+  - [x] Otoritas mutlak hold deadline server (`expires_at` & `server_time`)
+  - [x] Detail kontak tamu (phone E.164, arrival time HH:MM, special requests 500-char)
+  - [x] Table-driven unit & integration tests lulus 100%
 
-- [ ] **Fase 5: Batch BE-E (Keandalan Operasional & Konkurensi - G16, G17, G21, G22)**
-  - [ ] Alokasi kamar paralel dengan `SKIP LOCKED`
-  - [ ] Outbox relay delivery status & email nyata
-  - [ ] Observabilitas worker, graceful shutdown, early checkout policy
-  - [ ] Unit & integration tests Batch BE-E ($\ge 80\%$ coverage)
+- [x] **Fase 5: Batch BE-E (Keandalan Operasional & Konkurensi - G16, G17, G21, G22)** — **SELESAI (100% Passed, Commit 6160e0b)**
+  - [x] Alokasi kamar paralel dengan `FOR UPDATE SKIP LOCKED`
+  - [x] Outbox relay delivery status & adapter email transaksional nyata
+  - [x] Observabilitas worker, graceful shutdown context, early checkout inventory restitution
+  - [x] Kebijakan mark no-show pada tanggal check-in untuk melepaskan sisa malam menginap
+  - [x] Table-driven unit tests lulus 100%
 
-- [ ] **Fase 6: Batch BE-F (Verifikasi Nyata & E2E Testing - G20)**
-  - [ ] Pembaruan skrip E2E di `testing/e2e/script/`
-  - [ ] Eksekusi pengujian konkurensi database nyata
-  - [ ] Pembuatan laporan hasil E2E di `testing/e2e/report/`
+- [x] **Fase 6: Batch BE-F (Verifikasi Nyata & E2E Testing - G20)** — **SELESAI (100% Passed, Commit 3df5d1a)**
+  - [x] Suite pengujian konkurensi PostgreSQL 18 & Valkey nyata di [`testing/integration/postgres_concurrency_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/integration/postgres_concurrency_test.go)
+  - [x] Verifikasi 20 goroutines serentak berebut 1 kamar (1 menang, 19 gagal aman, 0 stok sisa)
+  - [x] Verifikasi rollback atomik multi-malam
+  - [x] Verifikasi alokasi kamar paralel bebas tabrakan dengan transient conflict retry
+  - [x] Verifikasi penolakan GiST exclusion constraint (`23P01`) pada double assignment fisik
+  - [x] Verifikasi balapan sweep hold expired vs late payment
+  - [x] Laporan hasil pengujian di [`testing/e2e/report/2026-10-03-real-db-concurrency-batch-f-e2e-report.md`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/report/2026-10-03-real-db-concurrency-batch-f-e2e-report.md)
+
