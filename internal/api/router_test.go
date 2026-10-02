@@ -12,6 +12,7 @@ import (
 
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/inventory"
+	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
 )
@@ -116,6 +117,9 @@ func setupTestRouter() (http.Handler, *mockTx) {
 			CheckIn:         time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
 			CheckOut:        time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
 			TotalPriceMinor: 1_000_000,
+			GuestName:       "Budi Santoso",
+			GuestEmail:      "budi@example.com",
+			GuestToken:      "gst_valid_token_123",
 		},
 		rooms: []string{"101"},
 	}
@@ -137,11 +141,13 @@ func setupTestRouter() (http.Handler, *mockTx) {
 	bkSvc := booking.NewService(runner, inv, ratesSvc, &mockPayment{}, &mockNotifier{}, reader, 30*time.Minute, nil)
 
 	handler := NewRouter(Deps{
-		BookingSvc: bkSvc,
-		InvStore:   inv,
-		RateSvc:    ratesSvc,
-		Enqueuer:   &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
-		ReadyCheck: func(_ context.Context) error { return nil },
+		BookingSvc:    bkSvc,
+		InvStore:      inv,
+		RateSvc:       ratesSvc,
+		Enqueuer:      &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
+		Enforcer:      auth.DefaultTestEnforcer(),
+		IsDevelopment: true,
+		ReadyCheck:    func(_ context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		},
@@ -249,39 +255,126 @@ func TestCreateBooking_Validation400(t *testing.T) {
 func TestGetBooking(t *testing.T) {
 	h, _ := setupTestRouter()
 
-	// Found
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	t.Run("public guest without token receives masked PublicDTO", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
-	}
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, exists := resp["guest_name"]; exists {
+			t.Errorf("guest_name leaked in public DTO: %v", resp["guest_name"])
+		}
+		if _, exists := resp["guest_email"]; exists {
+			t.Errorf("guest_email leaked in public DTO: %v", resp["guest_email"])
+		}
+		if _, exists := resp["guest_token"]; exists {
+			t.Errorf("guest_token leaked in public DTO: %v", resp["guest_token"])
+		}
+		if resp["id"] != "bk-123" {
+			t.Errorf("expected id bk-123, got %v", resp["id"])
+		}
+	})
 
-	// Not Found
-	reqNF := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/not-found", nil)
-	wNF := httptest.NewRecorder()
-	h.ServeHTTP(wNF, reqNF)
+	t.Run("guest with valid X-Guest-Token receives full booking with PII", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
+		req.Header.Set("X-Guest-Token", "gst_valid_token_123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
 
-	if wNF.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", wNF.Code)
-	}
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var b booking.Booking
+		if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if b.GuestName != "Budi Santoso" || b.GuestEmail != "budi@example.com" {
+			t.Errorf("expected full PII, got name=%q email=%q", b.GuestName, b.GuestEmail)
+		}
+	})
+
+	t.Run("staff role receives full booking with PII", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
+		req.Header.Set("Authorization", "Bearer receptionist")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var b booking.Booking
+		if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if b.GuestName != "Budi Santoso" {
+			t.Errorf("expected full PII for staff, got name=%q", b.GuestName)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		reqNF := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/not-found", nil)
+		wNF := httptest.NewRecorder()
+		h.ServeHTTP(wNF, reqNF)
+
+		if wNF.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", wNF.Code)
+		}
+	})
 }
 
 func TestCancelBooking(t *testing.T) {
 	h, tx := setupTestRouter()
-	tx.booking.Status = booking.StatusPending
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/cancel", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+	t.Run("guest with invalid or missing token is rejected 403", func(t *testing.T) {
+		tx.booking.Status = booking.StatusPending
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/cancel", nil)
+		req.Header.Set("X-Guest-Token", "wrong_token")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("cancel status = %d, want 200", w.Code)
-	}
-	if tx.booking.Status != booking.StatusCancelled {
-		t.Errorf("status = %s, want cancelled", tx.booking.Status)
-	}
+		if w.Code != http.StatusForbidden {
+			t.Errorf("cancel status = %d, want 403", w.Code)
+		}
+		if tx.booking.Status != booking.StatusPending {
+			t.Errorf("status should not change, got %s", tx.booking.Status)
+		}
+	})
+
+	t.Run("guest with valid X-Guest-Token can cancel", func(t *testing.T) {
+		tx.booking.Status = booking.StatusPending
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/cancel", nil)
+		req.Header.Set("X-Guest-Token", "gst_valid_token_123")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("cancel status = %d, want 200", w.Code)
+		}
+		if tx.booking.Status != booking.StatusCancelled {
+			t.Errorf("status = %s, want cancelled", tx.booking.Status)
+		}
+	})
+
+	t.Run("staff role can cancel without guest token", func(t *testing.T) {
+		tx.booking.Status = booking.StatusPending
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/cancel", nil)
+		req.Header.Set("Authorization", "Bearer gm_admin")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("cancel status = %d, want 200", w.Code)
+		}
+		if tx.booking.Status != booking.StatusCancelled {
+			t.Errorf("status = %s, want cancelled", tx.booking.Status)
+		}
+	})
 }
 
 func TestCheckIn(t *testing.T) {
@@ -289,6 +382,7 @@ func TestCheckIn(t *testing.T) {
 	tx.booking.Status = booking.StatusConfirmed
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/check-in", nil)
+	req.Header.Set("Authorization", "Bearer receptionist")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -305,6 +399,7 @@ func TestCheckOut(t *testing.T) {
 	tx.booking.Status = booking.StatusCheckedIn
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/check-out", nil)
+	req.Header.Set("Authorization", "Bearer receptionist")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -321,6 +416,7 @@ func TestNoShow(t *testing.T) {
 	tx.booking.Status = booking.StatusConfirmed
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-123/no-show", nil)
+	req.Header.Set("Authorization", "Bearer receptionist")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -332,9 +428,91 @@ func TestNoShow(t *testing.T) {
 	}
 }
 
+func TestDevRouteGating(t *testing.T) {
+	// Dev mode: FakePay mounted (BE-G10)
+	devRouter := NewRouter(Deps{
+		Enforcer:      auth.DefaultTestEnforcer(),
+		IsDevelopment: true,
+		FakePay: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	reqDev := httptest.NewRequest(http.MethodPost, "/fake-pay/ref-123", nil)
+	wDev := httptest.NewRecorder()
+	devRouter.ServeHTTP(wDev, reqDev)
+	if wDev.Code != http.StatusOK {
+		t.Errorf("dev mode fake-pay status = %d, want 200", wDev.Code)
+	}
+
+	// Prod mode: FakePay NOT mounted -> 404 Not Found (BE-G10)
+	prodRouter := NewRouter(Deps{
+		Enforcer:      auth.DefaultTestEnforcer(),
+		IsDevelopment: false,
+		FakePay: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	reqProd := httptest.NewRequest(http.MethodPost, "/fake-pay/ref-123", nil)
+	wProd := httptest.NewRecorder()
+	prodRouter.ServeHTTP(wProd, reqProd)
+	if wProd.Code != http.StatusNotFound {
+		t.Errorf("prod mode fake-pay status = %d, want 404", wProd.Code)
+	}
+}
+
+func TestFailClosedEnforcer(t *testing.T) {
+	// Fail-closed: enforcer is nil -> 503 Service Unavailable (BE-G14)
+	router := NewRouter(Deps{
+		Enforcer: nil,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("nil enforcer status = %d, want 503", w.Code)
+	}
+	var pd ProblemDetails
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if pd.Code != "AUTH_SERVICE_UNAVAILABLE" {
+		t.Errorf("expected code AUTH_SERVICE_UNAVAILABLE, got %s", pd.Code)
+	}
+}
+
+func TestRateLimiter(t *testing.T) {
+	rl := NewRateLimiter(1, 2) // 1 token/sec, capacity 2
+	router := NewRouter(Deps{
+		Enforcer:    auth.DefaultTestEnforcer(),
+		RateLimiter: rl,
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.RemoteAddr = "192.168.1.50:12345"
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200", i+1, w.Code)
+		}
+	}
+
+	// 3rd request exceeds capacity
+	req3 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req3.RemoteAddr = "192.168.1.50:12345"
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusTooManyRequests {
+		t.Errorf("request 3 status = %d, want 429", w3.Code)
+	}
+}
+
 func TestRouterErrorBranches(t *testing.T) {
 	// Ready check failure (503)
 	failingReadyDeps := Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
 		ReadyCheck: func(ctx context.Context) error {
 			return errors.New("db down")
 		},
@@ -354,16 +532,18 @@ func TestRouterErrorBranches(t *testing.T) {
 		method     string
 		path       string
 		body       string
+		role       string
+		guestToken string
 		wantStatus int
 	}{
-		{"check-in not found", http.MethodPost, "/api/v1/bookings/not-found/check-in", "", http.StatusNotFound},
-		{"check-out not found", http.MethodPost, "/api/v1/bookings/not-found/check-out", "", http.StatusNotFound},
-		{"no-show not found", http.MethodPost, "/api/v1/bookings/not-found/no-show", "", http.StatusNotFound},
-		{"cancel not found", http.MethodPost, "/api/v1/bookings/not-found/cancel", "", http.StatusNotFound},
-		{"availability invalid query", http.MethodGet, "/api/v1/availability?room_type_id=", "", http.StatusBadRequest},
-		{"availability invalid dates", http.MethodGet, "/api/v1/availability?room_type_id=1&check_in=2026-10-15&check_out=2026-10-10", "", http.StatusBadRequest},
-		{"create booking bad json", http.MethodPost, "/api/v1/bookings", "{invalid-json", http.StatusBadRequest},
-		{"create booking invalid date format", http.MethodPost, "/api/v1/bookings", `{"room_type_id":"std","check_in":"bad","check_out":"2026-10-12"}`, http.StatusBadRequest},
+		{"check-in not found", http.MethodPost, "/api/v1/bookings/not-found/check-in", "", "receptionist", "", http.StatusNotFound},
+		{"check-out not found", http.MethodPost, "/api/v1/bookings/not-found/check-out", "", "receptionist", "", http.StatusNotFound},
+		{"no-show not found", http.MethodPost, "/api/v1/bookings/not-found/no-show", "", "receptionist", "", http.StatusNotFound},
+		{"cancel not found", http.MethodPost, "/api/v1/bookings/not-found/cancel", "", "guest", "some-token", http.StatusNotFound},
+		{"availability invalid query", http.MethodGet, "/api/v1/availability?room_type_id=", "", "guest", "", http.StatusBadRequest},
+		{"availability invalid dates", http.MethodGet, "/api/v1/availability?room_type_id=1&check_in=2026-10-15&check_out=2026-10-10", "", "guest", "", http.StatusBadRequest},
+		{"create booking bad json", http.MethodPost, "/api/v1/bookings", "{invalid-json", "guest", "", http.StatusBadRequest},
+		{"create booking invalid date format", http.MethodPost, "/api/v1/bookings", `{"room_type_id":"std","check_in":"bad","check_out":"2026-10-12"}`, "guest", "", http.StatusBadRequest},
 	}
 
 	for _, tt := range errorPaths {
@@ -375,6 +555,12 @@ func TestRouterErrorBranches(t *testing.T) {
 				bodyReader = bytes.NewBuffer(nil)
 			}
 			r := httptest.NewRequest(tt.method, tt.path, bodyReader)
+			if tt.role != "" && tt.role != "guest" {
+				r.Header.Set("Authorization", "Bearer "+tt.role)
+			}
+			if tt.guestToken != "" {
+				r.Header.Set("X-Guest-Token", tt.guestToken)
+			}
 			rw := httptest.NewRecorder()
 			h.ServeHTTP(rw, r)
 			if rw.Code != tt.wantStatus {
@@ -385,6 +571,7 @@ func TestRouterErrorBranches(t *testing.T) {
 
 	// Test availability store not found (404)
 	rAvailNotFound := NewRouter(Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
 		InvStore: &mockInvStore{err: inventory.ErrNotFound},
 		RateSvc:  &mockRates{},
 	})
@@ -398,6 +585,7 @@ func TestRouterErrorBranches(t *testing.T) {
 	// Test availability rate provider error (404)
 	now := time.Now()
 	rRateErr := NewRouter(Deps{
+		Enforcer: auth.DefaultTestEnforcer(),
 		InvStore: &mockInvStore{avail: []inventory.Availability{{Date: now, AvailableRooms: 5}}},
 		RateSvc:  &mockRates{err: errors.New("rate error")},
 	})

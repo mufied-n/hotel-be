@@ -2,6 +2,8 @@ package booking
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,6 +12,12 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 )
+
+func generateGuestToken() string {
+	buf := make([]byte, 16)
+	_, _ = rand.Read(buf)
+	return "gst_" + hex.EncodeToString(buf)
+}
 
 // Ports (driven) yang dikonsumsi domain — didefinisikan di sisi consumer (§8.2).
 type (
@@ -150,6 +158,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		Currency:        "IDR",
 		GuestName:       in.GuestName,
 		GuestEmail:      in.GuestEmail,
+		GuestToken:      generateGuestToken(),
 		CreatedAt:       time.Now().UTC(),
 	}
 

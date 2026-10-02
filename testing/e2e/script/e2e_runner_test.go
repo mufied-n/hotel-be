@@ -108,6 +108,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 			NumGuests:       2,
 			GuestName:       "Budi Santoso",
 			GuestEmail:      "budi@example.com",
+			GuestToken:      "gst_e2e_secret_token_123",
 			TotalPriceMinor: 1_100_000,
 		},
 		rooms: []string{"301"},
@@ -139,11 +140,12 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	)
 
 	handler := api.NewRouter(api.Deps{
-		BookingSvc: bkSvc,
-		InvStore:   inv,
-		RateSvc:    ratesSvc,
-		Enforcer:   enforcer,
-		ReadyCheck: func(ctx context.Context) error { return nil },
+		BookingSvc:    bkSvc,
+		InvStore:      inv,
+		RateSvc:       ratesSvc,
+		Enforcer:      enforcer,
+		IsDevelopment: true,
+		ReadyCheck:    func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			_ = bkSvc.Confirm(r.Context(), "bk-e2e-001")
 			w.WriteHeader(http.StatusOK)
@@ -176,6 +178,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	defer srv.Close()
 
 	client := srv.Client()
+	var createdGuestToken string
 
 	// 1. Healthz probe
 	t.Run("E2E-01: Health check", func(t *testing.T) {
@@ -217,6 +220,11 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusCreated {
 			t.Errorf("create booking status = %d, want 201", res.StatusCode)
 		}
+		var resp struct {
+			GuestAccessToken string `json:"guest_access_token"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		createdGuestToken = resp.GuestAccessToken
 	})
 
 	// 4. RBAC Negative Test: Public Guest CANNOT check-in
@@ -306,6 +314,92 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		_ = json.NewDecoder(res.Body).Decode(&body)
 		if body["id"] != "bk-e2e-001" {
 			t.Errorf("expected booking ID bk-e2e-001, got %v", body["id"])
+		}
+	})
+
+	// 10. BE-G13: Public guest receives masked PublicDTO (no PII leakage)
+	t.Run("E2E-10: Public guest receives masked PublicDTO (no PII)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/bookings/bk-e2e-001", nil)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", res.StatusCode)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		if _, exists := body["guest_name"]; exists {
+			t.Errorf("PII leaked! guest_name found: %v", body["guest_name"])
+		}
+		if _, exists := body["guest_email"]; exists {
+			t.Errorf("PII leaked! guest_email found: %v", body["guest_email"])
+		}
+		if _, exists := body["guest_token"]; exists {
+			t.Errorf("PII leaked! guest_token found: %v", body["guest_token"])
+		}
+		if body["id"] != "bk-e2e-001" {
+			t.Errorf("expected id bk-e2e-001, got %v", body["id"])
+		}
+	})
+
+	// 11. BE-G13: Guest with valid X-Guest-Token receives full PII
+	t.Run("E2E-11: Guest with X-Guest-Token receives full PII", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/bookings/bk-e2e-001", nil)
+		req.Header.Set("X-Guest-Token", createdGuestToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", res.StatusCode)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		if body["guest_name"] != "Budi Santoso" {
+			t.Errorf("expected guest_name 'Budi Santoso', got %v", body["guest_name"])
+		}
+		if body["guest_email"] != "budi@example.com" {
+			t.Errorf("expected guest_email 'budi@example.com', got %v", body["guest_email"])
+		}
+	})
+
+	// 12. BE-G13: Guest with invalid token cannot cancel booking (403 Forbidden)
+	t.Run("E2E-12: Guest with invalid token cannot cancel booking (403 Forbidden)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/cancel", nil)
+		req.Header.Set("X-Guest-Token", "invalid_token_xyz")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusForbidden {
+			t.Errorf("cancel status = %d, want 403 Forbidden", res.StatusCode)
+		}
+		var pd api.ProblemDetails
+		_ = json.NewDecoder(res.Body).Decode(&pd)
+		if pd.Code != "FORBIDDEN_OWNERSHIP" {
+			t.Errorf("expected error code FORBIDDEN_OWNERSHIP, got %s", pd.Code)
+		}
+	})
+
+	// 13. BE-G10: Production mode gates /fake-pay (404 Not Found)
+	t.Run("E2E-13: Production mode gates /fake-pay (404 Not Found)", func(t *testing.T) {
+		prodHandler := api.NewRouter(api.Deps{
+			Enforcer:      auth.DefaultTestEnforcer(),
+			IsDevelopment: false,
+			FakePay: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			},
+		})
+		prodSrv := httptest.NewServer(prodHandler)
+		defer prodSrv.Close()
+
+		res, err := client.Post(prodSrv.URL+"/fake-pay/ref-e2e", "application/json", nil)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("production fake-pay status = %d, want 404", res.StatusCode)
 		}
 	})
 }

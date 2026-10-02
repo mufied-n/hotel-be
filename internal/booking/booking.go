@@ -73,7 +73,32 @@ type Booking struct {
 	Currency        string    `json:"currency"`
 	GuestName       string    `json:"guest_name"`
 	GuestEmail      string    `json:"guest_email"`
+	GuestToken      string    `json:"guest_token,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
+}
+
+// PublicDTO adalah representasi publik minimal tanpa kebocoran PII (BE-G13).
+type PublicDTO struct {
+	ID         string    `json:"id"`
+	RoomTypeID string    `json:"room_type_id"`
+	CheckIn    time.Time `json:"check_in"`
+	CheckOut   time.Time `json:"check_out"`
+	NumRooms   int       `json:"num_rooms"`
+	Status     Status    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ToPublicDTO menyaring field sensitif (nama, email, guest_token) untuk akses unauthenticated.
+func (b Booking) ToPublicDTO() PublicDTO {
+	return PublicDTO{
+		ID:         b.ID,
+		RoomTypeID: b.RoomTypeID,
+		CheckIn:    b.CheckIn,
+		CheckOut:   b.CheckOut,
+		NumRooms:   b.NumRooms,
+		Status:     b.Status,
+		CreatedAt:  b.CreatedAt,
+	}
 }
 
 // Nights mengembalikan jumlah malam (konvensi half-open [check_in, check_out)).

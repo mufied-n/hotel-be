@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -174,21 +175,27 @@ func main() {
 		}
 	}()
 
-	// ---- Casbin RBAC Enforcer ----
+	// ---- Casbin RBAC Enforcer (fail-closed: BE-G14) ----
 	enforcer, err := auth.NewEnforcer(pool, "config/rbac_model.conf")
 	if err != nil {
-		log.Error("casbin.enforcer.init", "err", err)
+		if cfg.IsProduction() {
+			log.Error("casbin.enforcer.fatal_production", "err", err)
+			os.Exit(1)
+		}
+		log.Error("casbin.enforcer.init_failed", "err", err)
 	} else {
 		log.Info("casbin.enforcer.ready")
 	}
 
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
-		BookingSvc: bkSvc,
-		InvStore:   invStore,
-		RateSvc:    rateEngine,
-		Enqueuer:   enqueuer,
-		Enforcer:   enforcer,
+		BookingSvc:    bkSvc,
+		InvStore:      invStore,
+		RateSvc:       rateEngine,
+		Enqueuer:      enqueuer,
+		Enforcer:      enforcer,
+		IsDevelopment: cfg.IsDevelopment(),
+		RateLimiter:   api.NewRateLimiter(20, 40), // 20 req/s, burst 40
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
@@ -199,10 +206,13 @@ func main() {
 			return nil
 		},
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			// Dev-only: langsung panggil use case Confirm yang sama dengan webhook.
+			// Dev-only: langsung panggil use case Confirm yang sama dengan webhook (BE-G10).
 			bookingID := r.URL.Query().Get("booking_id")
 			if bookingID == "" {
-				http.Error(w, "booking_id required", http.StatusBadRequest)
+				bookingID = chi.URLParam(r, "ref")
+			}
+			if bookingID == "" {
+				http.Error(w, "booking_id or ref required", http.StatusBadRequest)
 				return
 			}
 			if err := bkSvc.Confirm(r.Context(), bookingID); err != nil {

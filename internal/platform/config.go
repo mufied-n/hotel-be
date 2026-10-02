@@ -15,22 +15,41 @@ import (
 
 // Config membaca seluruh setting dari environment variables.
 type Config struct {
-	Port        string
-	DatabaseDSN string
-	ValkeyAddr  string
+	Environment    string // "development", "staging", "production"
+	Port           string
+	DatabaseDSN    string
+	ValkeyAddr     string
 	// HoldTimeout durasi hold kamar sebelum dirilis otomatis (desain §12: 30 menit).
 	HoldTimeout time.Duration
 	// OutboxInterval interval polling relay outbox.
 	OutboxInterval time.Duration
 }
 
+func (c Config) IsDevelopment() bool {
+	return c.Environment != "production"
+}
+
+func (c Config) IsProduction() bool {
+	return c.Environment == "production"
+}
+
 func LoadConfig() Config {
+	holdTimeout := getDuration("HOLD_TIMEOUT", 30*time.Minute)
+	if holdTimeout <= 0 {
+		holdTimeout = 30 * time.Minute
+	}
+	outboxInterval := getDuration("OUTBOX_INTERVAL", 2*time.Second)
+	if outboxInterval <= 0 {
+		outboxInterval = 2 * time.Second
+	}
+
 	return Config{
+		Environment:    getenv("APP_ENV", "development"),
 		Port:           getenv("APP_PORT", "8080"),
 		DatabaseDSN:    getenv("DATABASE_URL", "postgres://postgres:dev@localhost:5432/booking?sslmode=disable"),
 		ValkeyAddr:     getenv("VALKEY_ADDR", "localhost:6379"),
-		HoldTimeout:    getDuration("HOLD_TIMEOUT", 30*time.Minute),
-		OutboxInterval: getDuration("OUTBOX_INTERVAL", 2*time.Second),
+		HoldTimeout:    holdTimeout,
+		OutboxInterval: outboxInterval,
 	}
 }
 
@@ -43,7 +62,7 @@ func getenv(key, def string) string {
 
 func getDuration(key string, def time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}
 	}
@@ -57,6 +76,7 @@ func NewDB(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("db connect: %w", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
 	return pool, nil

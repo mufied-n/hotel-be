@@ -59,3 +59,49 @@ func TestBooking_Nights(t *testing.T) {
 		t.Errorf("b.Nights() = %d, want 3", got)
 	}
 }
+
+func TestBooking_ToPublicDTO(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name    string
+		booking Booking
+	}{
+		{
+			name: "masks guest PII and token",
+			booking: Booking{
+				ID:              "bk-001",
+				Status:          StatusConfirmed,
+				RoomTypeID:      "deluxe",
+				CheckIn:         now,
+				CheckOut:        now.Add(48 * time.Hour),
+				NumRooms:        2,
+				NumGuests:       4,
+				TotalPriceMinor: 2_500_000,
+				Currency:        "IDR",
+				GuestName:       "Rahasia Tamu",
+				GuestEmail:      "rahasia@example.com",
+				GuestToken:      "gst_super_secret_token",
+				CreatedAt:       now,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dto := tt.booking.ToPublicDTO()
+			if dto.ID != tt.booking.ID {
+				t.Errorf("ID = %s, want %s", dto.ID, tt.booking.ID)
+			}
+			if dto.Status != tt.booking.Status {
+				t.Errorf("Status = %s, want %s", dto.Status, tt.booking.Status)
+			}
+			if dto.RoomTypeID != tt.booking.RoomTypeID {
+				t.Errorf("RoomTypeID = %s, want %s", dto.RoomTypeID, tt.booking.RoomTypeID)
+			}
+			if dto.NumRooms != tt.booking.NumRooms {
+				t.Errorf("NumRooms = %d, want %d", dto.NumRooms, tt.booking.NumRooms)
+			}
+		})
+	}
+}
+

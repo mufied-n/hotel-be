@@ -22,15 +22,17 @@ import (
 
 // Deps adalah dependensi transport layer — semuanya interface domain.
 type Deps struct {
-	BookingSvc *booking.Service
-	InvStore   inventory.AvailabilityStore
-	RateSvc    rates.RateProvider
-	Enqueuer   *workers.Enqueuer
-	ReadyCheck func(ctx context.Context) error
+	BookingSvc    *booking.Service
+	InvStore      inventory.AvailabilityStore
+	RateSvc       rates.RateProvider
+	Enqueuer      *workers.Enqueuer
+	ReadyCheck    func(ctx context.Context) error
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
-	FakePay func(w http.ResponseWriter, r *http.Request)
+	FakePay       func(w http.ResponseWriter, r *http.Request)
 	// Enforcer untuk evaluasi RBAC Casbin thread-safe.
-	Enforcer *casbin.SyncedEnforcer
+	Enforcer      *casbin.SyncedEnforcer
+	IsDevelopment bool
+	RateLimiter   *RateLimiter
 }
 
 // NewRouter merakit seluruh route.
@@ -40,16 +42,17 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
+	if d.RateLimiter != nil {
+		r.Use(d.RateLimiter.Limit())
+	}
 
 	r.Get("/healthz", healthz)
 	r.Get("/ready", ready(d))
 
-	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin
+	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
 	r.Group(func(api chi.Router) {
 		api.Use(IdentifySubject())
-		if d.Enforcer != nil {
-			api.Use(Authorize(d.Enforcer))
-		}
+		api.Use(Authorize(d.Enforcer))
 
 		api.Get("/api/v1/availability", getAvailability(d))
 		api.Post("/api/v1/bookings", createBooking(d))
@@ -59,9 +62,10 @@ func NewRouter(d Deps) http.Handler {
 		api.Post("/api/v1/bookings/{id}/check-out", checkOut(d))
 		api.Post("/api/v1/bookings/{id}/no-show", noShow(d))
 
-		// Dev-only: simulasi pembayaran sukses → memicu path webhook yang sama
-		// dengan gateway nyata (idempotent — §12.4).
-		api.Post("/fake-pay/{ref}", d.FakePay)
+		// Dev-only: simulasi pembayaran sukses (BE-G10: gate development only)
+		if d.IsDevelopment && d.FakePay != nil {
+			api.Post("/fake-pay/{ref}", d.FakePay)
+		}
 	})
 
 	return r
@@ -172,9 +176,10 @@ func createBooking(d Deps) http.HandlerFunc {
 			_ = d.Enqueuer.EnqueueReleaseHold(r.Context(), b.ID, d.BookingSvc.HoldTimeout())
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"booking":     b,
-			"payment_url": charge.PaymentURL,
-			"reference":   charge.Reference,
+			"booking":            b,
+			"guest_access_token": b.GuestToken,
+			"payment_url":        charge.PaymentURL,
+			"reference":          charge.Reference,
 		})
 	}
 }
@@ -184,14 +189,27 @@ func getBooking(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		b, err := d.BookingSvc.Get(r.Context(), chi.URLParam(r, "id"))
 		if errors.Is(err, booking.ErrNotFound) {
-			httpError(w, http.StatusNotFound, "booking tidak ditemukan")
+			httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 			return
 		}
 		if err != nil {
-			httpError(w, http.StatusInternalServerError, "gagal membaca booking")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membaca booking", "INTERNAL_ERROR")
 			return
 		}
-		writeJSON(w, http.StatusOK, b)
+
+		authCtx := GetAuthContext(r.Context())
+		guestToken := GetGuestToken(r.Context())
+
+		// BE-G13: Privasi data tamu (PII).
+		// Jika caller adalah staff (bukan guest) ATAU memiliki guest_token yang valid,
+		// kembalikan data booking lengkap.
+		// Jika guest tanpa token yang cocok, kembalikan PublicDTO yang dimasking.
+		if authCtx.Role != "guest" || (b.GuestToken != "" && guestToken == b.GuestToken) {
+			writeJSON(w, http.StatusOK, b)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, b.ToPublicDTO())
 	}
 }
 
@@ -199,16 +217,36 @@ func getBooking(d Deps) http.HandlerFunc {
 func cancelBooking(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
+		authCtx := GetAuthContext(r.Context())
+		guestToken := GetGuestToken(r.Context())
+
+		// BE-G13: Guest hanya diizinkan membatalkan jika memiliki guest_token yang cocok
+		if authCtx.Role == "guest" {
+			b, err := d.BookingSvc.Get(r.Context(), id)
+			if errors.Is(err, booking.ErrNotFound) {
+				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
+				return
+			}
+			if err != nil {
+				httpErrorCode(w, http.StatusInternalServerError, "gagal membaca booking", "INTERNAL_ERROR")
+				return
+			}
+			if b.GuestToken == "" || guestToken != b.GuestToken {
+				httpErrorCode(w, http.StatusForbidden, "guest token tidak valid atau tidak memiliki akses pembatalan", "FORBIDDEN_OWNERSHIP")
+				return
+			}
+		}
+
 		if err := d.BookingSvc.Cancel(r.Context(), id); err != nil {
 			if errors.Is(err, booking.ErrIllegalTransition) {
-				httpError(w, http.StatusConflict, err.Error())
+				httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
 				return
 			}
 			if errors.Is(err, booking.ErrNotFound) {
-				httpError(w, http.StatusNotFound, "booking tidak ditemukan")
+				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 				return
 			}
-			httpError(w, http.StatusInternalServerError, "gagal membatalkan booking")
+			httpErrorCode(w, http.StatusInternalServerError, "gagal membatalkan booking", "INTERNAL_ERROR")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "id": id})
@@ -298,6 +336,11 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func httpErrorCode(w http.ResponseWriter, code int, msg, errCode string) {
+	title := http.StatusText(code)
+	writeProblemDetails(w, code, title, msg, errCode)
+}
+
 func httpError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	httpErrorCode(w, code, msg, "ERROR")
 }

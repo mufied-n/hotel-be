@@ -76,17 +76,48 @@ HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     "${BASE_URL}/api/v1/bookings")
 assert_status "Guest creates booking hold" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
-# Extract booking_id if created
-BOOKING_ID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | cut -d'"' -f4 || echo "")
+# Extract booking_id and guest_access_token if created
+BOOKING_ID=$(grep -o '"id":"[^"]*' /tmp/e2e_res.json | head -1 | cut -d'"' -f4 || echo "")
+GUEST_TOKEN=$(grep -o '"guest_access_token":"[^"]*' /tmp/e2e_res.json | cut -d'"' -f4 || echo "")
 if [ -z "$BOOKING_ID" ]; then
     BOOKING_ID="01900000-0000-7000-8000-000000000001"
 fi
 echo -e "       Active Booking ID: ${BOOKING_ID}"
+echo -e "       Guest Access Token: ${GUEST_TOKEN:-none}"
 
 # ------------------------------------------------------------------------------
-# Test 4: RBAC Negative Tests (Guest cannot Check-In)
+# Test 4: BE-G13 PII Masking vs Authorized Access
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}>> 4. RBAC Protection: Guest / Public Forbidden Actions <<${NC}"
+echo -e "\n${YELLOW}>> 4. PII Protection (BE-G13) <<${NC}"
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    "${BASE_URL}/api/v1/bookings/${BOOKING_ID}")
+assert_status "Public Guest receives masked PublicDTO (no PII)" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+if grep -q '"guest_name"' /tmp/e2e_res.json; then
+    echo -e "[${RED}FAIL${NC}] PII Leakage: guest_name present in public DTO!"
+    FAILED=$((FAILED + 1))
+else
+    echo -e "[${GREEN}PASS${NC}] Verified: guest_name is NOT leaked in public DTO"
+    PASSED=$((PASSED + 1))
+fi
+TOTAL=$((TOTAL + 1))
+
+if [ -n "$GUEST_TOKEN" ]; then
+    HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+        -H "X-Guest-Token: ${GUEST_TOKEN}" \
+        "${BASE_URL}/api/v1/bookings/${BOOKING_ID}")
+    assert_status "Guest with X-Guest-Token receives full PII" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+fi
+
+HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
+    -X POST \
+    -H "X-Guest-Token: invalid_token" \
+    "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/cancel")
+assert_status "Guest with invalid token rejected from cancel (403 Forbidden)" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# ------------------------------------------------------------------------------
+# Test 5: RBAC Negative Tests (Guest cannot Check-In)
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}>> 5. RBAC Protection: Guest / Public Forbidden Actions <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-in")
@@ -105,21 +136,21 @@ HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
 assert_status "Housekeeping role is FORBIDDEN from check-in" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
-# Test 5: Confirm Payment (Simulation)
+# Test 6: Confirm Payment (Simulation)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}>> 5. Payment Confirmation <<${NC}"
+echo -e "\n${YELLOW}>> 6. Payment Confirmation <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
     "${BASE_URL}/fake-pay/ref-e2e?booking_id=${BOOKING_ID}")
 assert_status "Confirm payment via webhook/fake-pay" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
-# Test 6: RBAC Authorized Front Desk Actions (Receptionist Role)
+# Test 7: RBAC Authorized Front Desk Actions (Receptionist Role)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}>> 6. RBAC Staff Actions (Role: Receptionist) <<${NC}"
+echo -e "\n${YELLOW}>> 7. RBAC Staff Actions (Role: Receptionist) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "X-User-Role: receptionist" \
+    -H "Authorization: Bearer receptionist" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-in")
 assert_status "Receptionist checks in guest" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -130,11 +161,11 @@ HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
 assert_status "Receptionist checks out guest (Bearer token)" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # ------------------------------------------------------------------------------
-# Test 7: Super Admin Access (Role: gm_admin)
+# Test 8: Super Admin Access (Role: gm_admin)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}>> 7. RBAC Super Admin Wildcard Access (Role: gm_admin) <<${NC}"
+echo -e "\n${YELLOW}>> 8. RBAC Super Admin Wildcard Access (Role: gm_admin) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
-    -H "X-User-Role: gm_admin" \
+    -H "Authorization: Bearer gm_admin" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}")
 assert_status "General Manager can inspect any booking" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 

@@ -93,11 +93,11 @@ func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []
 	err := t.tx.QueryRow(ctx, `
 		INSERT INTO bookings
 			(room_type_id, check_in, check_out, num_rooms, num_guests,
-			 status, total_price_minor, currency, guest_name, guest_email, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			 status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING id`,
 		b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms, b.NumGuests,
-		string(b.Status), b.TotalPriceMinor, b.Currency, b.GuestName, b.GuestEmail, b.CreatedAt,
+		string(b.Status), b.TotalPriceMinor, b.Currency, b.GuestName, b.GuestEmail, b.GuestToken, b.CreatedAt,
 	).Scan(&b.ID)
 	if err != nil {
 		return fmt.Errorf("booking: insert: %w", err)
@@ -124,7 +124,7 @@ func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []
 func (t *txCtx) GetForUpdate(ctx context.Context, id string) (Booking, error) {
 	return scanBooking(t.tx.QueryRow(ctx, `
 		SELECT id, room_type_id, check_in, check_out, num_rooms, num_guests,
-		       status, total_price_minor, currency, guest_name, guest_email, created_at
+		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at
 		FROM bookings WHERE id = $1 FOR UPDATE`, id))
 }
 
@@ -244,7 +244,7 @@ type PostgresReader struct{ Pool *pgxpool.Pool }
 func (r *PostgresReader) Get(ctx context.Context, id string) (Booking, error) {
 	return scanBooking(r.Pool.QueryRow(ctx, `
 		SELECT id, room_type_id, check_in, check_out, num_rooms, num_guests,
-		       status, total_price_minor, currency, guest_name, guest_email, created_at
+		       status, total_price_minor, currency, guest_name, guest_email, guest_token, created_at
 		FROM bookings WHERE id = $1`, id))
 }
 
@@ -255,7 +255,7 @@ func scanBooking(row rowScanner) (Booking, error) {
 	var status string
 	err := row.Scan(&b.ID, &b.RoomTypeID, &b.CheckIn, &b.CheckOut, &b.NumRooms,
 		&b.NumGuests, &status, &b.TotalPriceMinor, &b.Currency,
-		&b.GuestName, &b.GuestEmail, &b.CreatedAt)
+		&b.GuestName, &b.GuestEmail, &b.GuestToken, &b.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Booking{}, ErrNotFound
 	}

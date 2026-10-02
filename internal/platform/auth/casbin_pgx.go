@@ -187,3 +187,24 @@ func NewInMemoryEnforcer(policies [][]string) (*casbin.SyncedEnforcer, error) {
 	}
 	return e, nil
 }
+
+// DefaultTestEnforcer mengembalikan in-memory enforcer dengan kebijakan default hotel untuk pengujian unit.
+func DefaultTestEnforcer() *casbin.SyncedEnforcer {
+	policies := [][]string{
+		{"p", "guest", "/api/v1/availability", "GET"},
+		{"p", "guest", "/api/v1/bookings", "POST"},
+		{"p", "guest", "/api/v1/bookings/:id", "GET"},
+		{"p", "guest", "/api/v1/bookings/:id/cancel", "POST"},
+		{"p", "guest", "/fake-pay/:ref", "POST"},
+		{"p", "receptionist", "/api/v1/bookings/:id/check-in", "POST"},
+		{"p", "receptionist", "/api/v1/bookings/:id/check-out", "POST"},
+		{"p", "receptionist", "/api/v1/bookings/:id/no-show", "POST"},
+		{"p", "housekeeping", "/api/v1/rooms/housekeeping", "GET"},
+		{"p", "revenue_mgr", "/api/v1/rates", "PUT"},
+		{"p", "finance", "/api/v1/reports/*", "GET"},
+		{"p", "gm_admin", "/api/v1/*", "*"},
+		{"g", "receptionist", "guest"},
+	}
+	e, _ := NewInMemoryEnforcer(policies)
+	return e
+}

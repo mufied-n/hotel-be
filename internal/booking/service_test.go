@@ -495,3 +495,35 @@ func TestCancel_ReleasesInventory(t *testing.T) {
 		t.Errorf("inventory = %d, want 5 (restored)", tx.inventory["std|2026-10-10"])
 	}
 }
+
+func TestService_GetAndGuestTokenAndHoldTimeout(t *testing.T) {
+	b := &Booking{
+		ID:         "b-token-test",
+		RoomTypeID: "std",
+		CheckIn:    date("2026-10-10"),
+		CheckOut:   date("2026-10-11"),
+		GuestName:  "Token Tester",
+		GuestToken: "gst_test1234567890",
+		Status:     StatusConfirmed,
+	}
+	tx := newFakeTx(map[string]*Booking{"b-token-test": b}, nil)
+	svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-token-test": b}})
+
+	if svc.HoldTimeout() != 30*time.Minute {
+		t.Errorf("HoldTimeout() = %v, want 30m", svc.HoldTimeout())
+	}
+
+	got, err := svc.Get(context.Background(), "b-token-test")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.GuestToken != "gst_test1234567890" {
+		t.Errorf("GuestToken = %s, want gst_test1234567890", got.GuestToken)
+	}
+
+	_, errNotFound := svc.Get(context.Background(), "non-existent")
+	if !errors.Is(errNotFound, ErrNotFound) {
+		t.Errorf("Get() non-existent error = %v, want ErrNotFound", errNotFound)
+	}
+}
+
