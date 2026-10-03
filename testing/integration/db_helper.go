@@ -3,22 +3,29 @@ package integration
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const defaultTestDSN = "postgres://postgres:dev@172.24.0.3:5432/booking_test?sslmode=disable"
-
 // GetTestPool mengembalikan connection pool ke database PostgreSQL 18 nyata.
 // Jika database tidak dapat dijangkau, tes akan dilewati (t.Skip) secara graceful.
 func GetTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
+	// ResetTestData menjalankan TRUNCATE; DSN wajib eksplisit dan harus menunjuk database "*_test"
+	// (kecuali ALLOW_DESTRUCTIVE_TESTS=1) agar data dev/produksi tidak terhapus tak sengaja.
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = defaultTestDSN
+		t.Skip("skipping integration test: TEST_DATABASE_URL is not set")
+		return nil
+	}
+	if cfg, err := pgxpool.ParseConfig(dsn); err == nil &&
+		!strings.HasSuffix(cfg.ConnConfig.Database, "_test") && os.Getenv("ALLOW_DESTRUCTIVE_TESTS") != "1" {
+		t.Skipf("skipping integration test: database %q is not named *_test (set ALLOW_DESTRUCTIVE_TESTS=1 to override)", cfg.ConnConfig.Database)
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

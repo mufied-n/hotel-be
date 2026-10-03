@@ -34,3 +34,9 @@ Verifikasi DB setelah uji: tepat 1 baris `bookings` dan 1 `payment_attempts` per
 ## Risiko residual
 - Jika proses mati setelah booking commit tetapi sebelum `Complete`, reservasi kedaluwarsa dalam 2 menit dan retry dapat membuat booking kedua.
 - Fake gateway dan identitas staf tidak berubah: **BE-R01 dan BE-R16 masih OPEN**. Skrip ini sendiri memakai `Bearer receptionist` untuk check-in/out, yaitu mekanisme yang terbukti dapat dipalsukan.
+
+## Tindak lanjut (13:40) — hal yang sebelumnya dicatat sebagai risiko
+- **Satu quote = satu booking.** Migrasi `00016_unique_booking_quote.sql` menambah unique index `uq_bookings_quote_id`; percobaan kedua dengan quote yang sama → 409 `QUOTE_ALREADY_USED`, stok tidak bocor (`TestRealDB_QuoteSingleUse`). Ini juga menutup risiko residual R08: bila reservasi idempotency kedaluwarsa sebelum respons tercatat, retry tidak dapat membuat booking kedua. Konsekuensi: setelah create gagal di sisi payment, klien harus meminta quote baru.
+- **Integration test aman.** `db_helper.go` tidak lagi memakai DSN hardcode; wajib `TEST_DATABASE_URL`, dan database harus bernama `*_test` (override `ALLOW_DESTRUCTIVE_TESTS=1`). Tanpa env test di-skip.
+- **Coverage `internal/booking`:** unit saja 55.9%; gabungan unit + real-DB (`-coverpkg=./internal/booking`) **82.8%**. Lapisan SQL hanya terbukti lewat real-DB test.
+- Migrasi harus dijalankan sebelum deploy; jika data lama berisi `quote_id` ganda, migrasi gagal (aman, tidak merusak data).

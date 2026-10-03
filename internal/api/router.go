@@ -703,6 +703,10 @@ func createBooking(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusGone, err.Error(), "QUOTE_EXPIRED")
 			return
 		}
+		if errors.Is(err, booking.ErrQuoteAlreadyUsed) {
+			httpErrorCode(c, http.StatusConflict, err.Error(), "QUOTE_ALREADY_USED")
+			return
+		}
 		if errors.Is(err, booking.ErrQuoteMismatch) {
 			httpErrorCode(c, http.StatusBadRequest, err.Error(), "QUOTE_MISMATCH")
 			return

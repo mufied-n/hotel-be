@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/example/hotel-booking/internal/booking"
 )
 
 // BE-R08: Reserve harus atomik; hanya satu pemanggil yang memperoleh klaim.
@@ -268,5 +270,17 @@ func TestCreateBooking_QuoteRequired(t *testing.T) {
 	rec := postBooking(router, "", `{"room_type_id":"std","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":1,"guest_name":"B","guest_email":"b@example.com","terms_accepted":true,"privacy_accepted":true}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "QUOTE_REQUIRED") {
 		t.Fatalf("got %d %s, want 400 QUOTE_REQUIRED", rec.Code, rec.Body.String())
+	}
+}
+
+// Quote yang sudah menjadi booking ditolak 409 QUOTE_ALREADY_USED (satu quote = satu booking).
+func TestCreateBooking_QuoteAlreadyUsed(t *testing.T) {
+	router, txMock := setupTestRouter()
+	quoteID := mustQuoteID(t, router, "std", 1, 1)
+	txMock.insertErr = booking.ErrQuoteAlreadyUsed
+	body := fmt.Sprintf(`{"quote_id":%q,"terms_accepted":true,"privacy_accepted":true,"room_type_id":"std","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":1,"guest_name":"B","guest_email":"b@example.com"}`, quoteID)
+	rec := postBooking(router, "", body)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "QUOTE_ALREADY_USED") {
+		t.Fatalf("got %d %s, want 409 QUOTE_ALREADY_USED", rec.Code, rec.Body.String())
 	}
 }

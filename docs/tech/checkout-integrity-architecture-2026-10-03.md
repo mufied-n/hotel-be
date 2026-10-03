@@ -34,5 +34,5 @@ sequenceDiagram
 ## Skema DB
 Tidak ada perubahan. `idempotency_keys(key PK, request_hash, response_code, response_body, created_at, expires_at)`.
 
-## Risiko residual
-- Jika proses mati setelah booking commit tetapi sebelum `Complete`, reservasi kedaluwarsa dalam 2 menit dan retry dapat membuat booking kedua. Penutupan penuh membutuhkan penautan intent ke transaksi booking (pekerjaan lanjutan, di luar scope ini).
+## Risiko residual (ditutup)
+- Jika proses mati setelah booking commit tetapi sebelum `Complete`, reservasi kedaluwarsa dalam 2 menit. Retry tidak dapat membuat booking kedua karena migrasi `00016` menjadikan `bookings.quote_id` unik: hasilnya 409 `QUOTE_ALREADY_USED`. Klien kehilangan akses ke booking itu hanya jika token tamu tidak tersimpan; dapat dipulihkan lewat OTP/Booking Saya.

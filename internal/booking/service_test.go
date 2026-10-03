@@ -31,6 +31,7 @@ type fakeTx struct {
 	events                 []string                  // topic yang di-publish
 	failLock               bool
 	failInsert             bool
+	insertErr              error
 	transientConflictCount int
 	roomNights             map[string][]rates.Quote  // bookingID → quotes
 }
@@ -81,6 +82,9 @@ func (f *fakeTx) Increment(_ context.Context, roomTypeID string, from, to time.T
 func (f *fakeTx) InsertBookingWithHold(_ context.Context, b *Booking, quotes []rates.Quote, holdExpiresAt time.Time) error {
 	if f.failInsert {
 		return errors.New("insert failed")
+	}
+	if f.insertErr != nil {
+		return f.insertErr
 	}
 	b.ID = "generated-" + b.GuestName
 	b.ExpiresAt = &holdExpiresAt
@@ -1355,4 +1359,54 @@ func withQuote(svc *Service, in CreateInput) CreateInput {
 	svc.SetQuoteStore(qs)
 	in.QuoteID, in.TermsAccepted, in.PrivacyAccepted = "q-test", true, true
 	return in
+}
+
+// Satu quote hanya boleh menghasilkan satu booking (unique quote_id di DB → ErrQuoteAlreadyUsed).
+func TestCreate_QuoteSingleUse(t *testing.T) {
+	tests := []struct {
+		name      string
+		insertErr error
+		wantErr   error
+	}{
+		{name: "quote belum dipakai", insertErr: nil, wantErr: nil},
+		{name: "quote sudah dipakai booking lain", insertErr: ErrQuoteAlreadyUsed, wantErr: ErrQuoteAlreadyUsed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := newFakeTx(map[string]*Booking{}, map[string][]string{})
+			tx.inventory["std|2026-10-10"] = 5
+			tx.inventory["std|2026-10-11"] = 5
+			tx.insertErr = tc.insertErr
+			inv := &fakeInvStore{avail: []inventory.Availability{
+				{Date: date("2026-10-10"), TotalRooms: 5, AvailableRooms: 5},
+				{Date: date("2026-10-11"), TotalRooms: 5, AvailableRooms: 5},
+			}}
+			svc := NewService(tx, inv, &fakeRates{}, &fakePayment{}, &fakeNotifier{}, &fakeReader{bookings: tx.bookings}, 30*time.Minute, slog.Default())
+			_, _, err := svc.Create(context.Background(), withQuote(svc, CreateInput{
+				RoomTypeID: "std", CheckIn: date("2026-10-10"), CheckOut: date("2026-10-12"),
+				NumRooms: 1, NumGuests: 2, GuestName: "Budi", GuestEmail: "budi@example.com",
+			}))
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestBypassRoomReadinessContext(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{name: "default context tidak bypass", ctx: context.Background(), want: false},
+		{name: "context dengan bypass", ctx: WithBypassRoomReadiness(context.Background()), want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsBypassRoomReadiness(tc.ctx); got != tc.want {
+				t.Errorf("IsBypassRoomReadiness = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

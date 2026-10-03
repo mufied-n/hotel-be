@@ -144,13 +144,17 @@ func (m *mockTxRunner) InTx(ctx context.Context, fn func(booking.InventoryTx, bo
 }
 
 type mockTx struct {
-	booking booking.Booking
-	rooms   []string
+	booking   booking.Booking
+	rooms     []string
+	insertErr error
 }
 
 func (m *mockTx) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error { return nil }
 func (m *mockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error        { return nil }
 func (m *mockTx) InsertBookingWithHold(_ context.Context, b *booking.Booking, _ []rates.Quote, holdExpiresAt time.Time) error {
+	if m.insertErr != nil {
+		return m.insertErr
+	}
 	b.ID = "bk-123"
 	b.ExpiresAt = &holdExpiresAt
 	m.booking = *b

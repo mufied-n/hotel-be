@@ -29,3 +29,6 @@ TEST_DATABASE_URL=postgres://postgres:dev@localhost:25432/booking?sslmode=disabl
 BASE_URL=http://localhost:28080 testing/e2e/script/checkout_integrity_e2e.sh
 ```
 Laporan: [E2E report](../../testing/e2e/report/2026-10-03-133600-checkout-integrity-e2e-report.md)
+
+## Tindak lanjut 13:40
+`ErrQuoteAlreadyUsed` + migrasi `00016` + mapping 409; `db_helper.go` aman (`TEST_DATABASE_URL` wajib, DB `*_test`); tes `TestRealDB_QuoteSingleUse`, `TestRealDB_CheckInIdempotentReplay`, `TestBypassRoomReadinessContext`. Coverage booking gabungan 82.8%.

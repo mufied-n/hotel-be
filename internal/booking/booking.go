@@ -189,6 +189,9 @@ var ErrQuoteRequired = errors.New("booking: quote_id is required")
 // ErrQuoteExpired diembalikan bila quote sudah melewati batas TTL 15 menit (BE-G06).
 var ErrQuoteExpired = errors.New("booking: quote has expired (>15m)")
 
+// ErrQuoteAlreadyUsed diembalikan bila quote sudah dipakai membuat booking (satu quote = satu booking).
+var ErrQuoteAlreadyUsed = errors.New("booking: quote has already been used for a booking")
+
 // ErrQuoteMismatch diembalikan bila parameter booking berbeda dengan quote terkunci (BE-G06).
 var ErrQuoteMismatch = errors.New("booking: reservation parameters do not match quote")
 

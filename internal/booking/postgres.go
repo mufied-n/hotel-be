@@ -114,6 +114,10 @@ func (t *txCtx) InsertBookingWithHold(ctx context.Context, b *Booking, quotes []
 		b.GuestPhone, b.EstimatedArrivalTime, b.SpecialRequests, b.ExpiresAt,
 	).Scan(&b.ID)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uq_bookings_quote_id" {
+			return ErrQuoteAlreadyUsed
+		}
 		return fmt.Errorf("booking: insert: %w", err)
 	}
 
