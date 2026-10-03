@@ -2449,3 +2449,174 @@ func TestCapacityInvariant_SearchQuoteCheckout_R07(t *testing.T) {
 		}
 	})
 }
+
+func TestCatalog_RateEngine_DynamicAndSearchGuard_R09(t *testing.T) {
+	catStore := catalog.NewMemoryStore([]catalog.RoomVariant{
+		{
+			ID:             "01900000-0000-7000-8000-000000000001",
+			Code:           "sup-king",
+			Name:           "Superior King",
+			MaxCapacity:    2,
+			MaxAdults:      2,
+			MaxChildren:    1,
+			BasePriceMinor: 550_000,
+		},
+		{
+			ID:             "01900000-0000-7000-8000-000000000099",
+			Code:           "unpriced-attic",
+			Name:           "Unpriced Attic",
+			MaxCapacity:    2,
+			MaxAdults:      2,
+			MaxChildren:    1,
+			BasePriceMinor: 0, // Unpriced!
+		},
+	})
+
+	invStore := &mockInvStore{
+		avail: []inventory.Availability{
+			{Date: time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC), TotalRooms: 5, AvailableRooms: 5},
+			{Date: time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC), TotalRooms: 5, AvailableRooms: 5},
+		},
+	}
+
+	rateEng := rates.NewEngine(nil, 1.25)
+	rateEng.SetBaseRateSource(catStore)
+
+	handler := NewRouter(Deps{
+		StaffAuth:    TestStaffVerifier(),
+		Enforcer:     auth.DefaultTestEnforcer(),
+		CatalogStore: catStore,
+		RateEngine:   rateEng,
+		RateSvc:      rateEng,
+		InvStore:     invStore,
+	})
+
+	// 1. Search guard: unpriced-attic must be marked RATE_UNAVAILABLE, sup-king available
+	t.Run("Search Pricing Guard for Unpriced Room", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-14&check_out=2026-10-16&rooms=1&adults=2", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var res struct {
+			AvailableCount int `json:"available_count"`
+			TotalVariants  int `json:"total_variants"`
+			Variants       []struct {
+				ID                string `json:"id"`
+				Code              string `json:"code"`
+				Available         bool   `json:"available"`
+				UnavailableReason string `json:"unavailable_reason"`
+				TotalPriceMinor   int64  `json:"total_price_minor"`
+			} `json:"variants"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatalf("json parse error: %v", err)
+		}
+		if res.AvailableCount != 1 {
+			t.Errorf("expected available_count 1, got %d", res.AvailableCount)
+		}
+		for _, v := range res.Variants {
+			if v.Code == "unpriced-attic" {
+				if v.Available {
+					t.Errorf("unpriced-attic should NOT be available")
+				}
+				if v.UnavailableReason != "RATE_UNAVAILABLE" {
+					t.Errorf("expected RATE_UNAVAILABLE, got %s", v.UnavailableReason)
+				}
+				if v.TotalPriceMinor != 0 {
+					t.Errorf("expected total_price_minor 0, got %d", v.TotalPriceMinor)
+				}
+			} else if v.Code == "sup-king" {
+				if !v.Available {
+					t.Errorf("sup-king should be available")
+				}
+				if v.TotalPriceMinor <= 0 {
+					t.Errorf("expected positive price, got %d", v.TotalPriceMinor)
+				}
+			}
+		}
+	})
+
+	// 2. Quote for unpriced room returns 400 RATE_UNAVAILABLE
+	t.Run("Quote for Unpriced Room Returns RATE_UNAVAILABLE", func(t *testing.T) {
+		body := `{"room_type_id":"01900000-0000-7000-8000-000000000099","rate_plan_code":"room_only","check_in":"2026-10-14","check_out":"2026-10-16","num_rooms":1,"num_guests":2}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var prob ProblemDetails
+		_ = json.Unmarshal(rec.Body.Bytes(), &prob)
+		if prob.Code != "RATE_UNAVAILABLE" {
+			t.Errorf("expected code RATE_UNAVAILABLE, got %s", prob.Code)
+		}
+	})
+
+	// 3. Update variant price via PUT /api/v1/catalog/rooms/:id immediately reflects in quote
+	t.Run("Catalog PUT Updates Quote Price Dynamically", func(t *testing.T) {
+		putBody := `{"code":"sup-king","name":"Superior King Updated","max_capacity":2,"base_price_minor":850000}`
+		putReq := httptest.NewRequest(http.MethodPut, "/api/v1/catalog/rooms/01900000-0000-7000-8000-000000000001", bytes.NewBufferString(putBody))
+		putReq.Header.Set("Authorization", "Bearer revenue_mgr")
+		putReq.Header.Set("Content-Type", "application/json")
+		putRec := httptest.NewRecorder()
+		handler.ServeHTTP(putRec, putReq)
+
+		if putRec.Code != http.StatusOK {
+			t.Fatalf("expected PUT 200, got %d: %s", putRec.Code, putRec.Body.String())
+		}
+
+		qBody := `{"room_type_id":"01900000-0000-7000-8000-000000000001","rate_plan_code":"room_only","check_in":"2026-10-14","check_out":"2026-10-16","num_rooms":1,"num_guests":2}`
+		qReq := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(qBody))
+		qReq.Header.Set("Content-Type", "application/json")
+		qRec := httptest.NewRecorder()
+		handler.ServeHTTP(qRec, qReq)
+
+		if qRec.Code != http.StatusOK {
+			t.Fatalf("expected quote 200, got %d: %s", qRec.Code, qRec.Body.String())
+		}
+		var lq rates.LockedQuote
+		_ = json.Unmarshal(qRec.Body.Bytes(), &lq)
+		if lq.Pricing.RoomSubtotalMinor != 1_700_000 {
+			t.Errorf("expected subtotal 1_700_000, got %d", lq.Pricing.RoomSubtotalMinor)
+		}
+		if lq.Pricing.TotalPriceMinor != 1_870_000 {
+			t.Errorf("expected total 1_870_000, got %d", lq.Pricing.TotalPriceMinor)
+		}
+	})
+
+	// 4. Create new variant via POST /api/v1/catalog/rooms is immediately searchable and quotable
+	t.Run("Catalog POST Creates New Variant Directly Quotable", func(t *testing.T) {
+		postBody := `{"code":"penthouse","name":"Uttara Penthouse","max_capacity":4,"max_adults":4,"max_children":2,"base_price_minor":4500000}`
+		postReq := httptest.NewRequest(http.MethodPost, "/api/v1/catalog/rooms", bytes.NewBufferString(postBody))
+		postReq.Header.Set("Authorization", "Bearer gm_admin")
+		postReq.Header.Set("Content-Type", "application/json")
+		postRec := httptest.NewRecorder()
+		handler.ServeHTTP(postRec, postReq)
+
+		if postRec.Code != http.StatusCreated {
+			t.Fatalf("expected POST 201, got %d: %s", postRec.Code, postRec.Body.String())
+		}
+		var created catalog.RoomVariant
+		_ = json.Unmarshal(postRec.Body.Bytes(), &created)
+
+		qBody := fmt.Sprintf(`{"room_type_id":"%s","rate_plan_code":"room_only","check_in":"2026-10-14","check_out":"2026-10-16","num_rooms":1,"num_guests":2}`, created.ID)
+		qReq := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(qBody))
+		qReq.Header.Set("Content-Type", "application/json")
+		qRec := httptest.NewRecorder()
+		handler.ServeHTTP(qRec, qReq)
+
+		if qRec.Code != http.StatusOK {
+			t.Fatalf("expected quote 200 for new variant, got %d: %s", qRec.Code, qRec.Body.String())
+		}
+		var lq rates.LockedQuote
+		_ = json.Unmarshal(qRec.Body.Bytes(), &lq)
+		if lq.Pricing.RoomSubtotalMinor != 9_000_000 {
+			t.Errorf("expected subtotal 9_000_000, got %d", lq.Pricing.RoomSubtotalMinor)
+		}
+	})
+}

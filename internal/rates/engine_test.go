@@ -3,8 +3,11 @@ package rates
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/example/hotel-booking/internal/catalog"
 )
 
 func date(s string) time.Time {
@@ -221,4 +224,179 @@ func TestMemoryQuoteStore_TTLAndExpiry(t *testing.T) {
 	if !errors.Is(err, ErrQuoteNotFound) {
 		t.Errorf("expected ErrQuoteNotFound, got %v", err)
 	}
+
+	engDefault := NewEngineWithQuoteStore(nil, 1.25, nil)
+	if engDefault.QuoteStore() == nil {
+		t.Error("expected non-nil QuoteStore from default store")
+	}
+
+	customStore := NewMemoryQuoteStore(0) // tests ttl <= 0 branch
+	engCustom := NewEngineWithQuoteStore(map[string]int64{"test": 100}, 1.25, customStore)
+	if engCustom.QuoteStore() != customStore {
+		t.Error("expected custom store returned")
+	}
+}
+
+func TestEngine_BaseRateSource_DynamicAndFallback(t *testing.T) {
+	ctx := context.Background()
+
+	catStore := catalog.NewMemoryStore([]catalog.RoomVariant{
+		{
+			ID:             "room-priced-1",
+			Code:           "priced-1",
+			Name:           "Priced Suite",
+			BasePriceMinor: 800_000,
+		},
+		{
+			ID:             "room-zero-price",
+			Code:           "zero-price",
+			Name:           "Free Room Error",
+			BasePriceMinor: 0,
+		},
+	})
+
+	staticBase := map[string]int64{
+		"room-priced-1":  500_000, // Should be overridden by catalog (800k)
+		"room-static-ok": 600_000, // Should be resolved via fallback
+		"room-static-0":  0,       // Should return ErrUnpricedRoomType
+	}
+
+	eng := NewEngine(staticBase, 1.25)
+	eng.SetBaseRateSource(catStore)
+
+	tests := []struct {
+		name       string
+		roomID     string
+		from       time.Time
+		to         time.Time
+		wantRate   int64
+		wantErr    error
+	}{
+		{
+			name:     "Catalog variant overrides static map",
+			roomID:   "room-priced-1",
+			from:     date("2026-10-14"), // Wednesday
+			to:       date("2026-10-15"),
+			wantRate: 800_000,
+			wantErr:  nil,
+		},
+		{
+			name:     "Catalog variant with zero price returns ErrUnpricedRoomType",
+			roomID:   "room-zero-price",
+			from:     date("2026-10-14"),
+			to:       date("2026-10-15"),
+			wantRate: 0,
+			wantErr:  ErrUnpricedRoomType,
+		},
+		{
+			name:     "Fallback to static map when not in catalog",
+			roomID:   "room-static-ok",
+			from:     date("2026-10-14"),
+			to:       date("2026-10-15"),
+			wantRate: 600_000,
+			wantErr:  nil,
+		},
+		{
+			name:     "Static map with zero rate returns ErrUnpricedRoomType",
+			roomID:   "room-static-0",
+			from:     date("2026-10-14"),
+			to:       date("2026-10-15"),
+			wantRate: 0,
+			wantErr:  ErrUnpricedRoomType,
+		},
+		{
+			name:     "Completely unknown room returns ErrUnknownRoomType",
+			roomID:   "completely-unknown",
+			from:     date("2026-10-14"),
+			to:       date("2026-10-15"),
+			wantRate: 0,
+			wantErr:  ErrUnknownRoomType,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			quotes, err := eng.Quote(ctx, tt.roomID, tt.from, tt.to)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(quotes) != 1 {
+				t.Fatalf("expected 1 quote, got %d", len(quotes))
+			}
+			if quotes[0].RateMinor != tt.wantRate {
+				t.Errorf("rate = %d, want %d", quotes[0].RateMinor, tt.wantRate)
+			}
+		})
+	}
+
+	// Dynamic update test: update price in catalog store, verify Quote reflects immediately
+	_, err := catStore.UpdateVariant(ctx, "room-priced-1", catalog.RoomVariant{
+		ID:             "room-priced-1",
+		Code:           "priced-1",
+		Name:           "Priced Suite Updated",
+		BasePriceMinor: 950_000,
+		MaxCapacity:    2,
+	})
+	if err != nil {
+		t.Fatalf("failed to update catalog variant: %v", err)
+	}
+
+	quotes, err := eng.Quote(ctx, "room-priced-1", date("2026-10-14"), date("2026-10-15"))
+	if err != nil {
+		t.Fatalf("Quote after update failed: %v", err)
+	}
+	if quotes[0].RateMinor != 950_000 {
+		t.Errorf("expected updated rate 950_000, got %d", quotes[0].RateMinor)
+	}
+
+	// Test SetBaseRate explicitly updates static map
+	eng.SetBaseRate("room-new-static", 1_200_000)
+	quotes, err = eng.Quote(ctx, "room-new-static", date("2026-10-14"), date("2026-10-15"))
+	if err != nil {
+		t.Fatalf("Quote for room-new-static failed: %v", err)
+	}
+	if quotes[0].RateMinor != 1_200_000 {
+		t.Errorf("expected rate 1_200_000, got %d", quotes[0].RateMinor)
+	}
+}
+
+func TestEngine_Concurrency(t *testing.T) {
+	catStore := catalog.NewMemoryStore([]catalog.RoomVariant{
+		{ID: "var-1", Code: "v1", Name: "V1", BasePriceMinor: 500_000},
+	})
+	eng := NewEngine(nil, 1.25)
+	eng.SetBaseRateSource(catStore)
+
+	var wg sync.WaitGroup
+	ctx := context.Background()
+
+	// Concurrent readers
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_, _ = eng.Quote(ctx, "var-1", date("2026-10-14"), date("2026-10-15"))
+			}
+		}()
+	}
+
+	// Concurrent writers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				eng.SetBaseRate("dynamic-var", int64(100_000+id*1000+j))
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }

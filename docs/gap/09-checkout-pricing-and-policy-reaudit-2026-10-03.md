@@ -60,7 +60,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R09 — Harga katalog CRUD tidak menjadi sumber rate engine
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G01/04/05; F08/F09.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03, [PRD](../prd/catalog-crud-rate-engine-source-r09-2026-10-03.md), [SRS](../srs/catalog-crud-rate-engine-source-r09-2026-10-03.md), [Tech Architecture](../tech/catalog-crud-rate-engine-source-architecture-2026-10-03.md), [Walkthrough](../walkthrough/catalog-crud-rate-engine-source-r09-walkthrough-2026-10-03.md), [Laporan E2E](../../testing/e2e/report/2026-10-03-221000-catalog-crud-rate-engine-r09-e2e-report.md)). **Hubungan:** BE-G01/04/05; F08/F09.
 
 **Bukti source.** [cmd/server/main.go](../../cmd/server/main.go), `baseRates`, memuat map tujuh ID/harga tetap; `rates.NewEngine` menggunakan map tersebut. Catalog CRUD menyimpan BasePriceMinor melalui store terpisah. Search mengabaikan error RateSvc.Quote ketika mengisi price.
 

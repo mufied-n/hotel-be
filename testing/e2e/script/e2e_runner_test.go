@@ -989,6 +989,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	bkSvc.SetQuoteStore(quoteStore)
 	catalogStore := catalog.NewMemoryStore(catalog.DefaultVariants())
 	bkSvc.SetCatalogStore(catalogStore)
+	rateEngine.SetBaseRateSource(catalogStore)
 
 	xenditGw := payment.NewXendit("https://api.xendit.co", "test_xendit_sec", "test_e2e_xendit_webhook_token", "http://localhost:3000", nil)
 

@@ -22,7 +22,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R06 | P1 | **RESOLVED 2026-10-03** ([laporan](../../testing/e2e/report/2026-10-03-133600-checkout-integrity-e2e-report.md)) — [Create tanpa quote melewati consent dan snapshot harga lengkap](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06/08; F01 |
 | BE-R07 | P1 (RESOLVED 2026-10-03, catalog room capacity invariant on search/quote/checkout) | [Kapasitas search belum menjadi invariant checkout](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G03; F01/F08 |
 | BE-R08 | P1 | **RESOLVED 2026-10-03** (klaim atomik; risiko residual crash setelah commit, lihat laporan) — [Idempotency checkout masih lookup-create-save](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G09; F01/F05 |
-| BE-R09 | P1 | [Harga katalog CRUD tidak menjadi sumber rate engine](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G01/04/05; F08/F09 |
+| BE-R09 | P1 (RESOLVED 2026-10-03, catalog CRUD rate sync & search pricing guard) | [Harga katalog CRUD tidak menjadi sumber rate engine](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G01/04/05; F08/F09 |
 | BE-R10 | P1 | [Makna num_guests menyebabkan biaya sarapan ambigu](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G04/05; F01/F09 |
 | BE-R11 | P1 | [Quote hanya tersimpan pada memori satu instance](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06; F01/F05 |
 | BE-R12 | P1 (RESOLVED 2026-10-03, WIB timezone alignment) | [Deadline pembatalan memakai UTC ketika kebijakan menyebut WIB](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G08/19; F06/F13 |

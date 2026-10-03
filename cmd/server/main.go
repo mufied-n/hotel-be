@@ -82,6 +82,7 @@ func main() {
 		"01900000-0000-7000-8000-000000000007": 3_500_000, // Presidential Suite
 	}
 	rateEngine := rates.NewEngine(baseRates, 1.25) // weekend +25%
+	rateEngine.SetBaseRateSource(catalogStore)
 
 	var payGateway booking.PaymentGateway
 	var xenditGw *payment.XenditGateway

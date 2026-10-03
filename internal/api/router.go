@@ -69,6 +69,9 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.CatalogStore == nil {
 		d.CatalogStore = catalog.NewMemoryStore(catalog.DefaultVariants())
 	}
+	if d.RateEngine != nil && d.CatalogStore != nil {
+		d.RateEngine.SetBaseRateSource(d.CatalogStore)
+	}
 	if d.RateSvc == nil && d.RateEngine != nil {
 		d.RateSvc = d.RateEngine
 	}
@@ -301,6 +304,9 @@ func createCatalogRoom(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusInternalServerError, "gagal membuat varian kamar", "CATALOG_ERROR")
 			return
 		}
+		if d.RateEngine != nil {
+			d.RateEngine.SetBaseRate(created.ID, created.BasePriceMinor)
+		}
 		writeJSON(c, http.StatusCreated, created)
 	}
 }
@@ -330,6 +336,9 @@ func updateCatalogRoom(d Deps) gin.HandlerFunc {
 		if err != nil {
 			httpErrorCode(c, http.StatusInternalServerError, "gagal memperbarui varian kamar", "CATALOG_ERROR")
 			return
+		}
+		if d.RateEngine != nil {
+			d.RateEngine.SetBaseRate(updated.ID, updated.BasePriceMinor)
 		}
 		writeJSON(c, http.StatusOK, updated)
 	}
@@ -517,11 +526,21 @@ func searchRooms(d Deps) gin.HandlerFunc {
 				continue
 			}
 
-			// Hitung kuotasi tarif
+			// Hitung kuotasi tarif (BE-R09: pricing guard)
 			quotes, err := d.RateSvc.Quote(c.Request.Context(), v.ID, from, to)
-			if err == nil {
-				item.Quotes = quotes
-				item.TotalPriceMinor = sumQuotes(quotes) * int64(rooms)
+			if err != nil || len(quotes) == 0 {
+				item.Available = false
+				item.UnavailableReason = "RATE_UNAVAILABLE"
+				results = append(results, item)
+				continue
+			}
+			item.Quotes = quotes
+			item.TotalPriceMinor = sumQuotes(quotes) * int64(rooms)
+			if item.TotalPriceMinor <= 0 {
+				item.Available = false
+				item.UnavailableReason = "RATE_UNAVAILABLE"
+				results = append(results, item)
+				continue
 			}
 
 			// Cari sisa kamar minimum sepanjang rentang menginap
@@ -725,6 +744,10 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 		}
 		if errors.Is(err, rates.ErrUnknownRoomType) {
 			httpErrorCode(c, http.StatusNotFound, "tipe kamar tidak ditemukan", "ROOM_NOT_FOUND")
+			return
+		}
+		if errors.Is(err, rates.ErrUnpricedRoomType) {
+			httpErrorCode(c, http.StatusBadRequest, "tarif dasar kamar belum dikonfigurasi", "RATE_UNAVAILABLE")
 			return
 		}
 		if err != nil {

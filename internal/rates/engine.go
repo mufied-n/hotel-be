@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 	"uuid"
+
+	"github.com/example/hotel-booking/internal/catalog"
 )
 
 // Standar kode rate plan hotel
@@ -27,11 +29,17 @@ const (
 
 var (
 	ErrUnknownRoomType  = errors.New("rates: unknown room type")
+	ErrUnpricedRoomType = errors.New("rates: room type has no valid base price configured")
 	ErrQuoteNotFound    = errors.New("rates: quote not found")
 	ErrQuoteExpired     = errors.New("rates: quote has expired (>15m)")
 	ErrInvalidRatePlan  = errors.New("rates: invalid rate plan code")
 	ErrInvalidPromoCode = errors.New("rates: invalid or expired promo code")
 )
+
+// BaseRateSource adalah port opsional untuk mengambil tarif dasar kamar secara dinamis dari katalog (BE-R09).
+type BaseRateSource interface {
+	GetVariant(ctx context.Context, idOrCode string) (catalog.RoomVariant, error)
+}
 
 // Money merepresentasikan besaran moneter baku tanpa floating-point (BE-G05, BE-G19).
 type Money struct {
@@ -135,14 +143,20 @@ type RateProvider interface {
 
 // Engine implementasi tarif kamar dan generator quote terkunci.
 type Engine struct {
+	mu            sync.RWMutex
 	base          map[string]int64
+	baseSource    BaseRateSource
 	weekendFactor float64
 	quoteStore    QuoteStore
 }
 
 func NewEngine(base map[string]int64, weekendFactor float64) *Engine {
+	baseCopy := make(map[string]int64, len(base))
+	for k, v := range base {
+		baseCopy[k] = v
+	}
 	return &Engine{
-		base:          base,
+		base:          baseCopy,
 		weekendFactor: weekendFactor,
 		quoteStore:    NewMemoryQuoteStore(15 * time.Minute),
 	}
@@ -152,11 +166,32 @@ func NewEngineWithQuoteStore(base map[string]int64, weekendFactor float64, store
 	if store == nil {
 		store = NewMemoryQuoteStore(15 * time.Minute)
 	}
+	baseCopy := make(map[string]int64, len(base))
+	for k, v := range base {
+		baseCopy[k] = v
+	}
 	return &Engine{
-		base:          base,
+		base:          baseCopy,
 		weekendFactor: weekendFactor,
 		quoteStore:    store,
 	}
+}
+
+// SetBaseRateSource menghubungkan sumber tarif dinamis dari katalog ke rate engine (BE-R09).
+func (e *Engine) SetBaseRateSource(src BaseRateSource) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.baseSource = src
+}
+
+// SetBaseRate mendaftarkan atau memperbarui tarif dasar kamar pada in-memory fallback map (BE-R09).
+func (e *Engine) SetBaseRate(roomTypeID string, rateMinor int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.base == nil {
+		e.base = make(map[string]int64)
+	}
+	e.base[roomTypeID] = rateMinor
 }
 
 // QuoteStore mengembalikan instance quote store yang aktif pada engine.
@@ -165,11 +200,42 @@ func (e *Engine) QuoteStore() QuoteStore {
 }
 
 // Quote menghitung harga per malam untuk rentang half-open [from, to).
-func (e *Engine) Quote(_ context.Context, roomTypeID string, from, to time.Time) ([]Quote, error) {
-	base, ok := e.base[roomTypeID]
-	if !ok {
+func (e *Engine) Quote(ctx context.Context, roomTypeID string, from, to time.Time) ([]Quote, error) {
+	var base int64
+	var found bool
+
+	e.mu.RLock()
+	src := e.baseSource
+	staticBase, staticOk := e.base[roomTypeID]
+	e.mu.RUnlock()
+
+	if src != nil {
+		v, err := src.GetVariant(ctx, roomTypeID)
+		if err == nil {
+			if v.BasePriceMinor <= 0 {
+				return nil, ErrUnpricedRoomType
+			}
+			base = v.BasePriceMinor
+			found = true
+		} else if !errors.Is(err, catalog.ErrVariantNotFound) {
+			return nil, err
+		}
+	}
+
+	if !found {
+		if staticOk {
+			if staticBase <= 0 {
+				return nil, ErrUnpricedRoomType
+			}
+			base = staticBase
+			found = true
+		}
+	}
+
+	if !found {
 		return nil, ErrUnknownRoomType
 	}
+
 	var out []Quote
 	for d := from; d.Before(to); d = d.AddDate(0, 0, 1) {
 		rate := base
