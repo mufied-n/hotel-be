@@ -13,9 +13,11 @@
 set -euo pipefail
 
 BASE_URL="${API_BASE_URL:-http://localhost:18080}"
-GM_TOKEN="gm_admin"
-RECEPTION_TOKEN="receptionist"
-REVENUE_MGR_TOKEN="revenue_mgr"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
+GM_TOKEN="${T_GM_ADMIN}"
+RECEPTION_TOKEN="${T_RECEPTIONIST}"
+REVENUE_MGR_TOKEN="${T_REVENUE_MGR}"
 
 echo "=== [E2E] Menjalankan Pengujian Feature Flags & Runtime Toggle ==="
 echo "Target Base URL: ${BASE_URL}"

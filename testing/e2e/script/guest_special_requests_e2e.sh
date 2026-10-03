@@ -10,6 +10,8 @@
 set -euo pipefail
 
 BASE_URL="${API_BASE_URL:-http://localhost:8080}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
 TEST_BOOKING_ID="${BOOKING_ID:-bk-e2e-001}"
 TEST_GUEST_EMAIL="${GUEST_EMAIL:-guest@pulangkeuttara.id}"
 
@@ -114,7 +116,7 @@ fi
 
 # Housekeeping staff access -> 200 OK
 HK_QUEUE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${BASE_URL}/api/v1/front-desk/special-requests?department=housekeeping" \
-  -H "Authorization: Bearer housekeeping")
+  -H "Authorization: Bearer ${T_HOUSEKEEPING}")
 if [ "${HK_QUEUE_STATUS}" -eq 200 ]; then
   echo "✓ Housekeeping staff authorized to view departmental queue (200 OK)"
 else
@@ -124,7 +126,7 @@ fi
 
 # Receptionist staff access -> 200 OK
 REC_QUEUE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${BASE_URL}/api/v1/front-desk/special-requests?department=front_desk" \
-  -H "Authorization: Bearer receptionist")
+  -H "Authorization: Bearer ${T_RECEPTIONIST}")
 if [ "${REC_QUEUE_STATUS}" -eq 200 ]; then
   echo "✓ Receptionist staff authorized to view front desk queue (200 OK)"
 else
@@ -136,7 +138,7 @@ fi
 if [ -n "${SPECIAL_REQ_ID}" ] && [ "${SPECIAL_REQ_ID}" != "mock-req-001" ]; then
   echo "--- 7. Housekeeping Fulfills Special Request ---"
   UPDATE_RESP=$(curl -sS -w "\n%{http_code}" -X PUT "${BASE_URL}/api/v1/front-desk/special-requests/${SPECIAL_REQ_ID}/status" \
-    -H "Authorization: Bearer housekeeping" \
+    -H "Authorization: Bearer ${T_HOUSEKEEPING}" \
     -H "Content-Type: application/json" \
     -d '{
       "to_status": "fulfilled",

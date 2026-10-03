@@ -68,6 +68,7 @@ func setupRBACTestRouter(t *testing.T, initialStatus booking.Status) http.Handle
 	)
 
 	return NewRouter(Deps{
+		StaffAuth:  TestStaffVerifier(),
 		BookingSvc: bkSvc,
 		InvStore:   &mockInvStore{avail: []inventory.Availability{{Date: now, AvailableRooms: 5}}},
 		RateSvc:    &mockRates{quotes: []rates.Quote{{Date: now, RateMinor: 100_000}}},
@@ -216,7 +217,7 @@ func TestRBACRouteProtection(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{}`))
 			req.Header.Set("Content-Type", "application/json")
 			if tt.userRole != "" {
-				req.Header.Set("X-User-Role", tt.userRole)
+				req.Header.Set("Authorization", "Bearer "+tt.userRole)
 			}
 			if tt.bearerToken != "" {
 				req.Header.Set("Authorization", "Bearer "+tt.bearerToken)

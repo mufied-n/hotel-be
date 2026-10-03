@@ -66,11 +66,11 @@ func TestAssistanceAPI_CreateGuestRequest_TableTest(t *testing.T) {
 		expectedCode   string
 	}{
 		{
-			name:       "Success - 201 Created",
-			session:    &guest.GuestSession{GuestEmail: "guest@example.com"},
-			bookingID:  "01900000-0000-7000-8000-000000000001",
-			body:       `{"category":"celebration_setup","description":"Anniversary dekorasi","target_time":"15:00"}`,
-			mockRes:    &assistance.SpecialRequest{ID: "req-1", BookingID: "01900000-0000-7000-8000-000000000001", Category: assistance.CategoryCelebrationSetup, Status: assistance.StatusPending, CreatedAt: now},
+			name:           "Success - 201 Created",
+			session:        &guest.GuestSession{GuestEmail: "guest@example.com"},
+			bookingID:      "01900000-0000-7000-8000-000000000001",
+			body:           `{"category":"celebration_setup","description":"Anniversary dekorasi","target_time":"15:00"}`,
+			mockRes:        &assistance.SpecialRequest{ID: "req-1", BookingID: "01900000-0000-7000-8000-000000000001", Category: assistance.CategoryCelebrationSetup, Status: assistance.StatusPending, CreatedAt: now},
 			expectedStatus: http.StatusCreated,
 		},
 		{
@@ -187,10 +187,10 @@ func TestAssistanceAPI_ListGuestRequests_TableTest(t *testing.T) {
 		expectedCode   string
 	}{
 		{
-			name:       "Success - 200 OK",
-			session:    &guest.GuestSession{GuestEmail: "guest@example.com"},
-			bookingID:  "bk-123",
-			mockRes:    []assistance.SpecialRequest{{ID: "req-1", Category: assistance.CategoryCelebrationSetup}},
+			name:           "Success - 200 OK",
+			session:        &guest.GuestSession{GuestEmail: "guest@example.com"},
+			bookingID:      "bk-123",
+			mockRes:        []assistance.SpecialRequest{{ID: "req-1", Category: assistance.CategoryCelebrationSetup}},
 			expectedStatus: http.StatusOK,
 		},
 		{
@@ -323,11 +323,11 @@ func TestAssistanceAPI_UpdateStaffSpecialRequestStatus_TableTest(t *testing.T) {
 		expectedCode   string
 	}{
 		{
-			name:       "Success - 200 OK",
-			reqID:      "req-1",
-			body:       `{"to_status":"fulfilled","staff_notes":"Selesai disiapkan di kamar"}`,
-			authRole:   "housekeeping",
-			mockRes:    &assistance.SpecialRequest{ID: "req-1", Status: assistance.StatusFulfilled},
+			name:           "Success - 200 OK",
+			reqID:          "req-1",
+			body:           `{"to_status":"fulfilled","staff_notes":"Selesai disiapkan di kamar"}`,
+			authRole:       "housekeeping",
+			mockRes:        &assistance.SpecialRequest{ID: "req-1", Status: assistance.StatusFulfilled},
 			expectedStatus: http.StatusOK,
 		},
 		{
@@ -427,6 +427,7 @@ func TestAssistanceAPI_FeatureFlag_Guard(t *testing.T) {
 	}
 
 	deps := Deps{
+		StaffAuth:     TestStaffVerifier(),
 		AssistanceSvc: &mockAssistanceService{},
 		GuestSvc:      mockGuest,
 		FeatureFlag:   ff,

@@ -114,6 +114,7 @@ func setupFrontDeskTestRouter(t *testing.T, fdSvc frontdesk.Service) http.Handle
 	}
 
 	return NewRouter(Deps{
+		StaffAuth:    TestStaffVerifier(),
 		Enforcer:     enforcer,
 		FrontDeskSvc: fdSvc,
 	})

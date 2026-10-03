@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # E2E: Checkout Integrity (BE-R06 quote wajib, BE-R08 idempotency atomik) + regresi alur booking.
 # Wajib set BASE_URL secara eksplisit (jangan memakai port layanan lain di mesin dev).
-#   BASE_URL=http://localhost:28080 ./checkout_integrity_e2e.sh
+#   STAFF_PASSWORD=... BASE_URL=http://localhost:28080 ./checkout_integrity_e2e.sh
 set -uo pipefail
 : "${BASE_URL:?BASE_URL wajib diisi, mis. http://localhost:28080}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
 RT="${ROOM_TYPE_ID:-01900000-0000-7000-8000-000000000003}"
 PASS=0; FAIL=0
 J=(-H "Content-Type: application/json")
@@ -54,8 +56,8 @@ BID=$(sed -n 's/.*"booking":{"id":"\([^"]*\)".*/\1/p' /tmp/r.json)
 
 echo "== Regresi: bayar → check-in → check-out =="
 check "fake-pay → 200" 200 "$(code -X POST "$BASE_URL/fake-pay/$BID")"
-check "check-in → 200" 200 "$(code -X POST -H 'Authorization: Bearer receptionist' "$BASE_URL/api/v1/bookings/$BID/check-in")"
-check "check-out → 200" 200 "$(code -X POST -H 'Authorization: Bearer receptionist' "$BASE_URL/api/v1/bookings/$BID/check-out")"
+check "check-in → 200" 200 "$(code -X POST -H "Authorization: Bearer ${T_RECEPTIONIST}" "$BASE_URL/api/v1/bookings/$BID/check-in")"
+check "check-out → 200" 200 "$(code -X POST -H "Authorization: Bearer ${T_RECEPTIONIST}" "$BASE_URL/api/v1/bookings/$BID/check-out")"
 check "guest check-in → 403" 403 "$(code -X POST "$BASE_URL/api/v1/bookings/$BID/check-in")"
 
 echo; echo "RINGKASAN: PASS=$PASS FAIL=$FAIL"

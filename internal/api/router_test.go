@@ -149,8 +149,10 @@ type mockTx struct {
 	insertErr error
 }
 
-func (m *mockTx) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error { return nil }
-func (m *mockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error        { return nil }
+func (m *mockTx) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
+	return nil
+}
+func (m *mockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error { return nil }
 func (m *mockTx) InsertBookingWithHold(_ context.Context, b *booking.Booking, _ []rates.Quote, holdExpiresAt time.Time) error {
 	if m.insertErr != nil {
 		return m.insertErr
@@ -253,6 +255,7 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 	bkSvc.SetQuoteStore(quoteStore)
 
 	handler := NewRouter(Deps{
+		StaffAuth:        TestStaffVerifier(),
 		BookingSvc:       bkSvc,
 		IdempotencyStore: store,
 		InvStore:         inv,
@@ -300,6 +303,7 @@ func TestReady(t *testing.T) {
 
 	// Case 2: Unhealthy
 	hUnhealthy := NewRouter(Deps{
+		StaffAuth:  TestStaffVerifier(),
 		ReadyCheck: func(_ context.Context) error { return errors.New("valkey ping failed") },
 	})
 	req2 := httptest.NewRequest(http.MethodGet, "/ready", nil)
@@ -572,6 +576,7 @@ func TestNoShow(t *testing.T) {
 func TestDevRouteGating(t *testing.T) {
 	// Dev mode: FakePay mounted (BE-G10)
 	devRouter := NewRouter(Deps{
+		StaffAuth:     TestStaffVerifier(),
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: true,
 		FakePay: func(c *gin.Context) {
@@ -587,6 +592,7 @@ func TestDevRouteGating(t *testing.T) {
 
 	// Prod mode: FakePay NOT mounted -> 404 Not Found (BE-G10)
 	prodRouter := NewRouter(Deps{
+		StaffAuth:     TestStaffVerifier(),
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: false,
 		FakePay: func(c *gin.Context) {
@@ -604,7 +610,8 @@ func TestDevRouteGating(t *testing.T) {
 func TestFailClosedEnforcer(t *testing.T) {
 	// Fail-closed: enforcer is nil -> 503 Service Unavailable (BE-G14)
 	router := NewRouter(Deps{
-		Enforcer: nil,
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  nil,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
@@ -626,6 +633,7 @@ func TestFailClosedEnforcer(t *testing.T) {
 func TestRateLimiter(t *testing.T) {
 	rl := NewRateLimiter(1, 2) // 1 token/sec, capacity 2
 	router := NewRouter(Deps{
+		StaffAuth:   TestStaffVerifier(),
 		Enforcer:    auth.DefaultTestEnforcer(),
 		RateLimiter: rl,
 	})
@@ -712,9 +720,10 @@ func TestRouterErrorBranches(t *testing.T) {
 
 	// Test availability store not found (404)
 	rAvailNotFound := NewRouter(Deps{
-		Enforcer: auth.DefaultTestEnforcer(),
-		InvStore: &mockInvStore{err: inventory.ErrNotFound},
-		RateSvc:  &mockRates{},
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  auth.DefaultTestEnforcer(),
+		InvStore:  &mockInvStore{err: inventory.ErrNotFound},
+		RateSvc:   &mockRates{},
 	})
 	rReq := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
 	rRec := httptest.NewRecorder()
@@ -726,9 +735,10 @@ func TestRouterErrorBranches(t *testing.T) {
 	// Test availability rate provider error (404)
 	now := time.Now()
 	rRateErr := NewRouter(Deps{
-		Enforcer: auth.DefaultTestEnforcer(),
-		InvStore: &mockInvStore{avail: []inventory.Availability{{Date: now, AvailableRooms: 5}}},
-		RateSvc:  &mockRates{err: errors.New("rate error")},
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  auth.DefaultTestEnforcer(),
+		InvStore:  &mockInvStore{avail: []inventory.Availability{{Date: now, AvailableRooms: 5}}},
+		RateSvc:   &mockRates{err: errors.New("rate error")},
 	})
 	rateReq := httptest.NewRequest(http.MethodGet, "/api/v1/availability?room_type_id=std&check_in=2026-10-10&check_out=2026-10-12", nil)
 	rateRec := httptest.NewRecorder()
@@ -763,6 +773,7 @@ func TestGetCatalogRooms(t *testing.T) {
 
 	// Error path: catalog store failure (500)
 	hFail := NewRouter(Deps{
+		StaffAuth:    TestStaffVerifier(),
 		Enforcer:     auth.DefaultTestEnforcer(),
 		CatalogStore: &mockCatalogStore{err: errors.New("db disk failure")},
 	})
@@ -934,7 +945,8 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 
 	// Case 3: Missing inventory (middle night missing or len(avail) < nights)
 	hMissing := NewRouter(Deps{
-		Enforcer: auth.DefaultTestEnforcer(),
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  auth.DefaultTestEnforcer(),
 		InvStore: &mockInvStore{
 			avail: []inventory.Availability{
 				{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), AvailableRooms: 5},
@@ -962,7 +974,8 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 
 	// Case 4: Sold out (minAvail == 0)
 	hSoldOut := NewRouter(Deps{
-		Enforcer: auth.DefaultTestEnforcer(),
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  auth.DefaultTestEnforcer(),
 		InvStore: &mockInvStore{
 			avail: []inventory.Availability{
 				{Date: time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), AvailableRooms: 0},
@@ -1004,9 +1017,10 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 
 	// Case 6: Inventory store internal error (500)
 	hInvErr := NewRouter(Deps{
-		Enforcer: auth.DefaultTestEnforcer(),
-		InvStore: &mockInvStore{err: errors.New("connection reset by peer")},
-		RateSvc:  &mockRates{},
+		StaffAuth: TestStaffVerifier(),
+		Enforcer:  auth.DefaultTestEnforcer(),
+		InvStore:  &mockInvStore{err: errors.New("connection reset by peer")},
+		RateSvc:   &mockRates{},
 	})
 	reqInvErr := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=2&rooms=1", nil)
 	recInvErr := httptest.NewRecorder()
@@ -1108,6 +1122,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 
 	t.Run("GET by ID store error", func(t *testing.T) {
 		hErr := NewRouter(Deps{
+			StaffAuth:    TestStaffVerifier(),
 			Enforcer:     auth.DefaultTestEnforcer(),
 			CatalogStore: &mockCatalogStore{err: errors.New("db error")},
 		})
@@ -1182,6 +1197,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			routerToUse, _ := setupTestRouter()
 			if tt.storeErr != nil {
 				routerToUse = NewRouter(Deps{
+					StaffAuth:    TestStaffVerifier(),
 					Enforcer:     auth.DefaultTestEnforcer(),
 					CatalogStore: &mockCatalogStore{err: tt.storeErr},
 				})
@@ -1278,6 +1294,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			routerToUse, _ := setupTestRouter()
 			if tt.storeErr != nil {
 				routerToUse = NewRouter(Deps{
+					StaffAuth:    TestStaffVerifier(),
 					Enforcer:     auth.DefaultTestEnforcer(),
 					CatalogStore: &mockCatalogStore{err: tt.storeErr},
 				})
@@ -1360,11 +1377,13 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			routerToUse, _ := setupTestRouter()
 			if tt.customStore != nil {
 				routerToUse = NewRouter(Deps{
+					StaffAuth:    TestStaffVerifier(),
 					Enforcer:     auth.DefaultTestEnforcer(),
 					CatalogStore: tt.customStore,
 				})
 			} else if tt.storeErr != nil {
 				routerToUse = NewRouter(Deps{
+					StaffAuth:    TestStaffVerifier(),
 					Enforcer:     auth.DefaultTestEnforcer(),
 					CatalogStore: &mockCatalogStore{err: tt.storeErr},
 				})
@@ -2008,13 +2027,13 @@ func TestTransportModernization_JSONv2_And_Validator(t *testing.T) {
 
 	t.Run("Validator v10 table tests across DTOs", func(t *testing.T) {
 		tests := []struct {
-			name        string
-			method      string
-			path        string
-			body        string
-			authBearer  string
-			wantCode    string
-			wantStatus  int
+			name       string
+			method     string
+			path       string
+			body       string
+			authBearer string
+			wantCode   string
+			wantStatus int
 		}{
 			{
 				name:       "search rejects rooms > 8 with INVALID_ROOM_COUNT",
@@ -2080,4 +2099,3 @@ func TestTransportModernization_JSONv2_And_Validator(t *testing.T) {
 		}
 	})
 }
-

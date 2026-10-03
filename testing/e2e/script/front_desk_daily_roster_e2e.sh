@@ -10,6 +10,8 @@
 set -euo pipefail
 
 BASE_URL="${API_BASE_URL:-http://localhost:8080}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
 
 echo "=== [E2E] Front Desk Daily Operations Roster & Shift Handover Board Testing ==="
 echo "Target Base URL: ${BASE_URL}"
@@ -32,7 +34,7 @@ fi
 # 3. Receptionist Query Daily Roster (200 OK)
 echo "--- 3. Receptionist Query Daily Operations Roster (GET /api/v1/front-desk/daily-roster) ---"
 ROSTER_RESP=$(curl -sS -X GET "${BASE_URL}/api/v1/front-desk/daily-roster" \
-  -H "Authorization: Bearer receptionist")
+  -H "Authorization: Bearer ${T_RECEPTIONIST}")
 echo "Response: ${ROSTER_RESP}"
 if echo "${ROSTER_RESP}" | grep -q '"total_rooms":95'; then
   echo "✓ Receptionist Daily Roster Query Sukses (200 OK, total 95 physical rooms)"
@@ -44,9 +46,9 @@ fi
 # 4. Cross-Department Visibility (Housekeeping & Revenue Manager)
 echo "--- 4. Cross-Department Daily Roster Access (Housekeeping & Revenue Mgr) ---"
 HK_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X GET "${BASE_URL}/api/v1/front-desk/daily-roster" \
-  -H "Authorization: Bearer housekeeping")
+  -H "Authorization: Bearer ${T_HOUSEKEEPING}")
 REV_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X GET "${BASE_URL}/api/v1/front-desk/daily-roster" \
-  -H "Authorization: Bearer revenue_mgr")
+  -H "Authorization: Bearer ${T_REVENUE_MGR}")
 
 if [ "${HK_STATUS}" -eq 200 ] && [ "${REV_STATUS}" -eq 200 ]; then
   echo "✓ Housekeeping (200 OK) dan Revenue Manager (200 OK) sukses mengakses Daily Roster"
@@ -58,7 +60,7 @@ fi
 # 5. Future Date Forecast Query
 echo "--- 5. Future Date Forecast Query (GET ?date=2026-10-10) ---"
 FORECAST_RESP=$(curl -sS -X GET "${BASE_URL}/api/v1/front-desk/daily-roster?date=2026-10-10" \
-  -H "Authorization: Bearer receptionist")
+  -H "Authorization: Bearer ${T_RECEPTIONIST}")
 if echo "${FORECAST_RESP}" | grep -q '"date":"2026-10-10"'; then
   echo "✓ Forecast Daily Roster Sukses untuk tanggal 2026-10-10 (200 OK)"
 else
@@ -75,7 +77,7 @@ HANDOVER_PAYLOAD='{
   "vip_guest_notes": "VIP Mr. Tan arrives 14:00, prepare welcome amenities"
 }'
 HANDOVER_RESP=$(curl -sS -X POST "${BASE_URL}/api/v1/front-desk/handover-notes" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d "${HANDOVER_PAYLOAD}")
 echo "Response: ${HANDOVER_RESP}"
@@ -101,7 +103,7 @@ fi
 # 8. Negative Test: Invalid Shift Rejection
 echo "--- 8. Negative Test: Invalid Shift Rejection (400 Bad Request) ---"
 INVALID_SHIFT_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "${BASE_URL}/api/v1/front-desk/handover-notes" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d '{"shift":"dawn","cash_float_minor":1000000,"pending_issues":"None"}')
 if [ "${INVALID_SHIFT_STATUS}" -eq 400 ]; then
@@ -114,7 +116,7 @@ fi
 # 9. List Shift Handover History & Pagination
 echo "--- 9. Receptionist List Handover Notes History (GET /api/v1/front-desk/handover-notes) ---"
 LIST_RESP=$(curl -sS -X GET "${BASE_URL}/api/v1/front-desk/handover-notes?limit=10&offset=0" \
-  -H "Authorization: Bearer receptionist")
+  -H "Authorization: Bearer ${T_RECEPTIONIST}")
 echo "Response: ${LIST_RESP}"
 if echo "${LIST_RESP}" | grep -q '"notes":\['; then
   echo "✓ Riwayat Handover Notes Sukses Dimuat (200 OK)"
@@ -126,7 +128,7 @@ fi
 # 10. Negative Test: Housekeeping Forbidden from Viewing Front Desk Handover Notes
 echo "--- 10. Negative Test: Housekeeping Forbidden from Handover Notes (403 Forbidden) ---"
 HK_NOTES_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X GET "${BASE_URL}/api/v1/front-desk/handover-notes" \
-  -H "Authorization: Bearer housekeeping")
+  -H "Authorization: Bearer ${T_HOUSEKEEPING}")
 if [ "${HK_NOTES_STATUS}" -eq 403 ]; then
   echo "✓ Housekeeping dilarang membaca Handover Notes internal Meja Depan (403 Forbidden)"
 else

@@ -39,13 +39,13 @@ type e2eIncrementCall struct {
 }
 
 type e2eTxMock struct {
-	booking        booking.Booking
-	rooms          []string
-	increments     []e2eIncrementCall
-	otpNotifier    *e2eOTPNotifier
-	guestStore     *e2eGuestStore
-	finStore       *e2eFinanceStore
-	hkStore        *e2eHousekeepingStore
+	booking         booking.Booking
+	rooms           []string
+	increments      []e2eIncrementCall
+	otpNotifier     *e2eOTPNotifier
+	guestStore      *e2eGuestStore
+	finStore        *e2eFinanceStore
+	hkStore         *e2eHousekeepingStore
 	frontdeskStore  *e2eFrontDeskStore
 	stayStore       *e2eStayStore
 	assistanceStore *e2eAssistanceStore
@@ -299,7 +299,6 @@ func (s *e2eGuestStore) GetBookingReceiptData(ctx context.Context, email, bookin
 	return nil, nil
 }
 
-
 type e2eOTPNotifier struct {
 	lastOTP string
 }
@@ -308,7 +307,6 @@ func (n *e2eOTPNotifier) SendGuestOTP(ctx context.Context, email, otpCode string
 	n.lastOTP = otpCode
 	return nil
 }
-
 
 type e2eFinanceStore struct {
 	tx        *e2eTxMock
@@ -972,6 +970,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	astSvc := assistance.NewService(astStore, nil)
 
 	handler := api.NewRouter(api.Deps{
+		StaffAuth:       api.TestStaffVerifier(),
 		BookingSvc:      bkSvc,
 		InvStore:        inv,
 		RateSvc:         ratesSvc,
@@ -1152,7 +1151,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}`)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/catalog/rooms", bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-User-Role", "revenue_mgr")
+		req.Header.Set("Authorization", "Bearer "+"revenue_mgr")
 		res, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("create variant request failed: %v", err)
@@ -1191,7 +1190,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}`)
 		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-User-Role", "revenue_mgr")
+		req.Header.Set("Authorization", "Bearer "+"revenue_mgr")
 		res, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("update variant request failed: %v", err)
@@ -1260,7 +1259,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 
 		// Revenue Manager cannot DELETE
 		req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/v1/catalog/rooms/"+createdVariantID, nil)
-		req.Header.Set("X-User-Role", "revenue_mgr")
+		req.Header.Set("Authorization", "Bearer "+"revenue_mgr")
 		res, _ = client.Do(req)
 		if res.StatusCode != http.StatusForbidden {
 			t.Errorf("revenue_mgr delete catalog status = %d, want 403", res.StatusCode)
@@ -1346,7 +1345,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	// 6. Receptionist Check-In
 	t.Run("E2E-06: Receptionist check-in (200 OK)", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-in", nil)
-		req.Header.Set("X-User-Role", "receptionist")
+		req.Header.Set("Authorization", "Bearer "+"receptionist")
 		res, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("receptionist check-in request failed: %v", err)
@@ -1362,7 +1361,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	// 7. Housekeeping cannot check-out
 	t.Run("E2E-07: Housekeeping cannot check-out (403 Forbidden)", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-out", nil)
-		req.Header.Set("X-User-Role", "housekeeping")
+		req.Header.Set("Authorization", "Bearer "+"housekeeping")
 		res, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("housekeeping check-out request failed: %v", err)
@@ -1391,7 +1390,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	// 9. GM Admin Wildcard Inspection
 	t.Run("E2E-09: GM Admin inspect booking (200 OK)", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/bookings/bk-e2e-001", nil)
-		req.Header.Set("X-User-Role", "gm_admin")
+		req.Header.Set("Authorization", "Bearer "+"gm_admin")
 		res, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("gm_admin request failed: %v", err)
@@ -1475,6 +1474,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	// 13. BE-G10: Production mode gates /fake-pay (404 Not Found)
 	t.Run("E2E-13: Production mode gates /fake-pay (404 Not Found)", func(t *testing.T) {
 		prodHandler := api.NewRouter(api.Deps{
+			StaffAuth:     api.TestStaffVerifier(),
 			Enforcer:      auth.DefaultTestEnforcer(),
 			IsDevelopment: false,
 			FakePay: func(c *gin.Context) {
@@ -1790,7 +1790,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		today := time.Now().UTC().Truncate(24 * time.Hour)
 		tx.booking.Status = booking.StatusCheckedIn
 		tx.booking.CheckIn = today.Add(-24 * time.Hour) // stayed yesterday night
-		tx.booking.CheckOut = today.Add(48 * time.Hour)  // scheduled 2 nights ahead
+		tx.booking.CheckOut = today.Add(48 * time.Hour) // scheduled 2 nights ahead
 		tx.increments = nil
 
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-out", nil)
@@ -3320,10 +3320,6 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 	})
 }
-
-
-
-
 
 // e2eQuoteID membuat quote terkunci via API; create booking wajib quote_id (BE-R06).
 func e2eQuoteID(t *testing.T, client *http.Client, base, checkIn, checkOut string) string {

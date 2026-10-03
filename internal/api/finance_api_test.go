@@ -15,11 +15,11 @@ import (
 )
 
 type mockFinanceAPIService struct {
-	processRefundFunc          func(ctx context.Context, input finance.CreateRefundInput) (*finance.PaymentRefund, error)
-	createLatePaymentCaseFunc  func(ctx context.Context, bookingID, providerRef string, amountMinor int64, notes string) (*finance.PaymentCase, error)
-	listCasesFunc              func(ctx context.Context, status string, limit int) ([]finance.PaymentCase, error)
-	resolveCaseFunc            func(ctx context.Context, input finance.ResolveCaseInput) error
-	getBookingRefundStatusFunc func(ctx context.Context, email, bookingID string) (*finance.RefundStatusView, error)
+	processRefundFunc            func(ctx context.Context, input finance.CreateRefundInput) (*finance.PaymentRefund, error)
+	createLatePaymentCaseFunc    func(ctx context.Context, bookingID, providerRef string, amountMinor int64, notes string) (*finance.PaymentCase, error)
+	listCasesFunc                func(ctx context.Context, status string, limit int) ([]finance.PaymentCase, error)
+	resolveCaseFunc              func(ctx context.Context, input finance.ResolveCaseInput) error
+	getBookingRefundStatusFunc   func(ctx context.Context, email, bookingID string) (*finance.RefundStatusView, error)
 	getReconciliationSummaryFunc func(ctx context.Context) (*finance.ReconciliationSummary, error)
 }
 
@@ -139,6 +139,7 @@ func setupFinanceTestRouter(t *testing.T, finSvc finance.Service, guestSvc guest
 	}
 
 	return NewRouter(Deps{
+		StaffAuth:  TestStaffVerifier(),
 		Enforcer:   enforcer,
 		FinanceSvc: finSvc,
 		GuestSvc:   guestSvc,

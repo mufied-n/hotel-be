@@ -141,6 +141,7 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 	enforcer := newTestEnforcerForFF(t)
 
 	deps := Deps{
+		StaffAuth:   TestStaffVerifier(),
 		FeatureFlag: ffMgr,
 		Enforcer:    enforcer,
 	}
@@ -187,7 +188,7 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 	t.Run("PUT admin flag toggle", func(t *testing.T) {
 		disabled := false
 		updatePayload := map[string]any{
-			"enabled": disabled,
+			"enabled":       disabled,
 			"allowed_roles": []string{"gm_admin"},
 		}
 		body, _ := json.Marshal(updatePayload)
@@ -268,6 +269,7 @@ func TestFeatureFlags_WiredGuards_TableDriven(t *testing.T) {
 			},
 		})
 		router := NewRouter(Deps{
+			StaffAuth:   TestStaffVerifier(),
 			FeatureFlag: ffMgr,
 			Enforcer:    newTestEnforcerForFF(t),
 		})
@@ -295,6 +297,7 @@ func TestFeatureFlags_WiredGuards_TableDriven(t *testing.T) {
 			},
 		})
 		router := NewRouter(Deps{
+			StaffAuth:   TestStaffVerifier(),
 			FeatureFlag: ffMgr,
 			Enforcer:    newTestEnforcerForFF(t),
 		})
@@ -322,6 +325,7 @@ func TestFeatureFlags_WiredGuards_TableDriven(t *testing.T) {
 			},
 		})
 		router := NewRouter(Deps{
+			StaffAuth:   TestStaffVerifier(),
 			FeatureFlag: ffMgr,
 			Enforcer:    newTestEnforcerForFF(t),
 		})

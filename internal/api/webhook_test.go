@@ -51,6 +51,7 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 		}
 
 		r := NewRouter(Deps{
+			StaffAuth:     TestStaffVerifier(),
 			BookingSvc:    svc,
 			XenditGateway: gw,
 		})
@@ -58,14 +59,14 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 	}
 
 	tests := []struct {
-		name               string
-		initialStatus      booking.Status
-		holdPast           bool
-		withGateway        bool
-		headerToken        string
-		payloadStatus      string
-		expectCode         int
-		expectFinalStatus  booking.Status
+		name              string
+		initialStatus     booking.Status
+		holdPast          bool
+		withGateway       bool
+		headerToken       string
+		payloadStatus     string
+		expectCode        int
+		expectFinalStatus booking.Status
 	}{
 		{
 			name:              "Valid webhook PAID confirms pending booking (200 OK)",
@@ -172,7 +173,9 @@ func (m *webhookMockTx) InTx(_ context.Context, fn func(booking.InventoryTx, boo
 func (m *webhookMockTx) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
 	return nil
 }
-func (m *webhookMockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error { return nil }
+func (m *webhookMockTx) Increment(_ context.Context, _ string, _, _ time.Time, _ int) error {
+	return nil
+}
 func (m *webhookMockTx) InsertBookingWithHold(_ context.Context, b *booking.Booking, _ []rates.Quote, _ time.Time) error {
 	m.bookings[b.ID] = b
 	return nil

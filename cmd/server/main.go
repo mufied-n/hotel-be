@@ -32,6 +32,7 @@ import (
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
+	"github.com/example/hotel-booking/internal/staffauth"
 	"github.com/example/hotel-booking/internal/stay"
 	"github.com/example/hotel-booking/internal/workers"
 )
@@ -232,6 +233,7 @@ func main() {
 	// ---- Guest Auth & My Bookings Service (F02 & F03) ----
 	guestStore := guest.NewPostgresStore(pool)
 	guestSvc := guest.NewService(guestStore, otpNotifier, log)
+	staffSvc := staffauth.NewService(staffauth.NewPostgresStore(pool)) // BE-R01: identitas staf dari sesi terverifikasi
 
 	// ---- Finance Reconciliation & Refund Service (F14) ----
 	financeStore := finance.NewPostgresStore(pool)
@@ -275,6 +277,7 @@ func main() {
 		Enqueuer:         enqueuer,
 		Enforcer:         enforcer,
 		IdempotencyStore: api.NewPostgresIdempotencyStore(pool),
+		StaffAuth:        staffSvc,
 		IsDevelopment:    cfg.IsDevelopment(),
 		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
 		XenditGateway:    xenditGw,

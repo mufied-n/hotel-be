@@ -8,6 +8,8 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
 PASSED=0
 FAILED=0
 TOTAL=0
@@ -100,7 +102,7 @@ NEW_ROOM_PAYLOAD='{
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -H "Content-Type: application/json" \
-    -H "X-User-Role: revenue_mgr" \
+    -H "Authorization: Bearer ${T_REVENUE_MGR}" \
     -d "$NEW_ROOM_PAYLOAD" \
     "${BASE_URL}/api/v1/catalog/rooms")
 assert_status "Revenue Manager creates new room variant" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
@@ -127,7 +129,7 @@ UPDATE_ROOM_PAYLOAD='{
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X PUT \
     -H "Content-Type: application/json" \
-    -H "X-User-Role: revenue_mgr" \
+    -H "Authorization: Bearer ${T_REVENUE_MGR}" \
     -d "$UPDATE_ROOM_PAYLOAD" \
     "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
 assert_status "Revenue Manager updates room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
@@ -159,14 +161,14 @@ assert_status "Guest is FORBIDDEN from deleting room variant" 403 "$HTTP_CODE" "
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X DELETE \
-    -H "X-User-Role: revenue_mgr" \
+    -H "Authorization: Bearer ${T_REVENUE_MGR}" \
     "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
 assert_status "Revenue Manager is FORBIDDEN from deleting room variant" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 # GM Admin deletes room variant
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X DELETE \
-    -H "Authorization: Bearer gm_admin" \
+    -H "Authorization: Bearer ${T_GM_ADMIN}" \
     "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
 assert_status "GM Admin deletes room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -174,6 +176,15 @@ assert_status "GM Admin deletes room variant" 200 "$HTTP_CODE" "$(cat /tmp/e2e_r
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     "${BASE_URL}/api/v1/catalog/rooms/${CATALOG_VARIANT_ID}")
 assert_status "Deleted room variant returns 404 Not Found" 404 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
+
+# mkquote <check_in> <check_out> <rooms> <guests> -> quote_id (BE-R06: quote single-use)
+RUN_ID=$(date +%s%N)  # idempotency key unik per run agar skrip bisa diulang
+mkquote() {
+    curl -s -H "Content-Type: application/json" \
+        -d "{\"room_type_id\":\"01900000-0000-7000-8000-000000000001\",\"check_in\":\"$1\",\"check_out\":\"$2\",\"num_rooms\":$3,\"num_guests\":$4}" \
+        "${BASE_URL}/api/v1/quotes" | grep -o '"quote_id":"[^"]*' | cut -d'"' -f4
+}
+CONSENT='"terms_accepted": true, "privacy_accepted": true,'
 
 # ------------------------------------------------------------------------------
 # Test 3: Public Create Booking (Hold)
@@ -188,6 +199,7 @@ BOOKING_PAYLOAD='{
   "guest_name": "Budi Santoso",
   "guest_email": "budi.santoso@example.com"
 }'
+BOOKING_PAYLOAD=$(echo "$BOOKING_PAYLOAD" | sed "s/^{/{\"quote_id\":\"$(mkquote 2026-10-10 2026-10-12 1 2)\",\"terms_accepted\":true,\"privacy_accepted\":true,/")
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -H "Content-Type: application/json" \
@@ -244,13 +256,13 @@ assert_status "Anonymous user is FORBIDDEN from check-in" 403 "$HTTP_CODE" "$(ca
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "X-User-Role: guest" \
+    -H "Accept: application/json" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-in")
 assert_status "Explicit guest role is FORBIDDEN from check-in" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "X-User-Role: housekeeping" \
+    -H "Authorization: Bearer ${T_HOUSEKEEPING}" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-in")
 assert_status "Housekeeping role is FORBIDDEN from check-in" 403 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -269,13 +281,13 @@ assert_status "Confirm payment via webhook/fake-pay" 200 "$HTTP_CODE" "$(cat /tm
 echo -e "\n${YELLOW}>> 7. RBAC Staff Actions (Role: Receptionist) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "Authorization: Bearer receptionist" \
+    -H "Authorization: Bearer ${T_RECEPTIONIST}" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-in")
 assert_status "Receptionist checks in guest" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "Authorization: Bearer receptionist" \
+    -H "Authorization: Bearer ${T_RECEPTIONIST}" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-out")
 assert_status "Receptionist checks out guest (Bearer token)" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -284,7 +296,7 @@ assert_status "Receptionist checks out guest (Bearer token)" 200 "$HTTP_CODE" "$
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}>> 8. RBAC Super Admin Wildcard Access (Role: gm_admin) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
-    -H "Authorization: Bearer gm_admin" \
+    -H "Authorization: Bearer ${T_GM_ADMIN}" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}")
 assert_status "General Manager can inspect any booking" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -387,11 +399,12 @@ BATCH_D_PAYLOAD='{
     "estimated_arrival_time": "14:30",
     "special_requests": "High floor, non-smoking, quiet room"
 }'
+BATCH_D_PAYLOAD=$(echo "$BATCH_D_PAYLOAD" | sed "s/^{/{\"quote_id\":\"$(mkquote 2026-10-10 2026-10-12 1 2)\",\"terms_accepted\":true,\"privacy_accepted\":true,/")
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
-    -H "Idempotency-Key: ik-bash-rian-001" \
+    -H "Idempotency-Key: ik-bash-rian-${RUN_ID}" \
     -d "$BATCH_D_PAYLOAD" \
     "${BASE_URL}/api/v1/bookings")
 assert_status "Checkout with complete guest profile returns 201 with expires_at & server_time" 201 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
@@ -406,7 +419,7 @@ echo -e "\n${YELLOW}>> 14. Idempotency-Key Network Replay (BE-G09) <<${NC}"
 HTTP_HEADERS=$(curl -s -D /tmp/e2e_headers.txt -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
-    -H "Idempotency-Key: ik-bash-rian-001" \
+    -H "Idempotency-Key: ik-bash-rian-${RUN_ID}" \
     -d "$BATCH_D_PAYLOAD" \
     "${BASE_URL}/api/v1/bookings")
 assert_status "Idempotent retry with same payload returns 201 Created" 201 "$HTTP_HEADERS" "$(cat /tmp/e2e_res.json)"
@@ -424,10 +437,11 @@ DIFF_PAYLOAD='{
     "guest_name": "Totally Different",
     "guest_email": "different@example.com"
 }'
+DIFF_PAYLOAD=$(echo "$DIFF_PAYLOAD" | sed "s/^{/{\"quote_id\":\"$(mkquote 2026-10-10 2026-10-12 2 4)\",\"terms_accepted\":true,\"privacy_accepted\":true,/")
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
     -H "Content-Type: application/json" \
-    -H "Idempotency-Key: ik-bash-rian-001" \
+    -H "Idempotency-Key: ik-bash-rian-${RUN_ID}" \
     -d "$DIFF_PAYLOAD" \
     "${BASE_URL}/api/v1/bookings")
 assert_status "Idempotency key reuse with different payload returns 409 Conflict" 409 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
@@ -451,7 +465,7 @@ assert_status "Owner query with X-Guest-Token returns full profile" 200 "$HTTP_C
 echo -e "\n${YELLOW}>> 17. Early Check-Out Inventory Restitution (BE-G22) <<${NC}"
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "Authorization: Bearer receptionist" \
+    -H "Authorization: Bearer ${T_RECEPTIONIST}" \
     "${BASE_URL}/api/v1/bookings/${BOOKING_ID}/check-out")
 assert_status "Receptionist processes early check-out" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 
@@ -465,7 +479,7 @@ curl -s -o /dev/null -X POST "${BASE_URL}/fake-pay/ref-batch-d?booking_id=${BATC
 
 HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
     -X POST \
-    -H "Authorization: Bearer receptionist" \
+    -H "Authorization: Bearer ${T_RECEPTIONIST}" \
     "${BASE_URL}/api/v1/bookings/${BATCH_D_BOOKING_ID}/no-show")
 # Expect 400 Bad Request with NO_SHOW_TOO_EARLY
 assert_status "No-show before check-in date rejected with 400 NO_SHOW_TOO_EARLY" 400 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
@@ -474,10 +488,12 @@ assert_status "No-show before check-in date rejected with 400 NO_SHOW_TOO_EARLY"
 # Test 19: Receptionist Marks No-Show on/after Check-In Date (BE-G22)
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}>> 19. Receptionist Marks No-Show on/after Check-In Date (BE-G22) <<${NC}"
+sleep 3  # limiter publik 20 rps/burst 40; beri token bucket waktu isi ulang
 # Create booking with today's check-in date
 TODAY_DATE=$(date -u +"%Y-%m-%d")
 TOMORROW_DATE=$(date -u -d "+1 day" +"%Y-%m-%d" 2>/dev/null || date -u -v+1d +"%Y-%m-%d" 2>/dev/null || echo "2026-10-11")
 TODAY_PAYLOAD="{
+    \"quote_id\": \"$(mkquote ${TODAY_DATE} ${TOMORROW_DATE} 1 1)\", \"terms_accepted\": true, \"privacy_accepted\": true,
     \"room_type_id\": \"01900000-0000-7000-8000-000000000001\",
     \"check_in\": \"${TODAY_DATE}\",
     \"check_out\": \"${TOMORROW_DATE}\",
@@ -499,7 +515,7 @@ if [ -n "$TODAY_BID" ]; then
     # Mark no show
     HTTP_CODE=$(curl -s -o /tmp/e2e_res.json -w "%{http_code}" \
         -X POST \
-        -H "Authorization: Bearer receptionist" \
+        -H "Authorization: Bearer ${T_RECEPTIONIST}" \
         "${BASE_URL}/api/v1/bookings/${TODAY_BID}/no-show")
     assert_status "No-show on check-in date accepted with 200 OK" 200 "$HTTP_CODE" "$(cat /tmp/e2e_res.json)"
 fi

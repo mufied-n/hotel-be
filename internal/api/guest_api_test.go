@@ -152,7 +152,6 @@ func (m *mockGuestService) GenerateCalendarICS(receipt *guest.ReceiptDTO) ([]byt
 	return []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nSUMMARY:Pulang ke Uttara\r\nEND:VCALENDAR\r\n"), nil
 }
 
-
 func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -173,10 +172,10 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "Challenge request with invalid email returns 400 Bad Request",
-			method:         http.MethodPost,
-			path:           "/api/v1/auth/guest/challenge",
-			body:           `{"email": "invalid"}`,
+			name:   "Challenge request with invalid email returns 400 Bad Request",
+			method: http.MethodPost,
+			path:   "/api/v1/auth/guest/challenge",
+			body:   `{"email": "invalid"}`,
 			setupMock: func(m *mockGuestService) {
 				m.requestChallengeFunc = func(ctx context.Context, email string) (int, error) {
 					return 0, guest.ErrInvalidEmail
@@ -186,10 +185,10 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "Challenge request with cooldown returns 429 Too Many Requests",
-			method:         http.MethodPost,
-			path:           "/api/v1/auth/guest/challenge",
-			body:           `{"email": "tamu@example.com"}`,
+			name:   "Challenge request with cooldown returns 429 Too Many Requests",
+			method: http.MethodPost,
+			path:   "/api/v1/auth/guest/challenge",
+			body:   `{"email": "tamu@example.com"}`,
 			setupMock: func(m *mockGuestService) {
 				m.requestChallengeFunc = func(ctx context.Context, email string) (int, error) {
 					return 0, guest.ErrRateLimited
@@ -215,10 +214,10 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
-			name:           "Verify with wrong/expired code returns 401 Unauthorized",
-			method:         http.MethodPost,
-			path:           "/api/v1/auth/guest/verify",
-			body:           `{"email": "tamu@example.com", "code": "000000"}`,
+			name:   "Verify with wrong/expired code returns 401 Unauthorized",
+			method: http.MethodPost,
+			path:   "/api/v1/auth/guest/verify",
+			body:   `{"email": "tamu@example.com", "code": "000000"}`,
 			setupMock: func(m *mockGuestService) {
 				m.verifyChallengeFunc = func(ctx context.Context, email, code string) (string, *guest.GuestSession, error) {
 					return "", nil, guest.ErrInvalidOrExpiredCode
@@ -228,10 +227,10 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
-			name:           "Verify with max attempts exceeded returns 403 Forbidden",
-			method:         http.MethodPost,
-			path:           "/api/v1/auth/guest/verify",
-			body:           `{"email": "tamu@example.com", "code": "000000"}`,
+			name:   "Verify with max attempts exceeded returns 403 Forbidden",
+			method: http.MethodPost,
+			path:   "/api/v1/auth/guest/verify",
+			body:   `{"email": "tamu@example.com", "code": "000000"}`,
 			setupMock: func(m *mockGuestService) {
 				m.verifyChallengeFunc = func(ctx context.Context, email, code string) (string, *guest.GuestSession, error) {
 					return "", nil, guest.ErrMaxAttemptsExceeded
@@ -372,7 +371,6 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
-
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

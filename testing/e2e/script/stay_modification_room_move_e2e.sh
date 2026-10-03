@@ -10,7 +10,15 @@
 set -euo pipefail
 
 BASE_URL="${API_BASE_URL:-http://localhost:8080}"
-TEST_BOOKING_ID="${BOOKING_ID:-bk-e2e-001}"
+source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
+load_staff_tokens
+source "$(dirname "${BASH_SOURCE[0]}")/lib_fixtures.sh"
+# Fixture: 204 kotor (target ditolak), 202 siap huni, booking checked-in baru
+db_exec "DELETE FROM room_assignments WHERE room_number IN ('202','204')"  # reset sisa run lama (DB *_test)
+set_room_status 204 vacant_dirty
+set_room_status 202 vacant_dirty   # cegah booking fixture mendapat 202
+TEST_BOOKING_ID="${BOOKING_ID:-$(create_checked_in_booking)}"
+set_room_status 202 inspected
 
 echo "=== [E2E] Stay Modification: Room Move & Stay Extension Testing ==="
 echo "Target Base URL: ${BASE_URL}"
@@ -36,7 +44,7 @@ fi
 # 3. Receptionist Execute Mid-Stay Room Move (200 OK)
 echo "--- 3. Receptionist Execute Mid-Stay Room Move (POST /api/v1/bookings/{id}/room-move) ---"
 MOVE_RESP=$(curl -sS -X POST "${BASE_URL}/api/v1/bookings/${TEST_BOOKING_ID}/room-move" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d '{
     "target_room_number": "202",
@@ -54,7 +62,7 @@ fi
 # 4. Negative Test: Room Move to Dirty Target Room (409 Conflict)
 echo "--- 4. Negative Test: Rejection on Dirty Target Room (409 Conflict) ---"
 DIRTY_MOVE_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "${BASE_URL}/api/v1/bookings/${TEST_BOOKING_ID}/room-move" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d '{
     "target_room_number": "204",
@@ -83,7 +91,7 @@ fi
 # 6. Receptionist Execute Stay Extension (200 OK)
 echo "--- 6. Receptionist Execute Stay Extension (POST /api/v1/bookings/{id}/extend-stay) ---"
 EXT_RESP=$(curl -sS -X POST "${BASE_URL}/api/v1/bookings/${TEST_BOOKING_ID}/extend-stay" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d '{
     "additional_nights": 2,
@@ -100,7 +108,7 @@ fi
 # 7. Negative Test: Rejection on Zero Additional Nights (400 Bad Request)
 echo "--- 7. Negative Test: Rejection on Zero Additional Nights (400 Bad Request) ---"
 ZERO_NIGHTS_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "${BASE_URL}/api/v1/bookings/${TEST_BOOKING_ID}/extend-stay" \
-  -H "Authorization: Bearer receptionist" \
+  -H "Authorization: Bearer ${T_RECEPTIONIST}" \
   -H "Content-Type: application/json" \
   -d '{"additional_nights":0}')
 if [ "${ZERO_NIGHTS_STATUS}" -eq 400 ]; then
@@ -113,7 +121,7 @@ fi
 # 8. Room Move Audit Log Inquiry (200 OK)
 echo "--- 8. Receptionist Room Move Audit Log Inquiry (GET /api/v1/bookings/{id}/room-moves) ---"
 MOVES_RESP=$(curl -sS -X GET "${BASE_URL}/api/v1/bookings/${TEST_BOOKING_ID}/room-moves" \
-  -H "Authorization: Bearer receptionist")
+  -H "Authorization: Bearer ${T_RECEPTIONIST}")
 echo "Response: ${MOVES_RESP}"
 if echo "${MOVES_RESP}" | grep -q '"moves":\['; then
   echo "✓ Riwayat Pemindahan Kamar Sukses Dimuat (200 OK)"

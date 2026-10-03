@@ -45,6 +45,7 @@ type Deps struct {
 	CatalogStore     catalog.Store
 	Enqueuer         *workers.Enqueuer
 	IdempotencyStore IdempotencyStore
+	StaffAuth        StaffAuthService
 	ReadyCheck       func(ctx context.Context) error
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
 	FakePay          gin.HandlerFunc
@@ -131,6 +132,13 @@ func NewRouter(d Deps) *gin.Engine {
 	r.POST("/api/v1/auth/guest/challenge", RequireFeature(d.FeatureFlag, "ff_guest_portal_auth"), handleGuestChallenge(d))
 	r.POST("/api/v1/auth/guest/verify", RequireFeature(d.FeatureFlag, "ff_guest_portal_auth"), handleGuestVerify(d))
 
+	// Staff Auth (BE-R01): login publik; me/logout wajib sesi staf terverifikasi.
+	r.POST("/api/v1/auth/staff/login", handleStaffLogin(d))
+	staffAuthGroup := r.Group("/api/v1/auth/staff")
+	staffAuthGroup.Use(IdentifySubject(staffVerifierOrNil(d.StaffAuth)), requireStaffSession())
+	staffAuthGroup.GET("/me", handleStaffMe(d))
+	staffAuthGroup.POST("/logout", handleStaffLogout(d))
+
 	guestGroup := r.Group("")
 	guestGroup.Use(requireGuestSession(d.GuestSvc))
 	{
@@ -147,7 +155,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
 	apiGroup := r.Group("")
-	apiGroup.Use(IdentifySubject())
+	apiGroup.Use(IdentifySubject(staffVerifierOrNil(d.StaffAuth)))
 	apiGroup.Use(Authorize(d.Enforcer))
 	{
 		apiGroup.GET("/api/v1/catalog/rooms", getCatalogRooms(d))

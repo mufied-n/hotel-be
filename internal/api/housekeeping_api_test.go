@@ -15,11 +15,11 @@ import (
 )
 
 type mockHousekeepingService struct {
-	getRoomBoardFunc           func(ctx context.Context, floor int, status string, roomTypeID string) (*housekeeping.RoomBoardSummary, error)
-	updateStatusFunc           func(ctx context.Context, input housekeeping.UpdateStatusInput) error
-	validateRoomForCheckInFunc func(ctx context.Context, roomNumber string) error
+	getRoomBoardFunc            func(ctx context.Context, floor int, status string, roomTypeID string) (*housekeeping.RoomBoardSummary, error)
+	updateStatusFunc            func(ctx context.Context, input housekeeping.UpdateStatusInput) error
+	validateRoomForCheckInFunc  func(ctx context.Context, roomNumber string) error
 	markRoomDirtyOnCheckOutFunc func(ctx context.Context, roomNumber string) error
-	markRoomOutOfOrderFunc     func(ctx context.Context, roomNumber string, startDate, endDate time.Time, reason string) error
+	markRoomOutOfOrderFunc      func(ctx context.Context, roomNumber string, startDate, endDate time.Time, reason string) error
 }
 
 func (m *mockHousekeepingService) GetRoomBoard(ctx context.Context, floor int, status string, roomTypeID string) (*housekeeping.RoomBoardSummary, error) {
@@ -101,6 +101,7 @@ func setupHousekeepingTestRouter(t *testing.T, hkSvc housekeeping.Service, bkSvc
 	}
 
 	return NewRouter(Deps{
+		StaffAuth:       TestStaffVerifier(),
 		Enforcer:        enforcer,
 		HousekeepingSvc: hkSvc,
 		BookingSvc:      bkSvc,

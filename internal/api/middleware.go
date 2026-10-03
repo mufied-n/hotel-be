@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/casbin/casbin/v2"
 	"github.com/gin-gonic/gin"
+
+	"github.com/example/hotel-booking/internal/staffauth"
 )
 
 type contextKey string
@@ -59,46 +62,50 @@ var validStaffRoles = map[string]bool{
 	"gm_admin":     true,
 }
 
-// IdentifySubject mengekstrak identitas subjek, peran, dan guest_token dari header HTTP.
-// Melindungi dari pemalsuan header publik (BE-G14):
-// - Header X-User-Role / X-User-ID dari klien luar ditolak/dibersihkan kecuali disertai X-Internal-Secret valid.
-// - Kredensial staf diverifikasi melalui Authorization Bearer token.
-// - Header X-Guest-Token diekstrak untuk verifikasi hak milik pemesanan (BE-G13).
-func IdentifySubject() gin.HandlerFunc {
+// IdentifySubject mengekstrak identitas subjek, peran, dan guest_token dari request (BE-R01, BE-G14).
+//
+// Identitas staf HANYA berasal dari sesi yang diverifikasi server (Authorization: Bearer stf_<token>
+// → staffauth). Nama role literal, X-User-Role, X-User-ID, X-Internal-Secret, dan X-Testing-Role tidak
+// memberi hak apa pun. Token berawalan stf_ yang tidak valid → 401; kegagalan verifier/infrastruktur
+// → 503 (fail-closed, tidak pernah turun menjadi staf). Bearer lain (mis. sesi tamu) diperlakukan tamu.
+// Header X-Guest-Token diekstrak untuk verifikasi hak milik pemesanan (BE-G13).
+func IdentifySubject(verifier StaffVerifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role := "guest"
 		sub := "anonymous"
 
-		// Ekstraksi X-Guest-Token untuk akses privat tamu
 		guestToken := strings.TrimSpace(c.GetHeader("X-Guest-Token"))
 
-		// Verifikasi Authorization Bearer token untuk staf
-		if auth := c.GetHeader("Authorization"); auth != "" && strings.HasPrefix(auth, "Bearer ") {
+		if auth := c.GetHeader("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 			token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-			// Verifikasi peran staf yang sah dari token
-			if validStaffRoles[token] {
-				role = token
-				sub = "staff:" + token
-			} else if strings.HasPrefix(token, "staff:") {
-				parts := strings.Split(token, ":")
-				if len(parts) >= 2 && validStaffRoles[parts[1]] {
-					role = parts[1]
-					sub = token
+			isStaffToken := strings.HasPrefix(token, staffauth.TokenPrefix)
+			if verifier == nil {
+				if isStaffToken {
+					writeProblemDetails(c, http.StatusServiceUnavailable, "Service Unavailable",
+						"staff authentication is unavailable (fail-closed)", "AUTH_UNAVAILABLE")
+					c.Abort()
+					return
 				}
-			}
-		}
-
-		// Izinkan X-User-Role hanya jika token Bearer belum mengeset role dan ada kredensial internal/testing
-		if role == "guest" {
-			rawRole := strings.TrimSpace(c.GetHeader("X-User-Role"))
-			internalSecret := c.GetHeader("X-Internal-Secret")
-			// Dalam testing / internal service: jika peran staf terdaftar dan memiliki X-Internal-Secret atau role testing eksplisit
-			if validStaffRoles[rawRole] && (internalSecret == "internal-service-secret" || c.GetHeader("X-Testing-Role") == "true" || rawRole != "") {
-				role = rawRole
-				if s := c.GetHeader("X-User-ID"); s != "" {
-					sub = s
-				} else {
-					sub = "staff:" + role
+			} else {
+				p, err := verifier.VerifyStaffToken(c.Request.Context(), token)
+				switch {
+				case err == nil && validStaffRoles[p.Role]:
+					role = p.Role
+					sub = "staff:" + p.Username
+				case err == nil || errors.Is(err, staffauth.ErrUnauthorized):
+					if isStaffToken {
+						writeProblemDetails(c, http.StatusUnauthorized, "Unauthorized",
+							"staff session is invalid, expired or revoked", "AUTHENTICATION_REQUIRED")
+						c.Abort()
+						return
+					}
+				default:
+					if isStaffToken {
+						writeProblemDetails(c, http.StatusServiceUnavailable, "Service Unavailable",
+							"staff authentication is unavailable", "AUTH_UNAVAILABLE")
+						c.Abort()
+						return
+					}
 				}
 			}
 		}
