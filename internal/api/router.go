@@ -27,6 +27,7 @@ import (
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
+	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
 	"github.com/example/hotel-booking/internal/workers"
@@ -55,10 +56,14 @@ type Deps struct {
 	HousekeepingSvc housekeeping.Service
 	FrontDeskSvc    frontdesk.Service
 	StaySvc         stay.Service
+	FeatureFlag     featureflag.Manager
 }
 
 // NewRouter merakit seluruh route.
 func NewRouter(d Deps) http.Handler {
+	if d.FeatureFlag == nil {
+		d.FeatureFlag = featureflag.NewMemoryManager(nil)
+	}
 	if d.CatalogStore == nil {
 		d.CatalogStore = catalog.NewMemoryStore(catalog.DefaultVariants())
 	}
@@ -85,20 +90,20 @@ func NewRouter(d Deps) http.Handler {
 
 	r.Get("/healthz", healthz)
 	r.Get("/ready", ready(d))
-	r.Post("/api/v1/webhooks/xendit", xenditWebhook(d))
+	r.With(RequireFeature(d.FeatureFlag, "ff_xendit_payment_gateway")).Post("/api/v1/webhooks/xendit", xenditWebhook(d))
 
 	// Guest Auth & My Bookings (F02 & F03)
-	r.Post("/api/v1/auth/guest/challenge", handleGuestChallenge(d))
-	r.Post("/api/v1/auth/guest/verify", handleGuestVerify(d))
+	r.With(RequireFeature(d.FeatureFlag, "ff_guest_portal_auth")).Post("/api/v1/auth/guest/challenge", handleGuestChallenge(d))
+	r.With(RequireFeature(d.FeatureFlag, "ff_guest_portal_auth")).Post("/api/v1/auth/guest/verify", handleGuestVerify(d))
 	r.Group(func(guestRouter chi.Router) {
 		guestRouter.Use(requireGuestSession(d.GuestSvc))
-		guestRouter.Get("/api/v1/auth/guest/me", handleGuestMe(d))
-		guestRouter.Post("/api/v1/auth/guest/logout", handleGuestLogout(d))
-		guestRouter.Get("/api/v1/guest/bookings", handleGuestBookings(d))
-		guestRouter.Get("/api/v1/guest/bookings/{id}", handleGuestBookingDetail(d))
-		guestRouter.Get("/api/v1/guest/bookings/{id}/receipt", handleGuestBookingReceipt(d))
-		guestRouter.Get("/api/v1/guest/bookings/{id}/calendar.ics", handleGuestBookingCalendar(d))
-		guestRouter.Get("/api/v1/guest/bookings/{id}/refund-status", handleGuestRefundStatus(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_portal_auth")).Get("/api/v1/auth/guest/me", handleGuestMe(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_portal_auth")).Post("/api/v1/auth/guest/logout", handleGuestLogout(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_my_bookings")).Get("/api/v1/guest/bookings", handleGuestBookings(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_my_bookings")).Get("/api/v1/guest/bookings/{id}", handleGuestBookingDetail(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_booking_artifacts_receipt")).Get("/api/v1/guest/bookings/{id}/receipt", handleGuestBookingReceipt(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_booking_artifacts_icalendar")).Get("/api/v1/guest/bookings/{id}/calendar.ics", handleGuestBookingCalendar(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_my_bookings")).Get("/api/v1/guest/bookings/{id}/refund-status", handleGuestRefundStatus(d))
 	})
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
@@ -108,12 +113,12 @@ func NewRouter(d Deps) http.Handler {
 
 		api.Get("/api/v1/catalog/rooms", getCatalogRooms(d))
 		api.Get("/api/v1/catalog/rooms/{id}", getCatalogRoom(d))
-		api.Post("/api/v1/catalog/rooms", createCatalogRoom(d))
-		api.Put("/api/v1/catalog/rooms/{id}", updateCatalogRoom(d))
-		api.Delete("/api/v1/catalog/rooms/{id}", deleteCatalogRoom(d))
-		api.Get("/api/v1/search", searchRooms(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_catalog_write")).Post("/api/v1/catalog/rooms", createCatalogRoom(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_catalog_write")).Put("/api/v1/catalog/rooms/{id}", updateCatalogRoom(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_catalog_write")).Delete("/api/v1/catalog/rooms/{id}", deleteCatalogRoom(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_multi_variant_search")).Get("/api/v1/search", searchRooms(d))
 		api.Get("/api/v1/availability", getAvailability(d))
-		api.Post("/api/v1/quotes", calculateQuote(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_quote_locking_engine")).Post("/api/v1/quotes", calculateQuote(d))
 		api.Post("/api/v1/bookings", createBooking(d))
 		api.Get("/api/v1/bookings/{id}", getBooking(d))
 		api.Post("/api/v1/bookings/{id}/cancel", cancelBooking(d))
@@ -122,15 +127,15 @@ func NewRouter(d Deps) http.Handler {
 		api.Post("/api/v1/bookings/{id}/no-show", noShow(d))
 
 		// Finance Reconciliation & Refunds (F14)
-		api.Post("/api/v1/finance/refunds", handleFinanceRefund(d))
-		api.Get("/api/v1/finance/cases", handleFinanceCases(d))
-		api.Post("/api/v1/finance/cases/{id}/resolve", handleFinanceResolveCase(d))
-		api.Get("/api/v1/finance/reconciliations", handleFinanceSummary(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_gateway_automated_refund")).Post("/api/v1/finance/refunds", handleFinanceRefund(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_finance_reconciliation")).Get("/api/v1/finance/cases", handleFinanceCases(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_finance_reconciliation")).Post("/api/v1/finance/cases/{id}/resolve", handleFinanceResolveCase(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_finance_reconciliation")).Get("/api/v1/finance/reconciliations", handleFinanceSummary(d))
 
 		// Housekeeping Room Status & Readiness Lifecycle (Proposed 01)
-		api.Get("/api/v1/housekeeping/rooms", handleHousekeepingRooms(d))
-		api.Put("/api/v1/housekeeping/rooms/{id}/status", handleHousekeepingStatus(d))
-		api.Post("/api/v1/housekeeping/rooms/{id}/out-of-order", handleHousekeepingOOO(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_housekeeping_board")).Get("/api/v1/housekeeping/rooms", handleHousekeepingRooms(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_housekeeping_board")).Put("/api/v1/housekeeping/rooms/{id}/status", handleHousekeepingStatus(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_housekeeping_board")).Post("/api/v1/housekeeping/rooms/{id}/out-of-order", handleHousekeepingOOO(d))
 
 		// Front Desk Daily Operations Roster & Shift Handover Board (Proposed 02)
 		api.Get("/api/v1/front-desk/daily-roster", handleFrontDeskDailyRoster(d))
@@ -141,6 +146,10 @@ func NewRouter(d Deps) http.Handler {
 		api.Post("/api/v1/bookings/{id}/room-move", handleRoomMove(d))
 		api.Post("/api/v1/bookings/{id}/extend-stay", handleExtendStay(d))
 		api.Get("/api/v1/bookings/{id}/room-moves", handleListRoomMoves(d))
+
+		// Feature Flags Administration (FR-FF-04)
+		api.Get("/api/v1/admin/feature-flags", handleAdminListFlags(d))
+		api.Put("/api/v1/admin/feature-flags/{key}", handleAdminUpdateFlag(d))
 
 		// Dev-only: simulasi pembayaran sukses (BE-G10: gate development only)
 		if d.IsDevelopment && d.FakePay != nil {
@@ -572,7 +581,7 @@ func createBooking(d Deps) http.HandlerFunc {
 
 		idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 		var reqHash string
-		if idempotencyKey != "" {
+		if idempotencyKey != "" && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(r.Context(), "ff_checkout_idempotency")) {
 			h := sha256.Sum256(bodyBytes)
 			reqHash = hex.EncodeToString(h[:])
 			if d.IdempotencyStore != nil {
@@ -699,7 +708,7 @@ func createBooking(d Deps) http.HandlerFunc {
 		}
 		respBytes, _ := json.Marshal(respObj)
 
-		if idempotencyKey != "" && d.IdempotencyStore != nil {
+		if idempotencyKey != "" && d.IdempotencyStore != nil && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(r.Context(), "ff_checkout_idempotency")) {
 			_ = d.IdempotencyStore.Save(r.Context(), IdempotencyRecord{
 				Key:          idempotencyKey,
 				RequestHash:  reqHash,
@@ -733,10 +742,10 @@ func getBooking(d Deps) http.HandlerFunc {
 		guestToken := GetGuestToken(r.Context())
 
 		// BE-G13: Privasi data tamu (PII).
-		// Jika caller adalah staff (bukan guest) ATAU memiliki guest_token yang valid,
+		// Jika caller adalah staff (bukan guest) ATAU memiliki guest_token yang valid ATAU pii masking guard dinonaktifkan,
 		// kembalikan data booking lengkap.
 		// Jika guest tanpa token yang cocok, kembalikan PublicDTO yang dimasking.
-		if authCtx.Role != "guest" || (b.GuestToken != "" && guestToken == b.GuestToken) {
+		if (d.FeatureFlag != nil && !d.FeatureFlag.IsEnabled(r.Context(), "ff_pii_masking_guard")) || authCtx.Role != "guest" || (b.GuestToken != "" && guestToken == b.GuestToken) {
 			writeJSON(w, http.StatusOK, b)
 			return
 		}
@@ -770,11 +779,11 @@ func cancelBooking(d Deps) http.HandlerFunc {
 		}
 
 		if err := d.BookingSvc.Cancel(r.Context(), id); err != nil {
-			if errors.Is(err, booking.ErrNonRefundable) {
+			if errors.Is(err, booking.ErrNonRefundable) && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(r.Context(), "ff_strict_cancellation_policy")) {
 				httpErrorCode(w, http.StatusConflict, "reservasi non-refundable tidak dapat dibatalkan oleh tamu", "NON_REFUNDABLE_BOOKING")
 				return
 			}
-			if errors.Is(err, booking.ErrCancellationDeadlineExceeded) {
+			if errors.Is(err, booking.ErrCancellationDeadlineExceeded) && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(r.Context(), "ff_strict_cancellation_policy")) {
 				httpErrorCode(w, http.StatusConflict, "batas waktu pembatalan gratis 48 jam sebelum check-in telah terlewati", "CANCELLATION_DEADLINE_EXCEEDED")
 				return
 			}

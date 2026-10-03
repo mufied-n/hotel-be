@@ -29,6 +29,7 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
+	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
 	"github.com/example/hotel-booking/internal/workers"
@@ -247,6 +248,13 @@ func main() {
 	stayStore := stay.NewPostgresStore(pool)
 	staySvc := stay.NewService(stayStore, rateEngine, log)
 
+	// ---- Feature Flags Engine ----
+	ffManager, err := featureflag.NewPostgresManager(ctx, pool, redisClient, 30*time.Second, log)
+	if err != nil {
+		log.Warn("featureflag.init_fallback", "err", err)
+	}
+	defer func() { _ = ffManager.Close() }()
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,
@@ -266,6 +274,7 @@ func main() {
 		HousekeepingSvc:  housekeepingSvc,
 		FrontDeskSvc:     frontdeskSvc,
 		StaySvc:          staySvc,
+		FeatureFlag:      ffManager,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

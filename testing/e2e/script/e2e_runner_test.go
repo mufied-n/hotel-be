@@ -2956,6 +2956,66 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 			t.Errorf("reason_category = %v, want maintenance_defect", firstMove["reason_category"])
 		}
 	})
+
+	// 61. E2E Feature Flags & Runtime Configuration Lifecycle
+	t.Run("E2E-61: Feature Flags & Runtime Configuration Lifecycle", func(t *testing.T) {
+		// 1. Receptionist mencoba GET /api/v1/admin/feature-flags -> 403 Forbidden (Casbin RBAC)
+		reqRec, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/admin/feature-flags", nil)
+		reqRec.Header.Set("Authorization", "Bearer receptionist")
+		resRec, err := client.Do(reqRec)
+		if err != nil || resRec.StatusCode != http.StatusForbidden {
+			t.Fatalf("receptionist admin flags status = %d, want 403 Forbidden", resRec.StatusCode)
+		}
+
+		// 2. GM Admin membaca daftar feature flags -> 200 OK
+		reqGM, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/admin/feature-flags", nil)
+		reqGM.Header.Set("Authorization", "Bearer gm_admin")
+		resGM, err := client.Do(reqGM)
+		if err != nil || resGM.StatusCode != http.StatusOK {
+			t.Fatalf("gm_admin flags status = %d, want 200 OK", resGM.StatusCode)
+		}
+		var listResp struct {
+			Total int `json:"total"`
+		}
+		_ = json.NewDecoder(resGM.Body).Decode(&listResp)
+		if listResp.Total < 17 {
+			t.Errorf("total flags = %d, want at least 17", listResp.Total)
+		}
+
+		// 3. Matikan flag ff_multi_variant_search via PUT
+		updatePayload := `{"enabled": false, "allowed_roles": []}`
+		reqToggle, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_multi_variant_search", bytes.NewBufferString(updatePayload))
+		reqToggle.Header.Set("Authorization", "Bearer gm_admin")
+		reqToggle.Header.Set("Content-Type", "application/json")
+		resToggle, err := client.Do(reqToggle)
+		if err != nil || resToggle.StatusCode != http.StatusOK {
+			t.Fatalf("toggle flag status = %d, want 200 OK", resToggle.StatusCode)
+		}
+
+		// 4. Guest akses GET /api/v1/search -> 503 Service Unavailable (FEATURE_DISABLED)
+		reqSearch, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=1", nil)
+		resSearch, err := client.Do(reqSearch)
+		if err != nil || resSearch.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("disabled search status = %d, want 503 Service Unavailable", resSearch.StatusCode)
+		}
+
+		// 5. Restore flag ff_multi_variant_search via PUT
+		restorePayload := `{"enabled": true, "allowed_roles": []}`
+		reqRestore, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_multi_variant_search", bytes.NewBufferString(restorePayload))
+		reqRestore.Header.Set("Authorization", "Bearer gm_admin")
+		reqRestore.Header.Set("Content-Type", "application/json")
+		resRestore, err := client.Do(reqRestore)
+		if err != nil || resRestore.StatusCode != http.StatusOK {
+			t.Fatalf("restore flag status = %d, want 200 OK", resRestore.StatusCode)
+		}
+
+		// 6. Guest akses GET /api/v1/search -> 200 OK pulih
+		reqSearch2, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=1", nil)
+		resSearch2, err := client.Do(reqSearch2)
+		if err != nil || resSearch2.StatusCode != http.StatusOK {
+			t.Fatalf("restored search status = %d, want 200 OK", resSearch2.StatusCode)
+		}
+	})
 }
 
 
