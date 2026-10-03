@@ -181,37 +181,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		return Booking{}, ChargeResult{}, ErrSpecialRequestTooLong
 	}
 
-	// 1. Quote locking & Terms Consent validation (BE-G04, BE-G05, BE-G06)
-	var quotes []rates.Quote
-	var total int64
-	var lockedQuote rates.LockedQuote
-
-	if in.QuoteID != "" {
-		if !in.TermsAccepted || !in.PrivacyAccepted {
-			return Booking{}, ChargeResult{}, ErrConsentRequired
-		}
-		if s.quoteStore == nil {
-			return Booking{}, ChargeResult{}, errors.New("booking: quote store not configured")
-		}
-		var err error
-		lockedQuote, err = s.quoteStore.GetQuote(ctx, in.QuoteID)
-		if err != nil {
-			if errors.Is(err, rates.ErrQuoteNotFound) || errors.Is(err, rates.ErrQuoteExpired) {
-				return Booking{}, ChargeResult{}, ErrQuoteExpired
-			}
-			return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote lookup: %w", err)
-		}
-		// Match parameters
-		if lockedQuote.RoomTypeID != in.RoomTypeID ||
-			!lockedQuote.CheckIn.Equal(in.CheckIn) ||
-			!lockedQuote.CheckOut.Equal(in.CheckOut) ||
-			lockedQuote.NumRooms != in.NumRooms ||
-			lockedQuote.NumGuests != in.NumGuests {
-			return Booking{}, ChargeResult{}, ErrQuoteMismatch
-		}
-		quotes = lockedQuote.NightlyRates
-		total = lockedQuote.Pricing.TotalPriceMinor
+	// 1. Quote locking & Terms Consent validation (BE-G04, BE-G05, BE-G06, BE-R06).
+	// quote_id wajib: harga, pajak, kebijakan pembatalan dan consent hanya sah dari quote terkunci.
+	if in.QuoteID == "" {
+		return Booking{}, ChargeResult{}, ErrQuoteRequired
 	}
+	if !in.TermsAccepted || !in.PrivacyAccepted {
+		return Booking{}, ChargeResult{}, ErrConsentRequired
+	}
+	if s.quoteStore == nil {
+		return Booking{}, ChargeResult{}, errors.New("booking: quote store not configured")
+	}
+	lockedQuote, err := s.quoteStore.GetQuote(ctx, in.QuoteID)
+	if err != nil {
+		if errors.Is(err, rates.ErrQuoteNotFound) || errors.Is(err, rates.ErrQuoteExpired) {
+			return Booking{}, ChargeResult{}, ErrQuoteExpired
+		}
+		return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote lookup: %w", err)
+	}
+	if lockedQuote.RoomTypeID != in.RoomTypeID ||
+		!lockedQuote.CheckIn.Equal(in.CheckIn) ||
+		!lockedQuote.CheckOut.Equal(in.CheckOut) ||
+		lockedQuote.NumRooms != in.NumRooms ||
+		lockedQuote.NumGuests != in.NumGuests {
+		return Booking{}, ChargeResult{}, ErrQuoteMismatch
+	}
+	quotes := lockedQuote.NightlyRates
 
 	// 2. Pre-flight check (tanpa lock) untuk fail-fast
 	if s.inv != nil {
@@ -221,20 +216,6 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		}
 		if err := inventory.Check(avail, in.CheckIn, in.CheckOut, in.NumRooms); err != nil {
 			return Booking{}, ChargeResult{}, err
-		}
-	}
-
-	// 3. Rate fallback jika tanpa quote ID
-	if in.QuoteID == "" {
-		if s.rates != nil {
-			var err error
-			quotes, err = s.rates.Quote(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
-			if err != nil {
-				return Booking{}, ChargeResult{}, fmt.Errorf("booking: quote: %w", err)
-			}
-			for _, q := range quotes {
-				total += q.RateMinor * int64(in.NumRooms)
-			}
 		}
 	}
 
@@ -255,30 +236,20 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		CreatedAt:            time.Now().UTC(),
 	}
 
-	if in.QuoteID != "" {
-		b.QuoteID = lockedQuote.ID
-		b.RatePlanCode = lockedQuote.RatePlanCode
-		b.CancellationPolicy = lockedQuote.CancellationCode
-		b.CancellationDesc = lockedQuote.CancellationDesc
-		b.RoomSubtotalMinor = lockedQuote.Pricing.RoomSubtotalMinor
-		b.BreakfastChargeMinor = lockedQuote.Pricing.BreakfastChargeMinor
-		b.DiscountMinor = lockedQuote.Pricing.DiscountMinor
-		b.TaxMinor = lockedQuote.Pricing.TaxMinor
-		b.TotalPriceMinor = lockedQuote.Pricing.TotalPriceMinor
-		b.Currency = lockedQuote.Pricing.Currency
-	} else {
-		b.RatePlanCode = rates.RatePlanRoomOnly
-		b.CancellationPolicy = rates.PolicyFlexible48h
-		b.CancellationDesc = "Pembatalan gratis hingga 48 jam sebelum check-in"
-		b.RoomSubtotalMinor = total
-		b.TotalPriceMinor = total
-	}
+	b.QuoteID = lockedQuote.ID
+	b.RatePlanCode = lockedQuote.RatePlanCode
+	b.CancellationPolicy = lockedQuote.CancellationCode
+	b.CancellationDesc = lockedQuote.CancellationDesc
+	b.RoomSubtotalMinor = lockedQuote.Pricing.RoomSubtotalMinor
+	b.BreakfastChargeMinor = lockedQuote.Pricing.BreakfastChargeMinor
+	b.DiscountMinor = lockedQuote.Pricing.DiscountMinor
+	b.TaxMinor = lockedQuote.Pricing.TaxMinor
+	b.TotalPriceMinor = lockedQuote.Pricing.TotalPriceMinor
+	b.Currency = lockedQuote.Pricing.Currency
 
-	if in.TermsAccepted {
-		nowConsent := time.Now().UTC()
-		b.TermsAccepted = true
-		b.TermsAcceptedAt = &nowConsent
-	}
+	nowConsent := time.Now().UTC()
+	b.TermsAccepted = true
+	b.TermsAcceptedAt = &nowConsent
 
 	// 2. Transaksi kritis lokal: lock + decrement + insert + outbox.
 	txErr := s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {

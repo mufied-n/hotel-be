@@ -410,7 +410,7 @@ func TestCreate_HappyPathAndReservationRoomNights(t *testing.T) {
 		GuestEmail: "budi@example.com",
 	}
 
-	b, charge, err := svc.Create(context.Background(), in)
+	b, charge, err := svc.Create(context.Background(), withQuote(svc, in))
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
@@ -597,7 +597,7 @@ func TestCreate_PaymentFailureCompensation(t *testing.T) {
 	reader := &fakeReader{bookings: tx.bookings}
 	svc := NewService(tx, inv, ratesSvc, pay, &fakeNotifier{}, reader, 30*time.Minute, slog.Default())
 
-	_, _, err := svc.Create(context.Background(), CreateInput{
+	_, _, err := svc.Create(context.Background(), withQuote(svc, CreateInput{
 		RoomTypeID: "std",
 		CheckIn:    date("2026-10-10"),
 		CheckOut:   date("2026-10-11"),
@@ -605,7 +605,7 @@ func TestCreate_PaymentFailureCompensation(t *testing.T) {
 		NumGuests:  1,
 		GuestName:  "Test",
 		GuestEmail: "test@example.com",
-	})
+	}))
 	if err == nil {
 		t.Fatal("Create want error when payment fails")
 	}
@@ -990,7 +990,7 @@ func TestBatchD_GuestProfileAndHoldExpiry(t *testing.T) {
 					GuestEmail: "budi@example.com",
 					GuestPhone: tc.phone,
 				}
-				_, _, err := svc.Create(ctx, in)
+				_, _, err := svc.Create(ctx, withQuote(svc, in))
 				if tc.wantErr != nil {
 					if !errors.Is(err, tc.wantErr) {
 						t.Errorf("expected error %v, got %v", tc.wantErr, err)
@@ -1034,7 +1034,7 @@ func TestBatchD_GuestProfileAndHoldExpiry(t *testing.T) {
 					GuestEmail:           "budi@example.com",
 					EstimatedArrivalTime: tc.arrival,
 				}
-				_, _, err := svc.Create(ctx, in)
+				_, _, err := svc.Create(ctx, withQuote(svc, in))
 				if tc.wantErr != nil {
 					if !errors.Is(err, tc.wantErr) {
 						t.Errorf("expected error %v, got %v", tc.wantErr, err)
@@ -1073,7 +1073,7 @@ func TestBatchD_GuestProfileAndHoldExpiry(t *testing.T) {
 					GuestEmail:      "budi@example.com",
 					SpecialRequests: tc.requests,
 				}
-				_, _, err := svc.Create(ctx, in)
+				_, _, err := svc.Create(ctx, withQuote(svc, in))
 				if tc.wantErr != nil {
 					if !errors.Is(err, tc.wantErr) {
 						t.Errorf("expected error %v, got %v", tc.wantErr, err)
@@ -1296,3 +1296,63 @@ func TestBatchE_OperationalReliabilityAndConcurrency(t *testing.T) {
 
 
 
+
+// BE-R06: create tanpa quote_id wajib ditolak sebelum inventory/booking/gateway berubah.
+func TestCreate_QuoteRequired(t *testing.T) {
+	tests := []struct {
+		name      string
+		quoteID   string
+		terms     bool
+		privacy   bool
+		wantErr   error
+		wantTouch bool
+	}{
+		{name: "tanpa quote dan tanpa consent", wantErr: ErrQuoteRequired},
+		{name: "tanpa quote walau consent true", terms: true, privacy: true, wantErr: ErrQuoteRequired},
+		{name: "quote ada tanpa consent", quoteID: "q-1", wantErr: ErrConsentRequired},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := newFakeTx(map[string]*Booking{}, map[string][]string{})
+			tx.inventory["std|2026-10-10"] = 5
+			tx.inventory["std|2026-10-11"] = 5
+			pay := &fakePayment{}
+			inv := &fakeInvStore{avail: []inventory.Availability{
+				{Date: date("2026-10-10"), TotalRooms: 5, AvailableRooms: 5},
+				{Date: date("2026-10-11"), TotalRooms: 5, AvailableRooms: 5},
+			}}
+			svc := NewService(tx, inv, &fakeRates{}, pay, &fakeNotifier{}, &fakeReader{bookings: tx.bookings}, 30*time.Minute, slog.Default())
+			_, _, err := svc.Create(context.Background(), CreateInput{
+				RoomTypeID: "std", CheckIn: date("2026-10-10"), CheckOut: date("2026-10-12"),
+				NumRooms: 1, NumGuests: 2, GuestName: "Budi", GuestEmail: "budi@example.com",
+				QuoteID: tc.quoteID, TermsAccepted: tc.terms, PrivacyAccepted: tc.privacy,
+			})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(tx.bookings) != 0 || tx.inventory["std|2026-10-10"] != 5 {
+				t.Errorf("state mutated on rejected create: bookings=%d inv=%d", len(tx.bookings), tx.inventory["std|2026-10-10"])
+			}
+		})
+	}
+}
+
+// withQuote menyimpan quote terkunci yang cocok dengan in ke svc dan mengisi QuoteID + consent (BE-R06).
+func withQuote(svc *Service, in CreateInput) CreateInput {
+	qs := rates.NewMemoryQuoteStore(15 * time.Minute)
+	var nightly []rates.Quote
+	for d := in.CheckIn; d.Before(in.CheckOut); d = d.AddDate(0, 0, 1) {
+		nightly = append(nightly, rates.Quote{Date: d, RateMinor: 500_000})
+	}
+	subtotal := int64(len(nightly)) * 500_000 * int64(in.NumRooms)
+	_ = qs.SaveQuote(context.Background(), rates.LockedQuote{
+		ID: "q-test", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
+		RoomTypeID: in.RoomTypeID, RatePlanCode: rates.RatePlanRoomOnly, CancellationCode: rates.PolicyFlexible48h,
+		CheckIn: in.CheckIn, CheckOut: in.CheckOut, NumRooms: in.NumRooms, NumGuests: in.NumGuests,
+		NightlyRates: nightly,
+		Pricing:      rates.PricingBreakdown{RoomSubtotalMinor: subtotal, TotalPriceMinor: subtotal, Currency: "IDR"},
+	})
+	svc.SetQuoteStore(qs)
+	in.QuoteID, in.TermsAccepted, in.PrivacyAccepted = "q-test", true, true
+	return in
+}

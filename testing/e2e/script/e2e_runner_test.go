@@ -1291,7 +1291,10 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 
 	// 3. Public Create Booking
 	t.Run("E2E-03: Public create booking hold", func(t *testing.T) {
-		payload := []byte(`{
+		payload := []byte(fmt.Sprintf(`{
+			"quote_id": %q,
+			"terms_accepted": true,
+			"privacy_accepted": true,
 			"room_type_id": "01900000-0000-7000-8000-000000000001",
 			"check_in": "2026-10-10",
 			"check_out": "2026-10-12",
@@ -1299,7 +1302,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 			"num_guests": 2,
 			"guest_name": "Budi Santoso",
 			"guest_email": "budi@example.com"
-		}`)
+		}`, e2eQuoteID(t, client, srv.URL, "2026-10-10", "2026-10-12")))
 		res, err := client.Post(srv.URL+"/api/v1/bookings", "application/json", bytes.NewReader(payload))
 		if err != nil {
 			t.Fatalf("booking request failed: %v", err)
@@ -1621,6 +1624,9 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 	var batchDBookingID string
 	var batchDGuestToken string
 	checkoutPayload := `{
+		"quote_id": "` + e2eQuoteID(t, client, srv.URL, checkIn, checkOut) + `",
+		"terms_accepted": true,
+		"privacy_accepted": true,
 		"room_type_id": "01900000-0000-7000-8000-000000000001",
 		"check_in": "` + checkIn + `",
 		"check_out": "` + checkOut + `",
@@ -2385,9 +2391,9 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 
 	// 42. Finance Anti-Over-Refund Guard (409 Conflict)
 	t.Run("E2E-42: Anti-over-refund guard strictly rejects excessive amount (409 Conflict)", func(t *testing.T) {
-		// Total booking 1.100.000, sudah di-refund 500.000 di E2E-41. Sisa saldo: 600.000.
-		// Permintaan refund 700.000 wajib ditolak dengan 409 Conflict.
-		overBody := `{"booking_id":"bk-e2e-001","amount_minor":700000,"reason":"Excessive refund attempt"}`
+		// Total booking mengikuti quote terkunci terakhir (termasuk pajak), sudah di-refund 500.000 di E2E-41.
+		// Permintaan refund 5.000.000 jauh melebihi sisa saldo dan wajib ditolak dengan 409 Conflict.
+		overBody := `{"booking_id":"bk-e2e-001","amount_minor":5000000,"reason":"Excessive refund attempt"}`
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/refunds", strings.NewReader(overBody))
 		req.Header.Set("Authorization", "Bearer finance")
 		req.Header.Set("Content-Type", "application/json")
@@ -3318,3 +3324,22 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 
 
 
+
+// e2eQuoteID membuat quote terkunci via API; create booking wajib quote_id (BE-R06).
+func e2eQuoteID(t *testing.T, client *http.Client, base, checkIn, checkOut string) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"room_type_id":"01900000-0000-7000-8000-000000000001","check_in":%q,"check_out":%q,"num_rooms":1,"num_guests":2}`, checkIn, checkOut)
+	res, err := client.Post(base+"/api/v1/quotes", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("quote request failed: %v", err)
+	}
+	defer res.Body.Close()
+	var q struct {
+		QuoteID string `json:"quote_id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&q)
+	if res.StatusCode != http.StatusOK || q.QuoteID == "" {
+		t.Fatalf("setup quote failed: status %d", res.StatusCode)
+	}
+	return q.QuoteID
+}

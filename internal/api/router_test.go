@@ -204,6 +204,11 @@ type mockNotifier struct{}
 func (m *mockNotifier) SendBookingConfirmed(_ context.Context, _ booking.Booking) error { return nil }
 
 func setupTestRouter() (http.Handler, *mockTx) {
+	return setupTestRouterWithStore(nil)
+}
+
+// setupTestRouterWithStore sama seperti setupTestRouter tetapi menyuntikkan IdempotencyStore (nil = default memori).
+func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 	txMock := &mockTx{
 		booking: booking.Booking{
 			ID:              "bk-123",
@@ -244,15 +249,16 @@ func setupTestRouter() (http.Handler, *mockTx) {
 	bkSvc.SetQuoteStore(quoteStore)
 
 	handler := NewRouter(Deps{
-		BookingSvc:    bkSvc,
-		InvStore:      inv,
-		RateSvc:       ratesSvc,
-		RateEngine:    rateEngine,
-		QuoteStore:    quoteStore,
-		Enqueuer:      &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
-		Enforcer:      auth.DefaultTestEnforcer(),
-		IsDevelopment: true,
-		ReadyCheck:    func(_ context.Context) error { return nil },
+		BookingSvc:       bkSvc,
+		IdempotencyStore: store,
+		InvStore:         inv,
+		RateSvc:          ratesSvc,
+		RateEngine:       rateEngine,
+		QuoteStore:       quoteStore,
+		Enqueuer:         &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
+		Enforcer:         auth.DefaultTestEnforcer(),
+		IsDevelopment:    true,
+		ReadyCheck:       func(_ context.Context) error { return nil },
 		FakePay: func(c *gin.Context) {
 			c.Status(http.StatusOK)
 		},
@@ -1724,11 +1730,30 @@ func TestCancelBooking_PolicyEnforcement(t *testing.T) {
 	}
 }
 
+// mustQuoteID membuat quote terkunci via API sungguhan; create booking wajib quote (BE-R06).
+func mustQuoteID(t *testing.T, router http.Handler, roomTypeID string, rooms, guests int) string {
+	t.Helper()
+	body := fmt.Sprintf(`{"room_type_id":%q,"check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":%d,"num_guests":%d,"rate_plan":"room_only"}`, roomTypeID, rooms, guests)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup quote failed (%d): %s", rec.Code, rec.Body.String())
+	}
+	var q rates.LockedQuote
+	_ = newTestDecoder(rec.Body).Decode(&q)
+	return q.ID
+}
+
 func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 	router, txMock := setupTestRouter()
 
 	t.Run("Idempotency-Key IETF flow", func(t *testing.T) {
-		validPayload := `{
+		validPayload := fmt.Sprintf(`{
+			"quote_id": %q,
+			"terms_accepted": true,
+			"privacy_accepted": true,
 			"room_type_id": "std",
 			"check_in": "2026-10-10",
 			"check_out": "2026-10-12",
@@ -1739,7 +1764,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 			"guest_phone": "+6281234567890",
 			"estimated_arrival_time": "14:00",
 			"special_requests": "Quiet room"
-		}`
+		}`, mustQuoteID(t, router, "std", 1, 1))
 
 		// 1. Initial request with Idempotency-Key
 		req1 := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(validPayload))
@@ -1845,6 +1870,9 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
 				body, _ := json.Marshal(map[string]any{
+					"quote_id":               mustQuoteID(t, router, "std", 1, 1),
+					"terms_accepted":         true,
+					"privacy_accepted":       true,
 					"room_type_id":           "std",
 					"check_in":               "2026-10-10",
 					"check_out":              "2026-10-12",

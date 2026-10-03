@@ -6,12 +6,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -628,27 +628,38 @@ func createBooking(d Deps) gin.HandlerFunc {
 		}
 
 		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-		var reqHash string
-		if idempotencyKey != "" && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_checkout_idempotency")) {
-			h := sha256.Sum256(bodyBytes)
-			reqHash = hex.EncodeToString(h[:])
-			if d.IdempotencyStore != nil {
-				cached, err := d.IdempotencyStore.Get(c.Request.Context(), idempotencyKey)
-				if err == nil {
-					// Key ditemukan
-					if cached.RequestHash == reqHash {
-						// Payload identik: replay response per IETF draft
-						c.Header("Content-Type", "application/json; charset=utf-8")
-						c.Header("Idempotency-Replayed", "true")
-						c.Status(cached.ResponseCode)
-						_, _ = c.Writer.Write([]byte(cached.ResponseBody))
-						return
-					}
-					// Payload berbeda: 409 Conflict per IETF spec
-					httpErrorCode(c, http.StatusConflict, "idempotency key reused with different request payload", "IDEMPOTENCY_CONFLICT")
-					return
-				}
+		useIdem := idempotencyKey != "" && d.IdempotencyStore != nil &&
+			(d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_checkout_idempotency"))
+		reqHash := hashBody(bodyBytes)
+		completed := false
+		if useIdem {
+			// Klaim atomik sebelum efek samping apa pun (BE-R08).
+			rec, acquired, err := d.IdempotencyStore.Reserve(c.Request.Context(), idempotencyKey, reqHash)
+			if err != nil {
+				httpErrorCode(c, http.StatusServiceUnavailable, "idempotency store tidak tersedia", "IDEMPOTENCY_UNAVAILABLE")
+				return
 			}
+			if !acquired {
+				switch {
+				case rec.RequestHash != reqHash:
+					httpErrorCode(c, http.StatusConflict, "idempotency key reused with different request payload", "IDEMPOTENCY_CONFLICT")
+				case rec.InProgress():
+					c.Header("Retry-After", "1")
+					httpErrorCode(c, http.StatusConflict, "request dengan idempotency key ini masih diproses", "IDEMPOTENCY_IN_PROGRESS")
+				default:
+					c.Header("Content-Type", "application/json; charset=utf-8")
+					c.Header("Idempotency-Replayed", "true")
+					c.Status(rec.ResponseCode)
+					_, _ = c.Writer.Write([]byte(rec.ResponseBody))
+				}
+				return
+			}
+			// Lepas reservasi pada setiap jalur gagal agar client dapat retry.
+			defer func() {
+				if !completed {
+					_ = d.IdempotencyStore.Release(context.WithoutCancel(c.Request.Context()), idempotencyKey)
+				}
+			}()
 		}
 
 		var in req
@@ -759,15 +770,21 @@ func createBooking(d Deps) gin.HandlerFunc {
 		}
 		respBytes, _ := json.Marshal(respObj)
 
-		if idempotencyKey != "" && d.IdempotencyStore != nil && (d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_checkout_idempotency")) {
-			_ = d.IdempotencyStore.Save(c.Request.Context(), IdempotencyRecord{
+		if useIdem {
+			now := time.Now().UTC()
+			if err := d.IdempotencyStore.Complete(c.Request.Context(), IdempotencyRecord{
 				Key:          idempotencyKey,
 				RequestHash:  reqHash,
 				ResponseCode: http.StatusCreated,
 				ResponseBody: string(respBytes),
-				CreatedAt:    time.Now().UTC(),
-				ExpiresAt:    time.Now().UTC().Add(24 * time.Hour),
-			})
+				CreatedAt:    now,
+				ExpiresAt:    now.Add(idempotencyResultTTL),
+			}); err != nil {
+				// Booking sudah commit; reservasi in-progress kedaluwarsa sendiri (lihat risiko residual di dok tech).
+				slog.Error("idempotency.complete_failed", "key", idempotencyKey, "booking_id", b.ID, "error", err)
+			}
+			// Booking sudah ada: reservasi tidak boleh dilepas walau Complete gagal.
+			completed = true
 		}
 
 		c.Header("Content-Type", "application/json; charset=utf-8")

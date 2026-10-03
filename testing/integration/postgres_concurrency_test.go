@@ -14,6 +14,7 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -65,9 +66,36 @@ func setupRealBookingService(pool *pgxpool.Pool) (*booking.Service, *booking.Pos
 		30*time.Minute,
 		nil,
 	)
-	svc.SetQuoteStore(rateEngine.QuoteStore())
+	qs := rates.NewMemoryQuoteStore(15 * time.Minute)
+	svc.SetQuoteStore(qs)
+	quoteStores.Store(svc, qs)
 	svc.SetPaymentAttemptStore(attemptStore)
 	return svc, reader, attemptStore
+}
+
+// quoteStores memetakan service uji ke quote store-nya agar create (wajib quote_id, BE-R06) dapat
+// menyiapkan quote terkunci yang cocok dengan input secara thread-safe.
+var quoteStores sync.Map
+
+// quoted menyimpan quote terkunci yang cocok dengan in dan mengisi QuoteID + consent.
+func quoted(svc *booking.Service, in booking.CreateInput) booking.CreateInput {
+	v, _ := quoteStores.Load(svc)
+	qs := v.(*rates.MemoryQuoteStore)
+	var nightly []rates.Quote
+	for d := in.CheckIn; d.Before(in.CheckOut); d = d.AddDate(0, 0, 1) {
+		nightly = append(nightly, rates.Quote{Date: d, RateMinor: 1_000_000})
+	}
+	total := int64(len(nightly)) * 1_000_000 * int64(in.NumRooms)
+	id := uuid.NewString()
+	_ = qs.SaveQuote(context.Background(), rates.LockedQuote{
+		ID: id, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(15 * time.Minute),
+		RoomTypeID: in.RoomTypeID, RatePlanCode: rates.RatePlanRoomOnly, CancellationCode: rates.PolicyFlexible48h,
+		CheckIn: in.CheckIn, CheckOut: in.CheckOut, NumRooms: in.NumRooms, NumGuests: in.NumGuests,
+		NightlyRates: nightly,
+		Pricing:      rates.PricingBreakdown{RoomSubtotalMinor: total, TotalPriceMinor: total, Currency: "IDR"},
+	})
+	in.QuoteID, in.TermsAccepted, in.PrivacyAccepted = id, true, true
+	return in
 }
 
 // TestRealDB_RaceOnLastRoom memverifikasi bahwa penguncian SELECT ... FOR UPDATE pada PostgreSQL 18
@@ -107,7 +135,7 @@ func TestRealDB_RaceOnLastRoom(t *testing.T) {
 			defer wg.Done()
 			<-startBarrier
 
-			_, _, err := svc.Create(context.Background(), booking.CreateInput{
+			_, _, err := svc.Create(context.Background(), quoted(svc, booking.CreateInput{
 				RoomTypeID:           roomTypeID,
 				CheckIn:              targetDate,
 				CheckOut:             checkoutDate,
@@ -117,7 +145,7 @@ func TestRealDB_RaceOnLastRoom(t *testing.T) {
 				GuestEmail:           fmt.Sprintf("guest%d@example.com", guestIndex),
 				GuestPhone:           "+6281234567890",
 				EstimatedArrivalTime: "14:00",
-			})
+			}))
 			if err == nil {
 				atomic.AddInt32(&successCount, 1)
 			} else {
@@ -187,7 +215,7 @@ func TestRealDB_MultiNightRollbackAtomicity(t *testing.T) {
 	_, _ = pool.Exec(ctx, "UPDATE inventory SET available_rooms = 0 WHERE room_type_id = $1 AND date = $2;", roomTypeID, d3)
 
 	// Coba booking 3 malam (d1 -> d4)
-	_, _, err := svc.Create(ctx, booking.CreateInput{
+	_, _, err := svc.Create(ctx, quoted(svc, booking.CreateInput{
 		RoomTypeID:           roomTypeID,
 		CheckIn:              d1,
 		CheckOut:             d4,
@@ -197,7 +225,7 @@ func TestRealDB_MultiNightRollbackAtomicity(t *testing.T) {
 		GuestEmail:           "atomicity@example.com",
 		GuestPhone:           "+6281234567890",
 		EstimatedArrivalTime: "15:00",
-	})
+	}))
 	if err == nil {
 		t.Fatal("expected Create to fail due to night 3 insufficient stock, got nil")
 	}
@@ -234,7 +262,7 @@ func TestRealDB_ParallelRoomAssignment_SkipLocked(t *testing.T) {
 	checkOut := checkIn.Add(48 * time.Hour)
 
 	// Buat 2 booking confirmed di database
-	b1, _, err1 := svc.Create(ctx, booking.CreateInput{
+	b1, _, err1 := svc.Create(ctx, quoted(svc, booking.CreateInput{
 		RoomTypeID:  roomTypeID,
 		CheckIn:     checkIn,
 		CheckOut:    checkOut,
@@ -243,13 +271,13 @@ func TestRealDB_ParallelRoomAssignment_SkipLocked(t *testing.T) {
 		GuestName:   "Tamu A",
 		GuestEmail:  "tamu.a@example.com",
 		GuestPhone:  "+6281111111111",
-	})
+	}))
 	if err1 != nil {
 		t.Fatalf("create booking 1 failed: %v", err1)
 	}
 	_ = svc.Confirm(ctx, b1.ID)
 
-	b2, _, err2 := svc.Create(ctx, booking.CreateInput{
+	b2, _, err2 := svc.Create(ctx, quoted(svc, booking.CreateInput{
 		RoomTypeID:  roomTypeID,
 		CheckIn:     checkIn,
 		CheckOut:    checkOut,
@@ -258,7 +286,7 @@ func TestRealDB_ParallelRoomAssignment_SkipLocked(t *testing.T) {
 		GuestName:   "Tamu B",
 		GuestEmail:  "tamu.b@example.com",
 		GuestPhone:  "+6282222222222",
-	})
+	}))
 	if err2 != nil {
 		t.Fatalf("create booking 2 failed: %v", err2)
 	}
@@ -405,7 +433,7 @@ func TestRealDB_HoldExpirySweepVsPaymentRace(t *testing.T) {
 	checkIn := time.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
 	checkOut := checkIn.Add(24 * time.Hour)
 
-	b, _, err := svc.Create(ctx, booking.CreateInput{
+	b, _, err := svc.Create(ctx, quoted(svc, booking.CreateInput{
 		RoomTypeID:           roomTypeID,
 		CheckIn:              checkIn,
 		CheckOut:             checkOut,
@@ -415,7 +443,7 @@ func TestRealDB_HoldExpirySweepVsPaymentRace(t *testing.T) {
 		GuestEmail:           "late@example.com",
 		GuestPhone:           "+6281234567890",
 		EstimatedArrivalTime: "14:00",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("create booking failed: %v", err)
 	}
