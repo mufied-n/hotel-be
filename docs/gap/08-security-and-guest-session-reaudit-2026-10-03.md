@@ -70,9 +70,11 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R05 — Ownership email dan allowed_actions belum konsisten dengan booking
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** F02/F03/F05/F06.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03). **Hubungan:** F02/F03/F05/F06.
 
 **Bukti source.** [guest/service.go](../../internal/guest/service.go) menormalisasi email menjadi lowercase; [guest/postgres.go](../../internal/guest/postgres.go), `ListBookingsByEmail`/`GetBookingDetailByEmail`, memakai equality `guest_email = $1`. [booking/service.go](../../internal/booking/service.go) (lihat fungsi terkait) menyimpan email input tanpa normalisasi. `computeAllowedActions` pada guest service hanya melihat status, sementara `Cancel` memeriksa policy dan deadline.
+
+**Resolusi (2026-10-03):** Terselesaikan melalui normalisasi kanonikal email di `booking.Service.Create` (`strings.ToLower(strings.TrimSpace(email))`), kueri PostgreSQL case-insensitive `WHERE LOWER(TRIM(b.guest_email)) = $1` pada seluruh fungsi pencarian tamu (`CountActiveBookingsByEmail`, `ListBookingsByEmail`, `GetBookingDetailByEmail`, `GetBookingReceiptData`), serta komputasi dinamis `computeAllowedActions` yang mengintegrasikan `booking.FreeCancellationDeadline` (WIB cutoff H-2 14:00 WIB), kebijakan non-refundable, dan validasi hold `expires_at`. Terverifikasi 100% via unit tests (coverage 90.1%) dan E2E test script (`testing/e2e/script/booking_ownership_actions_consistency_r05_e2e.sh`).
 
 **Skenario pemicu.** Booking dibuat dengan `Guest@Example.com`, login OTP memakai `guest@example.com`, lalu booking tidak muncul. Booking confirmed non-refundable mendapat `can_cancel:true`; pending mendapat `can_pay:true` tanpa jaminan link pembayaran tersedia.
 

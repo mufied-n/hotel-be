@@ -206,7 +206,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	if in.CheckOut.After(now.AddDate(0, 0, 366)) {
 		return Booking{}, ChargeResult{}, ErrExceedsHorizon
 	}
-	if strings.TrimSpace(in.GuestName) == "" || strings.TrimSpace(in.GuestEmail) == "" || !strings.Contains(in.GuestEmail, "@") {
+	in.GuestName = strings.TrimSpace(in.GuestName)
+	in.GuestEmail = strings.ToLower(strings.TrimSpace(in.GuestEmail))
+	if in.GuestName == "" || in.GuestEmail == "" || !strings.Contains(in.GuestEmail, "@") {
 		return Booking{}, ChargeResult{}, ErrInvalidGuestInfo
 	}
 	if in.GuestPhone != "" && !phoneRegex.MatchString(in.GuestPhone) {

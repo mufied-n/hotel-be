@@ -444,6 +444,48 @@ func TestCreate_HappyPathAndReservationRoomNights(t *testing.T) {
 	}
 }
 
+func TestCreate_CanonicalEmailAndTrimmedName(t *testing.T) {
+	tx := newFakeTx(nil, nil)
+	tx.inventory["std|2026-10-10"] = 5
+	tx.inventory["std|2026-10-11"] = 5
+	inv := &fakeInvStore{
+		avail: []inventory.Availability{
+			{Date: date("2026-10-10"), TotalRooms: 5, AvailableRooms: 5},
+			{Date: date("2026-10-11"), TotalRooms: 5, AvailableRooms: 5},
+		},
+	}
+	ratesSvc := &fakeRates{
+		quotes: []rates.Quote{
+			{Date: date("2026-10-10"), RateMinor: 500_000},
+			{Date: date("2026-10-11"), RateMinor: 500_000},
+		},
+	}
+	pay := &fakePayment{}
+	reader := &fakeReader{bookings: tx.bookings}
+	svc := NewService(tx, inv, ratesSvc, pay, &fakeNotifier{}, reader, 30*time.Minute, slog.Default())
+
+	in := CreateInput{
+		RoomTypeID: "std",
+		CheckIn:    date("2026-10-10"),
+		CheckOut:   date("2026-10-12"),
+		NumRooms:   1,
+		NumGuests:  2,
+		GuestName:  "  Budi Santoso  ",
+		GuestEmail: "  Budi.Santoso@EXAMPLE.COM  ",
+	}
+
+	b, _, err := svc.Create(context.Background(), withQuote(svc, in))
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if b.GuestEmail != "budi.santoso@example.com" {
+		t.Errorf("expected canonical lowercase email 'budi.santoso@example.com', got '%s'", b.GuestEmail)
+	}
+	if b.GuestName != "Budi Santoso" {
+		t.Errorf("expected trimmed name 'Budi Santoso', got '%s'", b.GuestName)
+	}
+}
+
 func TestCreate_InvalidInput(t *testing.T) {
 	svc := newTestService(newFakeTx(nil, nil), &fakeReader{})
 	now := time.Now()

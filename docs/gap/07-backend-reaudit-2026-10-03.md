@@ -18,7 +18,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R02 | P1 (RESOLVED 2026-10-03, PublicDTO privacy & token protection) | [DTO publik masih mengandung permintaan khusus tamu](08-security-and-guest-session-reaudit-2026-10-03.md) | BE-G13; F02/F03 |
 | BE-R03 | P1 (RESOLVED 2026-10-03, atomic OTP & attempt lockout) | [Challenge OTP dan penghitung percobaan belum atomik](08-security-and-guest-session-reaudit-2026-10-03.md) | F02; perluasan BE-G13/14 |
 | BE-R04 | P1 (RESOLVED 2026-10-03, honest logout & secure cookie) | [Logout mengaku berhasil walau pencabutan sesi gagal](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F12 |
-| BE-R05 | P1 | [Ownership email dan allowed_actions belum konsisten dengan booking](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F03/F05/F06 |
+| BE-R05 | P1 (RESOLVED 2026-10-03, canonical email ownership & policy-driven allowed_actions) | [Ownership email dan allowed_actions belum konsisten dengan booking](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F03/F05/F06 |
 | BE-R06 | P1 | **RESOLVED 2026-10-03** ([laporan](../../testing/e2e/report/2026-10-03-133600-checkout-integrity-e2e-report.md)) — [Create tanpa quote melewati consent dan snapshot harga lengkap](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06/08; F01 |
 | BE-R07 | P1 | [Kapasitas search belum menjadi invariant checkout](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G03; F01/F08 |
 | BE-R08 | P1 | **RESOLVED 2026-10-03** (klaim atomik; risiko residual crash setelah commit, lihat laporan) — [Idempotency checkout masih lookup-create-save](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G09; F01/F05 |

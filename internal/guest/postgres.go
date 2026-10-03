@@ -276,7 +276,7 @@ func (s *PostgresStore) CountActiveBookingsByEmail(ctx context.Context, email st
 	query := `
 		SELECT COUNT(*)
 		FROM bookings
-		WHERE guest_email = $1 AND status IN ('pending', 'confirmed', 'checked_in')
+		WHERE LOWER(TRIM(guest_email)) = $1 AND status IN ('pending', 'confirmed', 'checked_in')
 	`
 	var count int
 	err := s.pool.QueryRow(ctx, query, email).Scan(&count)
@@ -293,7 +293,7 @@ func (s *PostgresStore) ListBookingsByEmail(ctx context.Context, email, status s
 		       b.num_rooms, b.num_guests, b.status, b.total_price_minor, b.currency, b.created_at
 		FROM bookings b
 		LEFT JOIN room_types r ON r.id = b.room_type_id
-		WHERE b.guest_email = $1
+		WHERE LOWER(TRIM(b.guest_email)) = $1
 	`
 	var rows pgx.Rows
 	var err error
@@ -347,10 +347,11 @@ func (s *PostgresStore) GetBookingDetailByEmail(ctx context.Context, email, book
 		       b.num_rooms, b.num_guests, b.status, b.total_price_minor, b.currency,
 		       b.guest_name, b.guest_email, COALESCE(b.guest_phone, ''),
 		       COALESCE(b.estimated_arrival_time, ''), COALESCE(b.special_requests, ''),
-		       b.created_at
+		       COALESCE(b.cancellation_policy, ''), COALESCE(b.rate_plan_code, ''),
+		       b.expires_at, b.created_at
 		FROM bookings b
 		LEFT JOIN room_types r ON r.id = b.room_type_id
-		WHERE b.id = $1 AND b.guest_email = $2
+		WHERE b.id = $1 AND LOWER(TRIM(b.guest_email)) = $2
 	`
 	var d BookingDetail
 	err := s.pool.QueryRow(ctx, query, bookingID, email).Scan(
@@ -358,7 +359,9 @@ func (s *PostgresStore) GetBookingDetailByEmail(ctx context.Context, email, book
 		&d.CheckIn, &d.CheckOut, &d.NumRooms, &d.NumGuests,
 		&d.Status, &d.TotalPriceMinor, &d.Currency,
 		&d.GuestName, &d.GuestEmail, &d.GuestPhone,
-		&d.EstimatedArrivalTime, &d.SpecialRequests, &d.CreatedAt,
+		&d.EstimatedArrivalTime, &d.SpecialRequests,
+		&d.CancellationPolicy, &d.RatePlanCode,
+		&d.ExpiresAt, &d.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
@@ -382,7 +385,7 @@ func (s *PostgresStore) GetBookingReceiptData(ctx context.Context, email, bookin
 		       b.created_at
 		FROM bookings b
 		LEFT JOIN room_types r ON r.id = b.room_type_id
-		WHERE b.id = $1 AND b.guest_email = $2
+		WHERE b.id = $1 AND LOWER(TRIM(b.guest_email)) = $2
 	`
 	var (
 		id                   string

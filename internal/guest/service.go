@@ -12,6 +12,9 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+
+	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/rates"
 )
 
 // OTPNotifier mendefinisikan adapter untuk mengirim email OTP ke tamu.
@@ -54,6 +57,18 @@ func NewService(store Store, notifier OTPNotifier, log *slog.Logger) *DefaultSer
 	}
 }
 
+func (s *DefaultService) now() time.Time {
+	if s.nowFunc != nil {
+		return s.nowFunc()
+	}
+	return time.Now()
+}
+
+// SetNowFunc menyetel provider waktu untuk clock-controlled testing (BE-R05, BE-R12).
+func (s *DefaultService) SetNowFunc(fn func() time.Time) {
+	s.nowFunc = fn
+}
+
 // RequestChallenge memproses permintaan OTP 6 digit baru dengan proteksi rate limit dan anti-enumeration.
 func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (int, error) {
 	normEmail := strings.ToLower(strings.TrimSpace(email))
@@ -61,7 +76,7 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 		return 0, ErrInvalidEmail
 	}
 
-	now := s.nowFunc()
+	now := s.now()
 
 	// 1. Buat OTP 6 digit acak aman
 	otpCode, err := generateOTP()
@@ -105,7 +120,7 @@ func (s *DefaultService) VerifyChallenge(ctx context.Context, email, code string
 		return "", nil, ErrInvalidOrExpiredCode
 	}
 
-	now := s.nowFunc()
+	now := s.now()
 
 	// Buat token sesi acak 32-byte
 	rawToken, tokenHash, err := generateSessionToken()
@@ -143,7 +158,7 @@ func (s *DefaultService) ValidateSession(ctx context.Context, rawToken string) (
 		return nil, ErrSessionNotFound
 	}
 
-	now := s.nowFunc()
+	now := s.now()
 	if now.After(session.ExpiresAt) {
 		return nil, ErrSessionExpired
 	}
@@ -211,7 +226,7 @@ func (s *DefaultService) GetBookingDetail(ctx context.Context, email, bookingID 
 		return nil, ErrBookingNotFound
 	}
 
-	detail.AllowedActions = computeAllowedActions(detail.Status)
+	detail.AllowedActions = computeAllowedActions(detail, s.now())
 	return detail, nil
 }
 
@@ -252,7 +267,7 @@ func (s *DefaultService) GenerateCalendarICS(receipt *ReceiptDTO) ([]byte, error
 		receipt.StayDetails.CheckOutDate,
 	)
 
-	nowUTC := s.nowFunc().UTC().Format("20060102T150405Z")
+	nowUTC := s.now().UTC().Format("20060102T150405Z")
 
 	var sb strings.Builder
 	sb.WriteString("BEGIN:VCALENDAR\r\n")
@@ -298,17 +313,57 @@ func escapeICS(s string) string {
 	return s
 }
 
-
-func computeAllowedActions(status string) AllowedActions {
-	switch status {
+func computeAllowedActions(d *BookingDetail, now time.Time) AllowedActions {
+	if d == nil {
+		return AllowedActions{}
+	}
+	switch d.Status {
 	case "pending":
-		return AllowedActions{CanPay: true, CanCancel: true, CanRequestAssistance: true}
+		if d.ExpiresAt != nil && !now.Before(*d.ExpiresAt) {
+			return AllowedActions{
+				CanPay:               false,
+				CanCancel:            false,
+				CanRequestAssistance: true,
+			}
+		}
+		return AllowedActions{
+			CanPay:               true,
+			CanCancel:            true,
+			CanRequestAssistance: true,
+		}
 	case "confirmed":
-		return AllowedActions{CanCancel: true, CanDownloadReceipt: true, CanRequestAssistance: true}
+		canCancel := false
+		if d.CancellationPolicy == rates.PolicyNonRefundable {
+			canCancel = false
+		} else {
+			policy := d.CancellationPolicy
+			if policy == "" {
+				policy = rates.PolicyFlexible48h
+			}
+			if checkInDate, err := time.Parse("2006-01-02", d.CheckIn); err == nil {
+				if deadline, ok := booking.FreeCancellationDeadline(checkInDate, policy); ok {
+					canCancel = !now.After(deadline)
+				} else {
+					canCancel = true
+				}
+			} else {
+				canCancel = true
+			}
+		}
+		return AllowedActions{
+			CanCancel:            canCancel,
+			CanDownloadReceipt:   true,
+			CanRequestAssistance: true,
+		}
 	case "checked_in":
-		return AllowedActions{CanDownloadReceipt: true, CanRequestAssistance: true}
+		return AllowedActions{
+			CanDownloadReceipt:   true,
+			CanRequestAssistance: true,
+		}
 	case "checked_out":
-		return AllowedActions{CanDownloadReceipt: true}
+		return AllowedActions{
+			CanDownloadReceipt: true,
+		}
 	default:
 		return AllowedActions{}
 	}

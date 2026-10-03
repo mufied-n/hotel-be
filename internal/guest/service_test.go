@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/example/hotel-booking/internal/rates"
 )
 
 type mockStore struct {
@@ -171,7 +173,7 @@ func (m *mockStore) DeleteSessionByTokenHash(ctx context.Context, tokenHash stri
 func (m *mockStore) CountActiveBookingsByEmail(ctx context.Context, email string) (int, error) {
 	count := 0
 	for _, b := range m.bookings {
-		if b.GuestEmail == email && (b.Status == "pending" || b.Status == "confirmed") {
+		if strings.EqualFold(strings.TrimSpace(b.GuestEmail), strings.TrimSpace(email)) && (b.Status == "pending" || b.Status == "confirmed") {
 			count++
 		}
 	}
@@ -184,7 +186,7 @@ func (m *mockStore) ListBookingsByEmail(ctx context.Context, email, status strin
 	}
 	var res []BookingSummary
 	for _, b := range m.bookings {
-		if b.GuestEmail == email {
+		if strings.EqualFold(strings.TrimSpace(b.GuestEmail), strings.TrimSpace(email)) {
 			if status == "upcoming" && b.Status != "confirmed" && b.Status != "pending" {
 				continue
 			}
@@ -220,7 +222,7 @@ func (m *mockStore) GetBookingDetailByEmail(ctx context.Context, email, bookingI
 		return nil, m.detailErr
 	}
 	for _, b := range m.bookings {
-		if b.ID == bookingID && b.GuestEmail == email {
+		if b.ID == bookingID && strings.EqualFold(strings.TrimSpace(b.GuestEmail), strings.TrimSpace(email)) {
 			bCopy := b
 			return &bCopy, nil
 		}
@@ -233,7 +235,7 @@ func (m *mockStore) GetBookingReceiptData(ctx context.Context, email, bookingID 
 		return nil, m.receiptErr
 	}
 	for key, r := range m.receipts {
-		if (r.BookingID == bookingID || key == bookingID) && r.GuestDetails.Email == email {
+		if (r.BookingID == bookingID || key == bookingID) && strings.EqualFold(strings.TrimSpace(r.GuestDetails.Email), strings.TrimSpace(email)) {
 			rCopy := *r
 			return &rCopy, nil
 		}
@@ -936,12 +938,29 @@ func TestGuestService_GetSessionProfile_TableTest(t *testing.T) {
 }
 
 func TestGuestService_ComputeAllowedActions_TableTest(t *testing.T) {
+	refTime := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	pastHold := refTime.Add(-10 * time.Minute)
+	futureHold := refTime.Add(15 * time.Minute)
+
 	tests := []struct {
-		status   string
+		name     string
+		detail   *BookingDetail
+		now      time.Time
 		expected AllowedActions
 	}{
 		{
-			status: "pending",
+			name:     "nil detail returns empty actions",
+			detail:   nil,
+			now:      refTime,
+			expected: AllowedActions{},
+		},
+		{
+			name: "pending with active hold",
+			detail: &BookingDetail{
+				Status:    "pending",
+				ExpiresAt: &futureHold,
+			},
+			now: refTime,
 			expected: AllowedActions{
 				CanPay:               true,
 				CanCancel:            true,
@@ -949,7 +968,54 @@ func TestGuestService_ComputeAllowedActions_TableTest(t *testing.T) {
 			},
 		},
 		{
-			status: "confirmed",
+			name: "pending with expired hold",
+			detail: &BookingDetail{
+				Status:    "pending",
+				ExpiresAt: &pastHold,
+			},
+			now: refTime,
+			expected: AllowedActions{
+				CanPay:               false,
+				CanCancel:            false,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			name: "pending with nil expires_at",
+			detail: &BookingDetail{
+				Status: "pending",
+			},
+			now: refTime,
+			expected: AllowedActions{
+				CanPay:               true,
+				CanCancel:            true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			name: "confirmed non_refundable cannot be cancelled",
+			detail: &BookingDetail{
+				Status:             "confirmed",
+				CancellationPolicy: rates.PolicyNonRefundable,
+				CheckIn:            "2026-10-10",
+			},
+			now: refTime,
+			expected: AllowedActions{
+				CanCancel:            false,
+				CanDownloadReceipt:   true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			name: "confirmed flexible_48h before deadline can be cancelled",
+			detail: &BookingDetail{
+				Status:             "confirmed",
+				CancellationPolicy: rates.PolicyFlexible48h,
+				CheckIn:            "2026-10-10",
+			},
+			// CheckIn 2026-10-10 14:00 WIB, deadline 2026-10-08 14:00 WIB (07:00 UTC).
+			// refTime is 2026-10-03, well before deadline.
+			now: refTime,
 			expected: AllowedActions{
 				CanCancel:            true,
 				CanDownloadReceipt:   true,
@@ -957,35 +1023,162 @@ func TestGuestService_ComputeAllowedActions_TableTest(t *testing.T) {
 			},
 		},
 		{
-			status: "checked_in",
+			name: "confirmed flexible_48h after deadline cannot be cancelled",
+			detail: &BookingDetail{
+				Status:             "confirmed",
+				CancellationPolicy: rates.PolicyFlexible48h,
+				CheckIn:            "2026-10-10",
+			},
+			// After deadline: 2026-10-09 10:00 WIB
+			now: time.Date(2026, 10, 9, 3, 0, 0, 0, time.UTC),
+			expected: AllowedActions{
+				CanCancel:            false,
+				CanDownloadReceipt:   true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			name: "confirmed empty policy defaults to flexible_48h before deadline",
+			detail: &BookingDetail{
+				Status:  "confirmed",
+				CheckIn: "2026-10-10",
+			},
+			now: refTime,
+			expected: AllowedActions{
+				CanCancel:            true,
+				CanDownloadReceipt:   true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			name: "checked_in allows receipt and assistance",
+			detail: &BookingDetail{
+				Status: "checked_in",
+			},
+			now: refTime,
 			expected: AllowedActions{
 				CanDownloadReceipt:   true,
 				CanRequestAssistance: true,
 			},
 		},
 		{
-			status: "checked_out",
+			name: "checked_out allows receipt only",
+			detail: &BookingDetail{
+				Status: "checked_out",
+			},
+			now: refTime,
 			expected: AllowedActions{
 				CanDownloadReceipt: true,
 			},
 		},
 		{
-			status:   "cancelled",
+			name: "cancelled allows no actions",
+			detail: &BookingDetail{
+				Status: "cancelled",
+			},
+			now:      refTime,
 			expected: AllowedActions{},
 		},
 		{
-			status:   "unknown",
+			name: "expired allows no actions",
+			detail: &BookingDetail{
+				Status: "expired",
+			},
+			now:      refTime,
+			expected: AllowedActions{},
+		},
+		{
+			name: "unknown status allows no actions",
+			detail: &BookingDetail{
+				Status: "unknown",
+			},
+			now:      refTime,
 			expected: AllowedActions{},
 		},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.status, func(t *testing.T) {
-			actions := computeAllowedActions(tc.status)
+		t.Run(tc.name, func(t *testing.T) {
+			actions := computeAllowedActions(tc.detail, tc.now)
 			if actions != tc.expected {
-				t.Errorf("for status %s, expected %+v, got %+v", tc.status, tc.expected, actions)
+				t.Errorf("expected %+v, got %+v", tc.expected, actions)
 			}
 		})
+	}
+}
+
+func TestGuestService_CaseInsensitiveEmailOwnership(t *testing.T) {
+	store := newMockStore()
+	store.bookings = []BookingDetail{
+		{
+			ID:                 "bk_owner_1",
+			GuestEmail:         "Guest.Owner@EXAMPLE.com",
+			Status:             "confirmed",
+			CancellationPolicy: rates.PolicyFlexible48h,
+			CheckIn:            "2026-10-10",
+			CheckOut:           "2026-10-12",
+			TotalPriceMinor:    1500000,
+			Currency:           "IDR",
+		},
+	}
+	store.receipts["bk_owner_1"] = &ReceiptDTO{
+		BookingID:        "bk_owner_1",
+		BookingReference: "PUL-2026-0001",
+		Status:           "confirmed",
+		GuestDetails: GuestDetails{
+			Email: "Guest.Owner@EXAMPLE.com",
+			Name:  "Guest Owner",
+		},
+		StayDetails: StayDetails{
+			CheckInDate:  "2026-10-10",
+			CheckOutDate: "2026-10-12",
+			TotalNights:  2,
+		},
+	}
+
+	svc := NewService(store, nil, slog.Default())
+	svc.SetNowFunc(func() time.Time {
+		return time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	})
+
+	ctx := context.Background()
+
+	// 1. Count active bookings with lowercase email
+	count, err := svc.GetSessionProfile(ctx, &GuestSession{
+		GuestEmail: "guest.owner@example.com",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count.ActiveBookingsCount != 1 {
+		t.Errorf("expected 1 active booking, got %d", count.ActiveBookingsCount)
+	}
+
+	// 2. List bookings with mixed case email
+	list, err := svc.ListBookings(ctx, "GUEST.owner@example.com", "all", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 booking in list, got %d", len(list))
+	}
+
+	// 3. Get detail with lowercase email and verify policy-driven allowed_actions
+	detail, err := svc.GetBookingDetail(ctx, "guest.owner@example.com", "bk_owner_1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !detail.AllowedActions.CanCancel || !detail.AllowedActions.CanDownloadReceipt {
+		t.Errorf("expected CanCancel and CanDownloadReceipt to be true, got %+v", detail.AllowedActions)
+	}
+
+	// 4. Get receipt with lowercase email
+	receipt, err := svc.GetBookingReceipt(ctx, "guest.owner@example.com", "bk_owner_1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if receipt.BookingID != "bk_owner_1" {
+		t.Errorf("expected receipt for bk_owner_1, got %s", receipt.BookingID)
 	}
 }
 

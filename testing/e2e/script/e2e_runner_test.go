@@ -237,14 +237,14 @@ func (s *e2eGuestStore) DeleteSessionByTokenHash(ctx context.Context, tokenHash 
 }
 
 func (s *e2eGuestStore) CountActiveBookingsByEmail(ctx context.Context, email string) (int, error) {
-	if s.tx.booking.GuestEmail == email {
+	if strings.EqualFold(strings.TrimSpace(s.tx.booking.GuestEmail), strings.TrimSpace(email)) {
 		return 1, nil
 	}
 	return 0, nil
 }
 
 func (s *e2eGuestStore) ListBookingsByEmail(ctx context.Context, email, status string, limit int) ([]guest.BookingSummary, error) {
-	if s.tx.booking.GuestEmail == email {
+	if strings.EqualFold(strings.TrimSpace(s.tx.booking.GuestEmail), strings.TrimSpace(email)) {
 		return []guest.BookingSummary{
 			{
 				ID:              s.tx.booking.ID,
@@ -265,29 +265,32 @@ func (s *e2eGuestStore) ListBookingsByEmail(ctx context.Context, email, status s
 }
 
 func (s *e2eGuestStore) GetBookingDetailByEmail(ctx context.Context, email, bookingID string) (*guest.BookingDetail, error) {
-	if s.tx.booking.GuestEmail == email && s.tx.booking.ID == bookingID {
+	if strings.EqualFold(strings.TrimSpace(s.tx.booking.GuestEmail), strings.TrimSpace(email)) && s.tx.booking.ID == bookingID {
 		return &guest.BookingDetail{
-			ID:              s.tx.booking.ID,
-			RoomTypeID:      s.tx.booking.RoomTypeID,
-			RoomTypeName:    "Deluxe Premier",
-			CheckIn:         s.tx.booking.CheckIn.Format("2006-01-02"),
-			CheckOut:        s.tx.booking.CheckOut.Format("2006-01-02"),
-			NumRooms:        s.tx.booking.NumRooms,
-			NumGuests:       s.tx.booking.NumGuests,
-			Status:          string(s.tx.booking.Status),
-			TotalPriceMinor: s.tx.booking.TotalPriceMinor,
-			Currency:        s.tx.booking.Currency,
-			GuestName:       s.tx.booking.GuestName,
-			GuestEmail:      s.tx.booking.GuestEmail,
-			GuestPhone:      s.tx.booking.GuestPhone,
-			CreatedAt:       s.tx.booking.CreatedAt,
+			ID:                 s.tx.booking.ID,
+			RoomTypeID:         s.tx.booking.RoomTypeID,
+			RoomTypeName:       "Deluxe Premier",
+			CheckIn:            s.tx.booking.CheckIn.Format("2006-01-02"),
+			CheckOut:           s.tx.booking.CheckOut.Format("2006-01-02"),
+			NumRooms:           s.tx.booking.NumRooms,
+			NumGuests:          s.tx.booking.NumGuests,
+			Status:             string(s.tx.booking.Status),
+			TotalPriceMinor:    s.tx.booking.TotalPriceMinor,
+			Currency:           s.tx.booking.Currency,
+			GuestName:          s.tx.booking.GuestName,
+			GuestEmail:         s.tx.booking.GuestEmail,
+			GuestPhone:         s.tx.booking.GuestPhone,
+			CancellationPolicy: s.tx.booking.CancellationPolicy,
+			RatePlanCode:       s.tx.booking.RatePlanCode,
+			ExpiresAt:          s.tx.booking.ExpiresAt,
+			CreatedAt:          s.tx.booking.CreatedAt,
 		}, nil
 	}
 	return nil, nil
 }
 
 func (s *e2eGuestStore) GetBookingReceiptData(ctx context.Context, email, bookingID string) (*guest.ReceiptDTO, error) {
-	if s.tx.booking.GuestEmail == email && s.tx.booking.ID == bookingID {
+	if strings.EqualFold(strings.TrimSpace(s.tx.booking.GuestEmail), strings.TrimSpace(email)) && s.tx.booking.ID == bookingID {
 		return &guest.ReceiptDTO{
 			InvoiceNumber:    "INV/PKU/202610/BKE2E001",
 			InvoiceDate:      s.tx.booking.CreatedAt.Format(time.RFC3339),
@@ -1943,7 +1946,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		tx.booking.Status = booking.StatusPending
 		futureExp := time.Now().UTC().Add(30 * time.Minute)
 		tx.booking.ExpiresAt = &futureExp
-		payload := `{"id": "inv_test_wh_2", "external_id": "bk-e2e-001", "status": "PAID", "amount": 1100000, "payment_method": "QRIS"}`
+		payload := fmt.Sprintf(`{"id": "inv_test_wh_2", "external_id": "bk-e2e-001", "status": "PAID", "amount": %d, "payment_method": "QRIS"}`, tx.booking.TotalPriceMinor)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks/xendit", strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-callback-token", "test_e2e_xendit_webhook_token")

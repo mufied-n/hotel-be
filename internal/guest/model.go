@@ -74,6 +74,9 @@ type BookingDetail struct {
 	GuestPhone           string         `json:"guest_phone"`
 	EstimatedArrivalTime string         `json:"estimated_arrival_time,omitempty"`
 	SpecialRequests      string         `json:"special_requests,omitempty"`
+	CancellationPolicy   string         `json:"cancellation_policy,omitempty"`
+	RatePlanCode         string         `json:"rate_plan_code,omitempty"`
+	ExpiresAt            *time.Time     `json:"expires_at,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
 	AllowedActions       AllowedActions `json:"allowed_actions"`
 }

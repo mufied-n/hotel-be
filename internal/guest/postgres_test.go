@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -411,5 +412,93 @@ func TestPostgresStore_GetBookingReceiptData(t *testing.T) {
 	}
 	if r.StayDetails.TotalNights != 2 {
 		t.Errorf("expected 2 nights, got %d", r.StayDetails.TotalNights)
+	}
+}
+
+func TestPostgresStore_CaseInsensitiveEmailQueries(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	store := NewPostgresStore(pool)
+
+	rawEmail := fmt.Sprintf("  Case.Test_%d@EXAMPLE.Com  ", time.Now().UnixNano())
+	canonicalEmail := strings.ToLower(strings.TrimSpace(rawEmail))
+	expiresAt := time.Now().UTC().Add(15 * time.Minute)
+
+	var bookingID string
+	query := `
+		INSERT INTO bookings (
+			room_type_id, check_in, check_out, num_rooms, num_guests,
+			status, total_price_minor, currency, guest_name, guest_email,
+			guest_token, rate_plan_code, cancellation_policy, cancellation_desc,
+			room_subtotal_minor, breakfast_charge_minor, discount_minor, tax_minor,
+			expires_at
+		) VALUES (
+			'01900000-0000-7000-8000-000000000001', '2026-11-10', '2026-11-12', 1, 2,
+			'confirmed', 120000000, 'IDR', 'Mixed Case Guest', $1,
+			'token_case_test', 'BAR_RO', 'flexible_48h', 'Free cancellation up to 48h',
+			120000000, 0, 0, 0, $2
+		) RETURNING id
+	`
+	err := pool.QueryRow(ctx, query, rawEmail, expiresAt).Scan(&bookingID)
+	if err != nil {
+		t.Fatalf("insert test booking failed: %v", err)
+	}
+
+	// 1. Count active bookings using lowercase canonical email
+	count, err := store.CountActiveBookingsByEmail(ctx, canonicalEmail)
+	if err != nil {
+		t.Fatalf("CountActiveBookingsByEmail failed: %v", err)
+	}
+	if count < 1 {
+		t.Errorf("expected at least 1 active booking, got %d", count)
+	}
+
+	// 2. List bookings using lowercase canonical email
+	list, err := store.ListBookingsByEmail(ctx, canonicalEmail, "all", 10)
+	if err != nil {
+		t.Fatalf("ListBookingsByEmail failed: %v", err)
+	}
+	found := false
+	for _, b := range list {
+		if b.ID == bookingID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("booking %s not found in list for email %s", bookingID, canonicalEmail)
+	}
+
+	// 3. Get booking detail and verify cancellation_policy, rate_plan_code, and expires_at
+	detail, err := store.GetBookingDetailByEmail(ctx, canonicalEmail, bookingID)
+	if err != nil {
+		t.Fatalf("GetBookingDetailByEmail failed: %v", err)
+	}
+	if detail == nil {
+		t.Fatalf("expected non-nil detail")
+	}
+	if detail.CancellationPolicy != "flexible_48h" {
+		t.Errorf("expected cancellation_policy 'flexible_48h', got '%s'", detail.CancellationPolicy)
+	}
+	if detail.RatePlanCode != "BAR_RO" {
+		t.Errorf("expected rate_plan_code 'BAR_RO', got '%s'", detail.RatePlanCode)
+	}
+	if detail.ExpiresAt == nil {
+		t.Errorf("expected non-nil expires_at")
+	}
+
+	// 4. Get booking receipt data using lowercase canonical email
+	receipt, err := store.GetBookingReceiptData(ctx, canonicalEmail, bookingID)
+	if err != nil {
+		t.Fatalf("GetBookingReceiptData failed: %v", err)
+	}
+	if receipt == nil {
+		t.Fatalf("expected non-nil receipt")
+	}
+	if receipt.BookingID != bookingID {
+		t.Errorf("expected receipt booking ID %s, got %s", bookingID, receipt.BookingID)
 	}
 }
