@@ -95,6 +95,9 @@ func main() {
 			os.Exit(1)
 		}
 		payGateway = payment.NewFake()
+		if cfg.XenditWebhookToken != "" {
+			xenditGw = payment.NewXendit(cfg.XenditBaseURL, "", cfg.XenditWebhookToken, cfg.AppBaseURL, log)
+		}
 		log.Info("payment.gateway.fake.active", "mode", "dev_fallback")
 	}
 

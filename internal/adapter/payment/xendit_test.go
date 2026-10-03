@@ -201,3 +201,85 @@ func TestXenditGateway_VerifyWebhook_TableTest(t *testing.T) {
 		})
 	}
 }
+
+func TestXenditGateway_CreateRefund_TableTest(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        RefundRequest
+		statusCode int
+		respBody   any
+		expectErr  bool
+		expectID   string
+	}{
+		{
+			name: "Successful refund creation",
+			req: RefundRequest{
+				ReferenceID: "ref-123",
+				InvoiceID:   "inv-123",
+				Amount:      500000,
+				Currency:    "IDR",
+			},
+			statusCode: http.StatusCreated,
+			respBody: map[string]any{
+				"id":           "refnd-123",
+				"reference_id": "ref-123",
+				"status":       "SUCCEEDED",
+				"amount":       500000,
+				"currency":     "IDR",
+			},
+			expectErr: false,
+			expectID:  "refnd-123",
+		},
+		{
+			name: "Missing reference_id",
+			req: RefundRequest{
+				Amount: 500000,
+			},
+			expectErr: true,
+		},
+		{
+			name: "Zero amount",
+			req: RefundRequest{
+				ReferenceID: "ref-123",
+				Amount:      0,
+			},
+			expectErr: true,
+		},
+		{
+			name: "Gateway API error (500)",
+			req: RefundRequest{
+				ReferenceID: "ref-fail",
+				Amount:      100000,
+			},
+			statusCode: http.StatusInternalServerError,
+			respBody:   map[string]any{"error": "gateway error"},
+			expectErr:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.statusCode)
+				_ = json.NewEncoder(w).Encode(tc.respBody)
+			}))
+			defer server.Close()
+
+			gateway := NewXendit(server.URL, "test_secret_key", "test_webhook_token", "http://localhost:3000", slog.Default())
+			res, err := gateway.CreateRefund(context.Background(), tc.req)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if res.RefundID != tc.expectID {
+					t.Errorf("RefundID = %s, want %s", res.RefundID, tc.expectID)
+				}
+			}
+		})
+	}
+}

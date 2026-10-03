@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,7 +18,7 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 	const webhookSecretToken = "test_xendit_webhook_secret_123"
 
 	// Helper setup
-	setupRouter := func(status booking.Status, holdPast bool, withGateway bool) (http.Handler, *booking.Booking) {
+	setupRouter := func(status booking.Status, holdPast bool, withGateway bool, withAttempts bool) (http.Handler, *booking.Booking) {
 		exp := time.Now().UTC().Add(30 * time.Minute)
 		if holdPast {
 			exp = time.Now().UTC().Add(-10 * time.Minute)
@@ -45,6 +44,24 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 		reader := &webhookMockReader{bookings: map[string]*booking.Booking{b.ID: b}}
 		svc := booking.NewService(tx, nil, nil, nil, nil, reader, 30*time.Minute, nil)
 
+		if withAttempts {
+			svc.SetPaymentAttemptStore(&webhookMockAttemptStore{
+				attempts: map[string][]booking.PaymentAttempt{
+					b.ID: {
+						{
+							ID:                "att-1",
+							BookingID:         b.ID,
+							Provider:          "xendit",
+							ProviderReference: "inv_wh_test_123",
+							AmountMinor:       1100000,
+							Currency:          "IDR",
+							Status:            "pending",
+						},
+					},
+				},
+			})
+		}
+
 		var gw *payment.XenditGateway
 		if withGateway {
 			gw = payment.NewXendit("https://api.xendit.co", "test_sec", webhookSecretToken, "http://localhost:3000", nil)
@@ -63,8 +80,13 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 		initialStatus     booking.Status
 		holdPast          bool
 		withGateway       bool
+		withAttempts      bool
 		headerToken       string
+		payloadID         string
+		payloadExtID      string
 		payloadStatus     string
+		payloadAmount     int64
+		payloadCurrency   string
 		expectCode        int
 		expectFinalStatus booking.Status
 	}{
@@ -73,8 +95,12 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 			initialStatus:     booking.StatusPending,
 			holdPast:          false,
 			withGateway:       true,
+			withAttempts:      true,
 			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusOK,
 			expectFinalStatus: booking.StatusConfirmed,
 		},
@@ -83,18 +109,82 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 			initialStatus:     booking.StatusConfirmed,
 			holdPast:          false,
 			withGateway:       true,
+			withAttempts:      true,
 			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusOK,
 			expectFinalStatus: booking.StatusConfirmed,
+		},
+		{
+			name:              "Amount mismatch rejected with 422 PAYMENT_AMOUNT_MISMATCH (BE-R14)",
+			initialStatus:     booking.StatusPending,
+			holdPast:          false,
+			withGateway:       true,
+			withAttempts:      true,
+			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
+			payloadStatus:     "PAID",
+			payloadAmount:     500000, // Underpayment
+			payloadCurrency:   "IDR",
+			expectCode:        http.StatusUnprocessableEntity,
+			expectFinalStatus: booking.StatusPending,
+		},
+		{
+			name:              "Currency mismatch rejected with 422 PAYMENT_CURRENCY_MISMATCH (BE-R14)",
+			initialStatus:     booking.StatusPending,
+			holdPast:          false,
+			withGateway:       true,
+			withAttempts:      true,
+			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
+			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "USD", // Wrong currency
+			expectCode:        http.StatusUnprocessableEntity,
+			expectFinalStatus: booking.StatusPending,
+		},
+		{
+			name:              "Invoice ID mismatch rejected with 422 INVOICE_ID_MISMATCH (BE-R14)",
+			initialStatus:     booking.StatusPending,
+			holdPast:          false,
+			withGateway:       true,
+			withAttempts:      true,
+			headerToken:       webhookSecretToken,
+			payloadID:         "inv_forged_999", // Does not match recorded attempt
+			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
+			expectCode:        http.StatusUnprocessableEntity,
+			expectFinalStatus: booking.StatusPending,
+		},
+		{
+			name:              "Out-of-order EXPIRED on confirmed booking ignored safely (200 OK, BE-R14)",
+			initialStatus:     booking.StatusConfirmed,
+			holdPast:          false,
+			withGateway:       true,
+			withAttempts:      true,
+			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
+			payloadStatus:     "EXPIRED",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
+			expectCode:        http.StatusOK,
+			expectFinalStatus: booking.StatusConfirmed, // Not cancelled!
 		},
 		{
 			name:              "Payment on expired hold returns 409 HOLD_EXPIRED",
 			initialStatus:     booking.StatusPending,
 			holdPast:          true,
 			withGateway:       true,
+			withAttempts:      true,
 			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusConflict,
 			expectFinalStatus: booking.StatusPending,
 		},
@@ -103,8 +193,12 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 			initialStatus:     booking.StatusPending,
 			holdPast:          false,
 			withGateway:       true,
+			withAttempts:      true,
 			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "EXPIRED",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusOK,
 			expectFinalStatus: booking.StatusCancelled,
 		},
@@ -113,8 +207,12 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 			initialStatus:     booking.StatusPending,
 			holdPast:          false,
 			withGateway:       true,
+			withAttempts:      true,
 			headerToken:       "wrong_token",
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusUnauthorized,
 			expectFinalStatus: booking.StatusPending,
 		},
@@ -123,22 +221,47 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 			initialStatus:     booking.StatusPending,
 			holdPast:          false,
 			withGateway:       false,
+			withAttempts:      false,
 			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
 			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
 			expectCode:        http.StatusNotImplemented,
+			expectFinalStatus: booking.StatusPending,
+		},
+		{
+			name:              "Booking not found returns 404 BOOKING_NOT_FOUND",
+			initialStatus:     booking.StatusPending,
+			holdPast:          false,
+			withGateway:       true,
+			withAttempts:      false,
+			headerToken:       webhookSecretToken,
+			payloadID:         "inv_wh_test_123",
+			payloadExtID:      "00000000-0000-0000-0000-000000000000", // Non-existent
+			payloadStatus:     "PAID",
+			payloadAmount:     1100000,
+			payloadCurrency:   "IDR",
+			expectCode:        http.StatusNotFound,
 			expectFinalStatus: booking.StatusPending,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			router, b := setupRouter(tc.initialStatus, tc.holdPast, tc.withGateway)
+			router, b := setupRouter(tc.initialStatus, tc.holdPast, tc.withGateway, tc.withAttempts)
+
+			extID := b.ID
+			if tc.payloadExtID != "" {
+				extID = tc.payloadExtID
+			}
 
 			body, _ := json.Marshal(map[string]any{
-				"id":             "inv_wh_test_123",
-				"external_id":    b.ID,
+				"id":             tc.payloadID,
+				"external_id":    extID,
 				"status":         tc.payloadStatus,
-				"amount":         1100000,
+				"amount":         tc.payloadAmount,
+				"currency":       tc.payloadCurrency,
 				"payment_method": "QRIS",
 			})
 
@@ -155,7 +278,7 @@ func TestXenditWebhook_TableTest(t *testing.T) {
 				t.Fatalf("expected HTTP status %d, got %d. Body: %s", tc.expectCode, w.Code, w.Body.String())
 			}
 
-			if b.Status != tc.expectFinalStatus {
+			if tc.payloadExtID == "" && b.Status != tc.expectFinalStatus {
 				t.Errorf("expected booking status %s, got %s", tc.expectFinalStatus, b.Status)
 			}
 		})
@@ -208,5 +331,19 @@ func (r *webhookMockReader) Get(_ context.Context, id string) (booking.Booking, 
 	if b, ok := r.bookings[id]; ok {
 		return *b, nil
 	}
-	return booking.Booking{}, fmt.Errorf("not found: %s", id)
+	return booking.Booking{}, booking.ErrNotFound
+}
+
+type webhookMockAttemptStore struct {
+	attempts map[string][]booking.PaymentAttempt
+}
+
+func (s *webhookMockAttemptStore) RecordAttempt(_ context.Context, _ booking.PaymentAttempt) error {
+	return nil
+}
+func (s *webhookMockAttemptStore) UpdateAttemptStatus(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (s *webhookMockAttemptStore) GetAttemptsByBookingID(_ context.Context, bookingID string) ([]booking.PaymentAttempt, error) {
+	return s.attempts[bookingID], nil
 }

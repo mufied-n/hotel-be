@@ -27,7 +27,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R11 | P1 | [Quote hanya tersimpan pada memori satu instance](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06; F01/F05 |
 | BE-R12 | P1 | [Deadline pembatalan memakai UTC ketika kebijakan menyebut WIB](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G08/19; F06/F13 |
 | BE-R13 | P1 | [Gateway timeout dianggap gagal pasti dan ledger error diabaikan](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F05/F14 |
-| BE-R14 | P1 | [Webhook tidak mencocokkan nilai dan invoice dengan ledger](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/11; F05/F14 |
+| BE-R14 | P1 (RESOLVED 2026-10-03, amount & ledger reconciliation) | [Webhook tidak mencocokkan nilai dan invoice dengan ledger](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/11; F05/F14 |
 | BE-R15 | P1 | [Link pembayaran tidak tersedia untuk recovery lintas sesi](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F03/F05 |
 | BE-R16 | P0 (RESOLVED 2026-10-03, fail-fast production startup & readiness) | [Deployment production masih dapat memilih fake gateway dan log notifier](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/16; F05/F11/F15 |
 | BE-R17 | P1 | [OTP delivery tidak memiliki retry durable dan tetap mengaku terkirim](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G16; F02/F11 |

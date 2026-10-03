@@ -135,6 +135,14 @@ func (s *Service) SetPaymentAttemptStore(pas PaymentAttemptStore) {
 	s.attempts = pas
 }
 
+// GetPaymentAttempts membaca riwayat percobaan pembayaran untuk rekonsiliasi webhook (BE-R14).
+func (s *Service) GetPaymentAttempts(ctx context.Context, bookingID string) ([]PaymentAttempt, error) {
+	if s.attempts == nil {
+		return nil, nil
+	}
+	return s.attempts.GetAttemptsByBookingID(ctx, bookingID)
+}
+
 func (s *Service) HoldTimeout() time.Duration { return s.holdTimeout }
 func (s *Service) holdExpiry() time.Time       { return time.Now().UTC().Add(s.holdTimeout) }
 

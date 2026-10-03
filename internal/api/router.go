@@ -1014,8 +1014,58 @@ func xenditWebhook(d Deps) gin.HandlerFunc {
 			return
 		}
 
+		b, err := d.BookingSvc.Get(c.Request.Context(), payload.ExternalID)
+		if err != nil {
+			if errors.Is(err, booking.ErrNotFound) {
+				httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
+				return
+			}
+			httpErrorCode(c, http.StatusInternalServerError, "failed to get booking: "+err.Error(), "INTERNAL_ERROR")
+			return
+		}
+
 		switch payload.Status {
 		case "PAID", "SETTLED":
+			// Idempotent replay: jika sudah confirmed, langsung 200 OK tanpa error atau efek samping
+			if b.Status == booking.StatusConfirmed {
+				writeJSON(c, http.StatusOK, map[string]string{
+					"status":  "ok",
+					"message": "booking already confirmed (idempotent replay)",
+				})
+				return
+			}
+
+			// Validasi Amount (BE-R14: cegah underpayment)
+			if payload.Amount != b.TotalPriceMinor {
+				httpErrorCode(c, http.StatusUnprocessableEntity, fmt.Sprintf("payment amount mismatch: expected %d, got %d", b.TotalPriceMinor, payload.Amount), "PAYMENT_AMOUNT_MISMATCH")
+				return
+			}
+
+			// Validasi Currency (BE-R14)
+			if payload.Currency != "" && !strings.EqualFold(payload.Currency, b.Currency) {
+				httpErrorCode(c, http.StatusUnprocessableEntity, fmt.Sprintf("payment currency mismatch: expected %s, got %s", b.Currency, payload.Currency), "PAYMENT_CURRENCY_MISMATCH")
+				return
+			}
+
+			// Validasi Invoice ID terhadap buku besar PaymentAttempt (BE-R14)
+			attempts, err := d.BookingSvc.GetPaymentAttempts(c.Request.Context(), payload.ExternalID)
+			if err == nil && len(attempts) > 0 {
+				var hasRef, matched bool
+				for _, att := range attempts {
+					if att.ProviderReference != "" {
+						hasRef = true
+						if att.ProviderReference == payload.ID {
+							matched = true
+							break
+						}
+					}
+				}
+				if hasRef && !matched {
+					httpErrorCode(c, http.StatusUnprocessableEntity, "invoice ID does not match recorded payment attempt", "INVOICE_ID_MISMATCH")
+					return
+				}
+			}
+
 			if err := d.BookingSvc.Confirm(c.Request.Context(), payload.ExternalID); err != nil {
 				if errors.Is(err, booking.ErrHoldExpired) {
 					if d.FinanceSvc != nil {
@@ -1032,7 +1082,19 @@ func xenditWebhook(d Deps) gin.HandlerFunc {
 				"message": "booking confirmed",
 			})
 		case "EXPIRED":
-			_ = d.BookingSvc.Cancel(c.Request.Context(), payload.ExternalID)
+			// Proteksi out-of-order expiry (BE-R14): jangan batalkan booking yang sudah berstatus confirmed
+			if b.Status == booking.StatusConfirmed {
+				writeJSON(c, http.StatusOK, map[string]string{
+					"status":  "ignored",
+					"message": "booking already confirmed, stale expiry event ignored",
+				})
+				return
+			}
+
+			if err := d.BookingSvc.Cancel(c.Request.Context(), payload.ExternalID); err != nil {
+				httpErrorCode(c, http.StatusInternalServerError, "failed to cancel booking: "+err.Error(), "CANCEL_FAILED")
+				return
+			}
 			writeJSON(c, http.StatusOK, map[string]string{
 				"status":  "ok",
 				"message": "booking cancelled due to invoice expiry",

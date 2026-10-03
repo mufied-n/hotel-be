@@ -82,6 +82,7 @@ type XenditWebhookPayload struct {
 	ExternalID    string `json:"external_id"`
 	Status        string `json:"status"` // "PAID", "SETTLED", "EXPIRED"
 	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency,omitempty"`
 	PaymentMethod string `json:"payment_method,omitempty"`
 	PaidAt        string `json:"paid_at,omitempty"`
 }
