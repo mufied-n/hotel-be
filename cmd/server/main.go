@@ -4,7 +4,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -294,28 +294,28 @@ func main() {
 			}
 			return nil
 		},
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
+		FakePay: func(c *gin.Context) {
 			// Dev-only: langsung panggil use case Confirm yang sama dengan webhook (BE-G10).
-			bookingID := r.URL.Query().Get("booking_id")
+			bookingID := c.Query("booking_id")
 			if bookingID == "" {
-				bookingID = chi.URLParam(r, "ref")
+				bookingID = c.Param("ref")
 			}
 			if bookingID == "" {
-				http.Error(w, "booking_id or ref required", http.StatusBadRequest)
+				c.String(http.StatusBadRequest, "booking_id or ref required")
 				return
 			}
-			if err := bkSvc.Confirm(r.Context(), bookingID); err != nil {
+			if err := bkSvc.Confirm(c.Request.Context(), bookingID); err != nil {
 				if errors.Is(err, booking.ErrHoldExpired) {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusConflict)
-					_, _ = w.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
+					c.Header("Content-Type", "application/json")
+					c.Status(http.StatusConflict)
+					_, _ = c.Writer.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
 					return
 				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				c.String(http.StatusInternalServerError, err.Error())
 				return
 			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"confirmed"}`))
+			c.Status(http.StatusOK)
+			_, _ = c.Writer.Write([]byte(`{"status":"confirmed"}`))
 		},
 	})
 

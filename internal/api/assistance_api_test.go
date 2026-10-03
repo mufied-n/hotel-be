@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/guest"
@@ -147,8 +147,9 @@ func TestAssistanceAPI_CreateGuestRequest_TableTest(t *testing.T) {
 				}
 			}
 
-			r := chi.NewRouter()
-			r.Post("/api/v1/guest/bookings/{id}/special-requests", handleCreateGuestSpecialRequest(deps))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.POST("/api/v1/guest/bookings/:id/special-requests", handleCreateGuestSpecialRequest(deps))
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/guest/bookings/"+tt.bookingID+"/special-requests", bytes.NewBufferString(tt.body))
 			if tt.session != nil {
@@ -236,8 +237,9 @@ func TestAssistanceAPI_ListGuestRequests_TableTest(t *testing.T) {
 				}
 			}
 
-			r := chi.NewRouter()
-			r.Get("/api/v1/guest/bookings/{id}/special-requests", handleListGuestSpecialRequests(deps))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.GET("/api/v1/guest/bookings/:id/special-requests", handleListGuestSpecialRequests(deps))
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/guest/bookings/"+tt.bookingID+"/special-requests", nil)
 			if tt.session != nil {
@@ -293,8 +295,9 @@ func TestAssistanceAPI_ListStaffSpecialRequests_TableTest(t *testing.T) {
 				}
 			}
 
-			r := chi.NewRouter()
-			r.Get("/api/v1/front-desk/special-requests", handleListStaffSpecialRequests(deps))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.GET("/api/v1/front-desk/special-requests", handleListStaffSpecialRequests(deps))
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/front-desk/special-requests?department=housekeeping", nil)
 			rec := httptest.NewRecorder()
@@ -387,8 +390,9 @@ func TestAssistanceAPI_UpdateStaffSpecialRequestStatus_TableTest(t *testing.T) {
 				}
 			}
 
-			r := chi.NewRouter()
-			r.Put("/api/v1/front-desk/special-requests/{id}/status", handleUpdateStaffSpecialRequestStatus(deps))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.PUT("/api/v1/front-desk/special-requests/:id/status", handleUpdateStaffSpecialRequestStatus(deps))
 
 			req := httptest.NewRequest(http.MethodPut, "/api/v1/front-desk/special-requests/"+tt.reqID+"/status", bytes.NewBufferString(tt.body))
 			if tt.authRole != "" {

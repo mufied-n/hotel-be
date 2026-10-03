@@ -28,6 +28,7 @@ import (
 	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
+	"github.com/gin-gonic/gin"
 )
 
 type e2eIncrementCall struct {
@@ -987,23 +988,23 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		AssistanceSvc:   astSvc,
 		FeatureFlag:     newE2EFeatureFlagManager(),
 		ReadyCheck:      func(ctx context.Context) error { return nil },
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			bID := r.URL.Query().Get("booking_id")
+		FakePay: func(c *gin.Context) {
+			bID := c.Query("booking_id")
 			if bID == "" {
 				bID = "bk-e2e-001"
 			}
-			if err := bkSvc.Confirm(r.Context(), bID); err != nil {
+			if err := bkSvc.Confirm(c.Request.Context(), bID); err != nil {
 				if errors.Is(err, booking.ErrHoldExpired) {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusConflict)
-					_, _ = w.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
+					c.Header("Content-Type", "application/json")
+					c.Status(http.StatusConflict)
+					_, _ = c.Writer.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
 					return
 				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				c.String(http.StatusInternalServerError, err.Error())
 				return
 			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"status":"confirmed"}`))
+			c.Status(http.StatusOK)
+			_, _ = c.Writer.Write([]byte(`{"status":"confirmed"}`))
 		},
 	})
 
@@ -1473,8 +1474,8 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		prodHandler := api.NewRouter(api.Deps{
 			Enforcer:      auth.DefaultTestEnforcer(),
 			IsDevelopment: false,
-			FakePay: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
+			FakePay: func(c *gin.Context) {
+				c.Status(http.StatusOK)
 			},
 		})
 		prodSrv := httptest.NewServer(prodHandler)
@@ -3268,6 +3269,48 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if !strings.Contains(reqItem.StaffNotes, "selamat anniversary") {
 			t.Errorf("expected staff notes containing 'selamat anniversary', got %s", reqItem.StaffNotes)
+		}
+	})
+
+	// 66. Transport Modernization: Gin Router Parity & Parameter Extraction
+	t.Run("E2E-66: Gin Router Parity & Parameter Extraction", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/healthz")
+		if err != nil {
+			t.Fatalf("healthz request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("healthz status = %d, want 200", res.StatusCode)
+		}
+		if res.Header.Get("X-Request-Id") == "" {
+			t.Errorf("expected X-Request-Id header to be injected by Gin middleware")
+		}
+	})
+
+	// 67. Transport Modernization: JSON v2 Duplicate Key Rejection
+	t.Run("E2E-67: JSON v2 Duplicate Key Rejection", func(t *testing.T) {
+		dupKeyPayload := `{"room_type_id":"01900000-0000-7000-8000-000000000001","room_type_id":"01900000-0000-7000-8000-000000000002"}`
+		res, err := client.Post(srv.URL+"/api/v1/quotes", "application/json", bytes.NewBufferString(dupKeyPayload))
+		if err != nil {
+			t.Fatalf("post quote failed: %v", err)
+		}
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("duplicate key status = %d, want 400 Bad Request", res.StatusCode)
+		}
+	})
+
+	// 68. Transport Modernization: Go Validator v10 DTO Schema Checks & RFC 7807 Error Code
+	t.Run("E2E-68: Go Validator v10 DTO Schema Checks", func(t *testing.T) {
+		res, err := client.Get(srv.URL + "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&rooms=10")
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("search rooms > 8 status = %d, want 400", res.StatusCode)
+		}
+		var prob map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&prob)
+		if prob["code"] != "INVALID_ROOM_COUNT" {
+			t.Errorf("expected code INVALID_ROOM_COUNT, got %v", prob["code"])
 		}
 	})
 }

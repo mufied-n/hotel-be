@@ -5,29 +5,30 @@ import (
 	"net/http"
 
 	"github.com/example/hotel-booking/internal/platform/featureflag"
+	"github.com/gin-gonic/gin"
 )
 
 // RequireFeature membuat middleware yang memeriksa apakah feature flag tertentu aktif.
 // Middleware ini context-aware: otomatis mengekstrak role dari AuthContext jika ada.
-func RequireFeature(ff featureflag.Manager, key string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if ff == nil {
-				// Fail-open jika feature flag manager belum dikonfigurasi (backward compatibility)
-				next.ServeHTTP(w, r)
-				return
-			}
+func RequireFeature(ff featureflag.Manager, key string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if ff == nil {
+			// Fail-open jika feature flag manager belum dikonfigurasi (backward compatibility)
+			c.Next()
+			return
+		}
 
-			authCtx := GetAuthContext(r.Context())
-			ctx := featureflag.WithRole(r.Context(), authCtx.Role)
+		authCtx := GetAuthContext(c.Request.Context())
+		ctx := featureflag.WithRole(c.Request.Context(), authCtx.Role)
+		c.Request = c.Request.WithContext(ctx)
 
-			if !ff.IsEnabled(ctx, key) {
-				writeProblemDetails(w, http.StatusServiceUnavailable, "Service Unavailable",
-					fmt.Sprintf("Fitur '%s' sedang dinonaktifkan sementara.", key), "FEATURE_DISABLED")
-				return
-			}
+		if !ff.IsEnabled(ctx, key) {
+			writeProblemDetails(c, http.StatusServiceUnavailable, "Service Unavailable",
+				fmt.Sprintf("Fitur '%s' sedang dinonaktifkan sementara.", key), "FEATURE_DISABLED")
+			c.Abort()
+			return
+		}
 
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
+		c.Next()
 	}
 }

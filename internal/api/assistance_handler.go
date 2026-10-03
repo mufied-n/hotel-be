@@ -1,83 +1,83 @@
 package api
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 
 	"github.com/example/hotel-booking/internal/assistance"
 )
 
-// POST /api/v1/guest/bookings/{id}/special-requests
-func handleCreateGuestSpecialRequest(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// POST /api/v1/guest/bookings/:id/special-requests
+func handleCreateGuestSpecialRequest(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.AssistanceSvc == nil {
-			httpErrorCode(w, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
+			httpErrorCode(c, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
 			return
 		}
 
-		session := GuestSessionFromContext(r.Context())
+		session := GuestSessionFromContext(c.Request.Context())
 		if session == nil || strings.TrimSpace(session.GuestEmail) == "" {
-			httpErrorCode(w, http.StatusUnauthorized, "sesi tamu tidak valid", "UNAUTHORIZED")
+			httpErrorCode(c, http.StatusUnauthorized, "sesi tamu tidak valid", "UNAUTHORIZED")
 			return
 		}
 
-		bookingID := chi.URLParam(r, "id")
+		bookingID := c.Param("id")
 		var input assistance.CreateRequestInput
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			httpErrorCode(w, http.StatusBadRequest, "format json tidak valid", "INVALID_JSON")
+		if err := json.UnmarshalRead(c.Request.Body, &input); err != nil {
+			httpErrorCode(c, http.StatusBadRequest, "format json tidak valid", "INVALID_JSON")
 			return
 		}
 		input.BookingID = bookingID
 
-		created, err := d.AssistanceSvc.CreateGuestRequest(r.Context(), session.GuestEmail, input)
+		created, err := d.AssistanceSvc.CreateGuestRequest(c.Request.Context(), session.GuestEmail, input)
 		if err != nil {
 			switch {
 			case errors.Is(err, assistance.ErrBookingNotFound):
-				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
+				httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 			case errors.Is(err, assistance.ErrInvalidCategory):
-				httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_CATEGORY")
+				httpErrorCode(c, http.StatusBadRequest, err.Error(), "INVALID_CATEGORY")
 			case errors.Is(err, assistance.ErrEmptyDescription):
-				httpErrorCode(w, http.StatusBadRequest, err.Error(), "EMPTY_DESCRIPTION")
+				httpErrorCode(c, http.StatusBadRequest, err.Error(), "EMPTY_DESCRIPTION")
 			default:
-				httpErrorCode(w, http.StatusInternalServerError, "gagal membuat permintaan khusus", "INTERNAL_ERROR")
+				httpErrorCode(c, http.StatusInternalServerError, "gagal membuat permintaan khusus", "INTERNAL_ERROR")
 			}
 			return
 		}
 
-		writeJSON(w, http.StatusCreated, created)
+		writeJSON(c, http.StatusCreated, created)
 	}
 }
 
-// GET /api/v1/guest/bookings/{id}/special-requests
-func handleListGuestSpecialRequests(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// GET /api/v1/guest/bookings/:id/special-requests
+func handleListGuestSpecialRequests(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.AssistanceSvc == nil {
-			httpErrorCode(w, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
+			httpErrorCode(c, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
 			return
 		}
 
-		session := GuestSessionFromContext(r.Context())
+		session := GuestSessionFromContext(c.Request.Context())
 		if session == nil || strings.TrimSpace(session.GuestEmail) == "" {
-			httpErrorCode(w, http.StatusUnauthorized, "sesi tamu tidak valid", "UNAUTHORIZED")
+			httpErrorCode(c, http.StatusUnauthorized, "sesi tamu tidak valid", "UNAUTHORIZED")
 			return
 		}
 
-		bookingID := chi.URLParam(r, "id")
-		requests, err := d.AssistanceSvc.ListGuestRequests(r.Context(), session.GuestEmail, bookingID)
+		bookingID := c.Param("id")
+		requests, err := d.AssistanceSvc.ListGuestRequests(c.Request.Context(), session.GuestEmail, bookingID)
 		if err != nil {
 			if errors.Is(err, assistance.ErrBookingNotFound) {
-				httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
+				httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
 				return
 			}
-			httpErrorCode(w, http.StatusInternalServerError, "gagal mengambil daftar permintaan khusus", "INTERNAL_ERROR")
+			httpErrorCode(c, http.StatusInternalServerError, "gagal mengambil daftar permintaan khusus", "INTERNAL_ERROR")
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		writeJSON(c, http.StatusOK, map[string]any{
 			"booking_id": bookingID,
 			"requests":   requests,
 		})
@@ -85,52 +85,52 @@ func handleListGuestSpecialRequests(d Deps) http.HandlerFunc {
 }
 
 // GET /api/v1/front-desk/special-requests
-func handleListStaffSpecialRequests(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func handleListStaffSpecialRequests(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.AssistanceSvc == nil {
-			httpErrorCode(w, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
+			httpErrorCode(c, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
 			return
 		}
 
 		filter := assistance.ListFilter{
-			Department: r.URL.Query().Get("department"),
-			Status:     r.URL.Query().Get("status"),
-			BookingID:  r.URL.Query().Get("booking_id"),
+			Department: c.Query("department"),
+			Status:     c.Query("status"),
+			BookingID:  c.Query("booking_id"),
 		}
 
-		items, err := d.AssistanceSvc.ListStaffQueue(r.Context(), filter)
+		items, err := d.AssistanceSvc.ListStaffQueue(c.Request.Context(), filter)
 		if err != nil {
-			httpErrorCode(w, http.StatusInternalServerError, "gagal mengambil antrean tugas staf", "INTERNAL_ERROR")
+			httpErrorCode(c, http.StatusInternalServerError, "gagal mengambil antrean tugas staf", "INTERNAL_ERROR")
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		writeJSON(c, http.StatusOK, map[string]any{
 			"items": items,
 			"total": len(items),
 		})
 	}
 }
 
-// PUT /api/v1/front-desk/special-requests/{id}/status
-func handleUpdateStaffSpecialRequestStatus(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// PUT /api/v1/front-desk/special-requests/:id/status
+func handleUpdateStaffSpecialRequestStatus(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.AssistanceSvc == nil {
-			httpErrorCode(w, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
+			httpErrorCode(c, http.StatusServiceUnavailable, "layanan permintaan khusus belum tersedia", "SERVICE_UNAVAILABLE")
 			return
 		}
 
-		id := chi.URLParam(r, "id")
+		id := c.Param("id")
 		var body struct {
 			ToStatus   assistance.Status `json:"to_status"`
 			StaffNotes string            `json:"staff_notes"`
 		}
 
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			httpErrorCode(w, http.StatusBadRequest, "format json tidak valid", "INVALID_JSON")
+		if err := json.UnmarshalRead(c.Request.Body, &body); err != nil {
+			httpErrorCode(c, http.StatusBadRequest, "format json tidak valid", "INVALID_JSON")
 			return
 		}
 
-		authCtx := GetAuthContext(r.Context())
+		authCtx := GetAuthContext(c.Request.Context())
 		actor := authCtx.Subject
 		if actor == "" {
 			actor = authCtx.Role
@@ -146,21 +146,21 @@ func handleUpdateStaffSpecialRequestStatus(d Deps) http.HandlerFunc {
 			HandledBy:  actor,
 		}
 
-		updated, err := d.AssistanceSvc.UpdateStatus(r.Context(), input)
+		updated, err := d.AssistanceSvc.UpdateStatus(c.Request.Context(), input)
 		if err != nil {
 			switch {
 			case errors.Is(err, assistance.ErrRequestNotFound):
-				httpErrorCode(w, http.StatusNotFound, "permintaan khusus tidak ditemukan", "REQUEST_NOT_FOUND")
+				httpErrorCode(c, http.StatusNotFound, "permintaan khusus tidak ditemukan", "REQUEST_NOT_FOUND")
 			case errors.Is(err, assistance.ErrInvalidStatusTransition):
-				httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_STATUS_TRANSITION")
+				httpErrorCode(c, http.StatusBadRequest, err.Error(), "INVALID_STATUS_TRANSITION")
 			case errors.Is(err, assistance.ErrStaffNotesRequired):
-				httpErrorCode(w, http.StatusBadRequest, err.Error(), "STAFF_NOTES_REQUIRED")
+				httpErrorCode(c, http.StatusBadRequest, err.Error(), "STAFF_NOTES_REQUIRED")
 			default:
-				httpErrorCode(w, http.StatusInternalServerError, "gagal memperbarui status permintaan", "INTERNAL_ERROR")
+				httpErrorCode(c, http.StatusInternalServerError, "gagal memperbarui status permintaan", "INTERNAL_ERROR")
 			}
 			return
 		}
 
-		writeJSON(w, http.StatusOK, updated)
+		writeJSON(c, http.StatusOK, updated)
 	}
 }

@@ -1,12 +1,12 @@
 package api
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"net/http"
 
 	"github.com/example/hotel-booking/internal/platform/featureflag"
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 )
 
 type updateFlagRequest struct {
@@ -15,15 +15,15 @@ type updateFlagRequest struct {
 }
 
 // handleAdminListFlags melayani GET /api/v1/admin/feature-flags (FR-FF-04).
-func handleAdminListFlags(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func handleAdminListFlags(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.FeatureFlag == nil {
-			httpErrorCode(w, http.StatusNotImplemented, "feature flag manager not configured", "NOT_CONFIGURED")
+			httpErrorCode(c, http.StatusNotImplemented, "feature flag manager not configured", "NOT_CONFIGURED")
 			return
 		}
 
-		flags := d.FeatureFlag.List(r.Context())
-		writeJSON(w, http.StatusOK, map[string]any{
+		flags := d.FeatureFlag.List(c.Request.Context())
+		writeJSON(c, http.StatusOK, map[string]any{
 			"total": len(flags),
 			"flags": flags,
 		})
@@ -31,28 +31,28 @@ func handleAdminListFlags(d Deps) http.HandlerFunc {
 }
 
 // handleAdminUpdateFlag melayani PUT /api/v1/admin/feature-flags/{key} (FR-FF-04).
-func handleAdminUpdateFlag(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func handleAdminUpdateFlag(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		if d.FeatureFlag == nil {
-			httpErrorCode(w, http.StatusNotImplemented, "feature flag manager not configured", "NOT_CONFIGURED")
+			httpErrorCode(c, http.StatusNotImplemented, "feature flag manager not configured", "NOT_CONFIGURED")
 			return
 		}
 
-		key := chi.URLParam(r, "key")
+		key := c.Param("key")
 		if key == "" {
-			httpErrorCode(w, http.StatusBadRequest, "key feature flag wajib disertakan", "INVALID_FLAG_KEY")
+			httpErrorCode(c, http.StatusBadRequest, "key feature flag wajib disertakan", "INVALID_FLAG_KEY")
 			return
 		}
 
 		var req updateFlagRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpErrorCode(w, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
+		if err := json.UnmarshalRead(c.Request.Body, &req); err != nil {
+			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
 			return
 		}
 
-		current, ok := d.FeatureFlag.Get(r.Context(), key)
+		current, ok := d.FeatureFlag.Get(c.Request.Context(), key)
 		if !ok {
-			httpErrorCode(w, http.StatusNotFound, "feature flag tidak ditemukan", "FLAG_NOT_FOUND")
+			httpErrorCode(c, http.StatusNotFound, "feature flag tidak ditemukan", "FLAG_NOT_FOUND")
 			return
 		}
 
@@ -66,23 +66,23 @@ func handleAdminUpdateFlag(d Deps) http.HandlerFunc {
 			allowedRoles = current.AllowedRoles
 		}
 
-		auth := GetAuthContext(r.Context())
+		auth := GetAuthContext(c.Request.Context())
 		actor := auth.Subject
 		if actor == "" || actor == "anonymous" {
 			actor = "admin"
 		}
 
-		updated, err := d.FeatureFlag.Update(r.Context(), key, enabled, allowedRoles, actor)
+		updated, err := d.FeatureFlag.Update(c.Request.Context(), key, enabled, allowedRoles, actor)
 		if errors.Is(err, featureflag.ErrFlagNotFound) {
-			httpErrorCode(w, http.StatusNotFound, "feature flag tidak ditemukan", "FLAG_NOT_FOUND")
+			httpErrorCode(c, http.StatusNotFound, "feature flag tidak ditemukan", "FLAG_NOT_FOUND")
 			return
 		}
 		if err != nil {
-			httpErrorCode(w, http.StatusInternalServerError, "gagal memperbarui feature flag: "+err.Error(), "INTERNAL_ERROR")
+			httpErrorCode(c, http.StatusInternalServerError, "gagal memperbarui feature flag: "+err.Error(), "INTERNAL_ERROR")
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		writeJSON(c, http.StatusOK, map[string]any{
 			"status": "updated",
 			"flag":   updated,
 		})

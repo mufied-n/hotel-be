@@ -12,6 +12,7 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
+	"github.com/gin-gonic/gin"
 )
 
 func setupRBACTestRouter(t *testing.T, initialStatus booking.Status) http.Handler {
@@ -72,8 +73,8 @@ func setupRBACTestRouter(t *testing.T, initialStatus booking.Status) http.Handle
 		RateSvc:    &mockRates{quotes: []rates.Quote{{Date: now, RateMinor: 100_000}}},
 		Enforcer:   enforcer,
 		ReadyCheck: func(ctx context.Context) error { return nil },
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
+		FakePay: func(c *gin.Context) {
+			c.Status(http.StatusOK)
 		},
 	})
 }

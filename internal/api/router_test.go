@@ -3,14 +3,17 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
@@ -19,6 +22,22 @@ import (
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
 )
+
+type testDecoder struct {
+	r io.Reader
+}
+
+func newTestDecoder(r io.Reader) *testDecoder {
+	return &testDecoder{r: r}
+}
+
+func (d *testDecoder) Decode(v any) error {
+	b, err := io.ReadAll(d.r)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
 
 type mockCatalogStore struct {
 	variants []catalog.RoomVariant
@@ -234,8 +253,8 @@ func setupTestRouter() (http.Handler, *mockTx) {
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: true,
 		ReadyCheck:    func(_ context.Context) error { return nil },
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
+		FakePay: func(c *gin.Context) {
+			c.Status(http.StatusOK)
 		},
 	})
 	return handler, txMock
@@ -530,7 +549,7 @@ func TestNoShow(t *testing.T) {
 			t.Errorf("no-show status = %d, want 400; body: %s", w.Code, w.Body.String())
 		}
 		var pd ProblemDetails
-		_ = json.NewDecoder(w.Body).Decode(&pd)
+		_ = newTestDecoder(w.Body).Decode(&pd)
 		if pd.Code != "NO_SHOW_TOO_EARLY" {
 			t.Errorf("expected code NO_SHOW_TOO_EARLY, got %s", pd.Code)
 		}
@@ -545,8 +564,8 @@ func TestDevRouteGating(t *testing.T) {
 	devRouter := NewRouter(Deps{
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: true,
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
+		FakePay: func(c *gin.Context) {
+			c.Status(http.StatusOK)
 		},
 	})
 	reqDev := httptest.NewRequest(http.MethodPost, "/fake-pay/ref-123", nil)
@@ -560,8 +579,8 @@ func TestDevRouteGating(t *testing.T) {
 	prodRouter := NewRouter(Deps{
 		Enforcer:      auth.DefaultTestEnforcer(),
 		IsDevelopment: false,
-		FakePay: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
+		FakePay: func(c *gin.Context) {
+			c.Status(http.StatusOK)
 		},
 	})
 	reqProd := httptest.NewRequest(http.MethodPost, "/fake-pay/ref-123", nil)
@@ -725,7 +744,7 @@ func TestGetCatalogRooms(t *testing.T) {
 		Total int                   `json:"total"`
 		Rooms []catalog.RoomVariant `json:"rooms"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+	if err := newTestDecoder(rec.Body).Decode(&res); err != nil {
 		t.Fatalf("decode err = %v", err)
 	}
 	if res.Total != 7 || len(res.Rooms) != 7 {
@@ -851,7 +870,7 @@ func TestSearchRooms_Validation(t *testing.T) {
 				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
 			}
 			var prob ProblemDetails
-			_ = json.NewDecoder(rec.Body).Decode(&prob)
+			_ = newTestDecoder(rec.Body).Decode(&prob)
 			if prob.Code != tt.wantCode {
 				t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 			}
@@ -874,7 +893,7 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 		AvailableCount int                `json:"available_count"`
 		Results        []SearchResultItem `json:"results"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
+	if err := newTestDecoder(rec.Body).Decode(&res); err != nil {
 		t.Fatalf("decode err = %v", err)
 	}
 	if res.TotalVariants != 7 {
@@ -891,7 +910,7 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 	var resCap struct {
 		Results []SearchResultItem `json:"results"`
 	}
-	_ = json.NewDecoder(recCap.Body).Decode(&resCap)
+	_ = newTestDecoder(recCap.Body).Decode(&resCap)
 	for _, item := range resCap.Results {
 		if item.RoomVariant.MaxAdults < 5 {
 			if item.Available {
@@ -923,7 +942,7 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 		AvailableCount int                `json:"available_count"`
 		Results        []SearchResultItem `json:"results"`
 	}
-	_ = json.NewDecoder(recMissing.Body).Decode(&resMissing)
+	_ = newTestDecoder(recMissing.Body).Decode(&resMissing)
 	if resMissing.AvailableCount != 0 {
 		t.Errorf("available_count = %d, want 0 on missing inventory", resMissing.AvailableCount)
 	}
@@ -953,7 +972,7 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 	var resSold struct {
 		Results []SearchResultItem `json:"results"`
 	}
-	_ = json.NewDecoder(recSold.Body).Decode(&resSold)
+	_ = newTestDecoder(recSold.Body).Decode(&resSold)
 	if len(resSold.Results) > 0 && resSold.Results[0].UnavailableReason != "SOLD_OUT" {
 		t.Errorf("reason = %s, want SOLD_OUT", resSold.Results[0].UnavailableReason)
 	}
@@ -965,7 +984,7 @@ func TestSearchRooms_ContinuityAndStock(t *testing.T) {
 	var resInsuff struct {
 		Results []SearchResultItem `json:"results"`
 	}
-	_ = json.NewDecoder(recInsuff.Body).Decode(&resInsuff)
+	_ = newTestDecoder(recInsuff.Body).Decode(&resInsuff)
 	// We have 5 rooms available, but requested 6
 	for _, item := range resInsuff.Results {
 		if !item.Available && item.UnavailableReason != "EXCEEDS_CAPACITY" && item.UnavailableReason != "INSUFFICIENT_ROOMS" {
@@ -1040,7 +1059,7 @@ func TestCreateBooking_NewValidationErrors(t *testing.T) {
 				t.Errorf("%s: status = %d, want %d (body: %s)", tt.name, rec.Code, tt.wantStatus, rec.Body.String())
 			}
 			var prob ProblemDetails
-			_ = json.NewDecoder(rec.Body).Decode(&prob)
+			_ = newTestDecoder(rec.Body).Decode(&prob)
 			if prob.Code != tt.wantCode {
 				t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 			}
@@ -1060,7 +1079,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
 		var v catalog.RoomVariant
-		if err := json.NewDecoder(rec.Body).Decode(&v); err != nil {
+		if err := newTestDecoder(rec.Body).Decode(&v); err != nil {
 			t.Fatalf("decode err = %v", err)
 		}
 		if v.Code != "sup-king" {
@@ -1169,7 +1188,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			}
 			if tt.wantCode != "" {
 				var prob ProblemDetails
-				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				_ = newTestDecoder(rec.Body).Decode(&prob)
 				if prob.Code != tt.wantCode {
 					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 				}
@@ -1265,7 +1284,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			}
 			if tt.wantCode != "" {
 				var prob ProblemDetails
-				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				_ = newTestDecoder(rec.Body).Decode(&prob)
 				if prob.Code != tt.wantCode {
 					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 				}
@@ -1352,7 +1371,7 @@ func TestCatalogRoomCRUD(t *testing.T) {
 			}
 			if tt.wantCode != "" {
 				var prob ProblemDetails
-				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				_ = newTestDecoder(rec.Body).Decode(&prob)
 				if prob.Code != tt.wantCode {
 					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 				}
@@ -1384,7 +1403,7 @@ func TestQuotes_TableDriven(t *testing.T) {
 			wantStatus: http.StatusOK,
 			checkQuote: func(t *testing.T, rec *httptest.ResponseRecorder) {
 				var q rates.LockedQuote
-				if err := json.NewDecoder(rec.Body).Decode(&q); err != nil {
+				if err := newTestDecoder(rec.Body).Decode(&q); err != nil {
 					t.Fatalf("failed to decode quote: %v", err)
 				}
 				if q.ID == "" {
@@ -1415,7 +1434,7 @@ func TestQuotes_TableDriven(t *testing.T) {
 			wantStatus: http.StatusOK,
 			checkQuote: func(t *testing.T, rec *httptest.ResponseRecorder) {
 				var q rates.LockedQuote
-				if err := json.NewDecoder(rec.Body).Decode(&q); err != nil {
+				if err := newTestDecoder(rec.Body).Decode(&q); err != nil {
 					t.Fatalf("failed to decode quote: %v", err)
 				}
 				if q.CancellationCode != rates.PolicyNonRefundable {
@@ -1501,7 +1520,7 @@ func TestQuotes_TableDriven(t *testing.T) {
 			}
 			if tt.wantCode != "" {
 				var prob ProblemDetails
-				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				_ = newTestDecoder(rec.Body).Decode(&prob)
 				if prob.Code != tt.wantCode {
 					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 				}
@@ -1532,7 +1551,7 @@ func TestCreateBooking_WithQuoteAndConsent(t *testing.T) {
 		t.Fatalf("setup quote failed: %s", qRec.Body.String())
 	}
 	var validQuote rates.LockedQuote
-	_ = json.NewDecoder(qRec.Body).Decode(&validQuote)
+	_ = newTestDecoder(qRec.Body).Decode(&validQuote)
 
 	tests := []struct {
 		name       string
@@ -1621,7 +1640,7 @@ func TestCreateBooking_WithQuoteAndConsent(t *testing.T) {
 			}
 			if tt.wantCode != "" {
 				var prob ProblemDetails
-				_ = json.NewDecoder(rec.Body).Decode(&prob)
+				_ = newTestDecoder(rec.Body).Decode(&prob)
 				if prob.Code != tt.wantCode {
 					t.Errorf("%s: code = %s, want %s", tt.name, prob.Code, tt.wantCode)
 				}
@@ -1654,7 +1673,7 @@ func TestCancelBooking_PolicyEnforcement(t *testing.T) {
 		t.Fatalf("expected 409 for non_refundable cancel, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	var prob ProblemDetails
-	_ = json.NewDecoder(rec.Body).Decode(&prob)
+	_ = newTestDecoder(rec.Body).Decode(&prob)
 	if prob.Code != "NON_REFUNDABLE_BOOKING" {
 		t.Errorf("expected NON_REFUNDABLE_BOOKING, got %s", prob.Code)
 	}
@@ -1679,7 +1698,7 @@ func TestCancelBooking_PolicyEnforcement(t *testing.T) {
 		t.Fatalf("expected 409 for deadline exceeded cancel, got %d (body: %s)", rec2.Code, rec2.Body.String())
 	}
 	var prob2 ProblemDetails
-	_ = json.NewDecoder(rec2.Body).Decode(&prob2)
+	_ = newTestDecoder(rec2.Body).Decode(&prob2)
 	if prob2.Code != "CANCELLATION_DEADLINE_EXCEEDED" {
 		t.Errorf("expected CANCELLATION_DEADLINE_EXCEEDED, got %s", prob2.Code)
 	}
@@ -1733,7 +1752,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 			t.Fatalf("expected 201 Created on first call, got %d (body: %s)", rec1.Code, rec1.Body.String())
 		}
 		var resp1 map[string]any
-		_ = json.NewDecoder(rec1.Body).Decode(&resp1)
+		_ = newTestDecoder(rec1.Body).Decode(&resp1)
 		if resp1["expires_at"] == nil {
 			t.Errorf("expected expires_at in response, got nil")
 		}
@@ -1775,7 +1794,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 			t.Fatalf("expected 409 Conflict for mismatched payload, got %d", rec3.Code)
 		}
 		var prob ProblemDetails
-		_ = json.NewDecoder(rec3.Body).Decode(&prob)
+		_ = newTestDecoder(rec3.Body).Decode(&prob)
 		if prob.Code != "IDEMPOTENCY_CONFLICT" {
 			t.Errorf("expected IDEMPOTENCY_CONFLICT, got %s", prob.Code)
 		}
@@ -1847,7 +1866,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 				}
 				if tc.wantCode != "" {
 					var prob ProblemDetails
-					_ = json.NewDecoder(rec.Body).Decode(&prob)
+					_ = newTestDecoder(rec.Body).Decode(&prob)
 					if prob.Code != tc.wantCode {
 						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
 					}
@@ -1881,7 +1900,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 			t.Fatalf("expected 200, got %d", rec1.Code)
 		}
 		var publicDTO map[string]any
-		_ = json.NewDecoder(rec1.Body).Decode(&publicDTO)
+		_ = newTestDecoder(rec1.Body).Decode(&publicDTO)
 
 		// Sensitive PII must NOT be present
 		if _, exists := publicDTO["guest_phone"]; exists {
@@ -1914,7 +1933,7 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 			t.Fatalf("expected 200 with token, got %d", rec2.Code)
 		}
 		var fullDTO map[string]any
-		_ = json.NewDecoder(rec2.Body).Decode(&fullDTO)
+		_ = newTestDecoder(rec2.Body).Decode(&fullDTO)
 		if fullDTO["guest_phone"] != "+6281987654321" {
 			t.Errorf("expected guest_phone = +6281987654321, got %v", fullDTO["guest_phone"])
 		}
@@ -1926,6 +1945,106 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		}
 		if fullDTO["special_requests"] != "Quiet corner" {
 			t.Errorf("expected special_requests = Quiet corner for authenticated guest, got %v", fullDTO["special_requests"])
+		}
+	})
+}
+
+func TestTransportModernization_JSONv2_And_Validator(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	t.Run("JSON v2 rejects malformed JSON with 400 Bad Request", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(`{"invalid-json`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request, got %d", rec.Code)
+		}
+	})
+
+	t.Run("JSON v2 rejects duplicate keys with 400 Bad Request", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(`{"room_type_id":"01900000-0000-7000-8000-000000000001","room_type_id":"01900000-0000-7000-8000-000000000002"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for duplicate keys, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Validator v10 table tests across DTOs", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			method      string
+			path        string
+			body        string
+			authBearer  string
+			wantCode    string
+			wantStatus  int
+		}{
+			{
+				name:       "search rejects rooms > 8 with INVALID_ROOM_COUNT",
+				method:     http.MethodGet,
+				path:       "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&rooms=9",
+				wantCode:   "INVALID_ROOM_COUNT",
+				wantStatus: http.StatusBadRequest,
+			},
+			{
+				name:       "search rejects adults < 1 with INVALID_GUEST_COUNT",
+				method:     http.MethodGet,
+				path:       "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=0",
+				wantCode:   "INVALID_GUEST_COUNT",
+				wantStatus: http.StatusBadRequest,
+			},
+			{
+				name:       "search rejects children < 0 with INVALID_GUEST_COUNT",
+				method:     http.MethodGet,
+				path:       "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&children=-2",
+				wantCode:   "INVALID_GUEST_COUNT",
+				wantStatus: http.StatusBadRequest,
+			},
+			{
+				name:       "search rejects child age > 17 with INVALID_CHILD_AGE",
+				method:     http.MethodGet,
+				path:       "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&child_ages=18",
+				wantCode:   "INVALID_CHILD_AGE",
+				wantStatus: http.StatusBadRequest,
+			},
+			{
+				name:       "quote rejects missing room_type_id with INVALID_DATE_FORMAT",
+				method:     http.MethodPost,
+				path:       "/api/v1/quotes",
+				body:       `{"check_in":"2026-10-10","check_out":"2026-10-12"}`,
+				wantCode:   "INVALID_DATE_FORMAT",
+				wantStatus: http.StatusBadRequest,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+				if tc.body != "" {
+					req.Header.Set("Content-Type", "application/json")
+				}
+				if tc.authBearer != "" {
+					req.Header.Set("Authorization", "Bearer "+tc.authBearer)
+				}
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+				}
+				if tc.wantCode != "" {
+					var prob ProblemDetails
+					_ = newTestDecoder(rec.Body).Decode(&prob)
+					if prob.Code != tc.wantCode {
+						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
+					}
+				}
+			})
 		}
 	})
 }

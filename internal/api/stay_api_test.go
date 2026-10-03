@@ -3,13 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 
 	"github.com/example/hotel-booking/internal/stay"
 )
@@ -133,8 +133,9 @@ func TestStayAPI_RoomMove_TableTest(t *testing.T) {
 				},
 			}
 
-			r := chi.NewRouter()
-			r.Post("/bookings/{id}/room-move", handleRoomMove(Deps{StaySvc: svc}))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.POST("/bookings/:id/room-move", handleRoomMove(Deps{StaySvc: svc}))
 
 			req := httptest.NewRequest(http.MethodPost, "/bookings/"+tc.bookingID+"/room-move", bytes.NewBufferString(tc.body))
 			req.Header.Set("Content-Type", "application/json")
@@ -148,7 +149,7 @@ func TestStayAPI_RoomMove_TableTest(t *testing.T) {
 
 			if tc.expectedCode != "" {
 				var errResp map[string]any
-				_ = json.NewDecoder(w.Body).Decode(&errResp)
+				_ = json.Unmarshal(w.Body.Bytes(), &errResp)
 				if errResp["code"] != tc.expectedCode {
 					t.Errorf("expected error code %s, got %v", tc.expectedCode, errResp["code"])
 				}
@@ -227,8 +228,9 @@ func TestStayAPI_ExtendStay_TableTest(t *testing.T) {
 				},
 			}
 
-			r := chi.NewRouter()
-			r.Post("/bookings/{id}/extend-stay", handleExtendStay(Deps{StaySvc: svc}))
+			gin.SetMode(gin.TestMode)
+			r := gin.New()
+			r.POST("/bookings/:id/extend-stay", handleExtendStay(Deps{StaySvc: svc}))
 
 			req := httptest.NewRequest(http.MethodPost, "/bookings/"+tc.bookingID+"/extend-stay", bytes.NewBufferString(tc.body))
 			req.Header.Set("Content-Type", "application/json")
@@ -242,7 +244,7 @@ func TestStayAPI_ExtendStay_TableTest(t *testing.T) {
 
 			if tc.expectedCode != "" {
 				var errResp map[string]any
-				_ = json.NewDecoder(w.Body).Decode(&errResp)
+				_ = json.Unmarshal(w.Body.Bytes(), &errResp)
 				if errResp["code"] != tc.expectedCode {
 					t.Errorf("expected error code %s, got %v", tc.expectedCode, errResp["code"])
 				}
@@ -272,8 +274,9 @@ func TestStayAPI_ListRoomMoves(t *testing.T) {
 		},
 	}
 
-	r := chi.NewRouter()
-	r.Get("/bookings/{id}/room-moves", handleListRoomMoves(Deps{StaySvc: svc}))
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/bookings/:id/room-moves", handleListRoomMoves(Deps{StaySvc: svc}))
 
 	// Positive test
 	req := httptest.NewRequest(http.MethodGet, "/bookings/bk-123/room-moves", nil)

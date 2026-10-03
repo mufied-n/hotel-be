@@ -3,7 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +11,7 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/platform/featureflag"
+	"github.com/gin-gonic/gin"
 )
 
 func newTestEnforcerForFF(t *testing.T) *casbin.SyncedEnforcer {
@@ -48,10 +49,10 @@ func TestRequireFeature_Middleware(t *testing.T) {
 	}
 	ffMgr := featureflag.NewMemoryManager(flags)
 
-	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	okHandler := func(c *gin.Context) {
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.Write([]byte(`{"status":"ok"}`))
+	}
 
 	tests := []struct {
 		name         string
@@ -99,8 +100,9 @@ func TestRequireFeature_Middleware(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			middleware := RequireFeature(ffMgr, tc.flagKey)
-			handler := middleware(okHandler)
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.GET("/test", RequireFeature(ffMgr, tc.flagKey), okHandler)
 
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			if tc.role != "" {
@@ -109,7 +111,7 @@ func TestRequireFeature_Middleware(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 
-			handler.ServeHTTP(rec, req)
+			router.ServeHTTP(rec, req)
 
 			if rec.Code != tc.expectedCode {
 				t.Errorf("expected status %d, got %d", tc.expectedCode, rec.Code)
@@ -160,7 +162,7 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 			Total int                `json:"total"`
 			Flags []featureflag.Flag `json:"flags"`
 		}
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
 		if resp.Total != 2 {
@@ -203,7 +205,7 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 			Status string           `json:"status"`
 			Flag   featureflag.Flag `json:"flag"`
 		}
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
 		if resp.Flag.Enabled != false {
