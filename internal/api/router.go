@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/example/hotel-booking/internal/adapter/payment"
+	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/finance"
@@ -56,6 +57,7 @@ type Deps struct {
 	HousekeepingSvc housekeeping.Service
 	FrontDeskSvc    frontdesk.Service
 	StaySvc         stay.Service
+	AssistanceSvc   assistance.Service
 	FeatureFlag     featureflag.Manager
 }
 
@@ -101,6 +103,8 @@ func NewRouter(d Deps) http.Handler {
 		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_booking_artifacts_receipt")).Get("/api/v1/guest/bookings/{id}/receipt", handleGuestBookingReceipt(d))
 		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_booking_artifacts_icalendar")).Get("/api/v1/guest/bookings/{id}/calendar.ics", handleGuestBookingCalendar(d))
 		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_my_bookings")).Get("/api/v1/guest/bookings/{id}/refund-status", handleGuestRefundStatus(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_special_requests")).Post("/api/v1/guest/bookings/{id}/special-requests", handleCreateGuestSpecialRequest(d))
+		guestRouter.With(RequireFeature(d.FeatureFlag, "ff_guest_special_requests")).Get("/api/v1/guest/bookings/{id}/special-requests", handleListGuestSpecialRequests(d))
 	})
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
@@ -143,6 +147,10 @@ func NewRouter(d Deps) http.Handler {
 		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Post("/api/v1/bookings/{id}/room-move", handleRoomMove(d))
 		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Post("/api/v1/bookings/{id}/extend-stay", handleExtendStay(d))
 		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Get("/api/v1/bookings/{id}/room-moves", handleListRoomMoves(d))
+
+		// Guest Special Requests & Stay Assistance Desk (Proposed 04)
+		api.With(RequireFeature(d.FeatureFlag, "ff_guest_special_requests")).Get("/api/v1/front-desk/special-requests", handleListStaffSpecialRequests(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_guest_special_requests")).Put("/api/v1/front-desk/special-requests/{id}/status", handleUpdateStaffSpecialRequestStatus(d))
 
 		// Feature Flags Administration (FR-FF-04)
 		api.Get("/api/v1/admin/feature-flags", handleAdminListFlags(d))

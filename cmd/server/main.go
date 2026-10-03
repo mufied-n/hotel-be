@@ -20,6 +20,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/notifier"
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
+	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/finance"
@@ -248,6 +249,10 @@ func main() {
 	stayStore := stay.NewPostgresStore(pool)
 	staySvc := stay.NewService(stayStore, rateEngine, log)
 
+	// ---- Guest Assistance & Special Requests Service (Proposed 04) ----
+	assistanceStore := assistance.NewPostgresStore(pool)
+	assistanceSvc := assistance.NewService(assistanceStore, log)
+
 	// ---- Feature Flags Engine ----
 	ffManager, err := featureflag.NewPostgresManager(ctx, pool, redisClient, 30*time.Second, log)
 	if err != nil {
@@ -278,6 +283,7 @@ func main() {
 		HousekeepingSvc:  housekeepingSvc,
 		FrontDeskSvc:     frontdeskSvc,
 		StaySvc:          staySvc,
+		AssistanceSvc:    assistanceSvc,
 		FeatureFlag:      ffManager,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {

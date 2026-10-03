@@ -1896,12 +1896,12 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		if _, exists := publicDTO["guest_token"]; exists {
 			t.Errorf("guest_token MUST NOT be returned in PublicDTO")
 		}
-		// Non-PII booking info is present
-		if publicDTO["estimated_arrival_time"] != "15:00" {
-			t.Errorf("expected estimated_arrival_time = 15:00, got %v", publicDTO["estimated_arrival_time"])
+		// BE-R02: Free-text dan detail kedatangan disamarkan pada PublicDTO
+		if val, exists := publicDTO["estimated_arrival_time"]; exists && val != "" {
+			t.Errorf("estimated_arrival_time MUST NOT be leaked in PublicDTO (BE-R02), got %v", val)
 		}
-		if publicDTO["special_requests"] != "Quiet corner" {
-			t.Errorf("expected special_requests = Quiet corner, got %v", publicDTO["special_requests"])
+		if val, exists := publicDTO["special_requests"]; exists && val != "" {
+			t.Errorf("special_requests MUST NOT be leaked in PublicDTO (BE-R02), got %v", val)
 		}
 
 		// 2. Guest with valid X-Guest-Token -> full Booking returned
@@ -1920,6 +1920,12 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		}
 		if fullDTO["guest_email"] != "siti@example.com" {
 			t.Errorf("expected guest_email = siti@example.com, got %v", fullDTO["guest_email"])
+		}
+		if fullDTO["estimated_arrival_time"] != "15:00" {
+			t.Errorf("expected estimated_arrival_time = 15:00 for authenticated guest, got %v", fullDTO["estimated_arrival_time"])
+		}
+		if fullDTO["special_requests"] != "Quiet corner" {
+			t.Errorf("expected special_requests = Quiet corner for authenticated guest, got %v", fullDTO["special_requests"])
 		}
 	})
 }

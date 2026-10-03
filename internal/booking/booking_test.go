@@ -79,9 +79,11 @@ func TestBooking_ToPublicDTO(t *testing.T) {
 				TotalPriceMinor: 2_500_000,
 				Currency:        "IDR",
 				GuestName:       "Rahasia Tamu",
-				GuestEmail:      "rahasia@example.com",
-				GuestToken:      "gst_super_secret_token",
-				CreatedAt:       now,
+				GuestEmail:           "rahasia@example.com",
+				GuestToken:           "gst_super_secret_token",
+				EstimatedArrivalTime: "14:00",
+				SpecialRequests:      "Alergi kacang dan setup honeymoon",
+				CreatedAt:            now,
 			},
 		},
 	}
@@ -100,6 +102,12 @@ func TestBooking_ToPublicDTO(t *testing.T) {
 			}
 			if dto.NumRooms != tt.booking.NumRooms {
 				t.Errorf("NumRooms = %d, want %d", dto.NumRooms, tt.booking.NumRooms)
+			}
+			if dto.SpecialRequests != "" {
+				t.Errorf("SpecialRequests = %s, want empty (BE-R02 masked)", dto.SpecialRequests)
+			}
+			if dto.EstimatedArrivalTime != "" {
+				t.Errorf("EstimatedArrivalTime = %s, want empty (BE-R02 masked)", dto.EstimatedArrivalTime)
 			}
 		})
 	}

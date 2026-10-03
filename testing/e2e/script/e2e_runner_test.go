@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/example/hotel-booking/internal/adapter/notifier"
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
+	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/frontdesk"
@@ -42,8 +45,9 @@ type e2eTxMock struct {
 	guestStore     *e2eGuestStore
 	finStore       *e2eFinanceStore
 	hkStore        *e2eHousekeepingStore
-	frontdeskStore *e2eFrontDeskStore
-	stayStore      *e2eStayStore
+	frontdeskStore  *e2eFrontDeskStore
+	stayStore       *e2eStayStore
+	assistanceStore *e2eAssistanceStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -723,6 +727,98 @@ func (s *e2eStayStore) ListRoomMoves(ctx context.Context, bookingID string) ([]s
 	return s.moves, nil
 }
 
+type e2eAssistanceStore struct {
+	mu       sync.Mutex
+	requests []assistance.SpecialRequest
+	tx       *e2eTxMock
+}
+
+func newE2EAssistanceStore(tx *e2eTxMock) *e2eAssistanceStore {
+	return &e2eAssistanceStore{tx: tx}
+}
+
+func (s *e2eAssistanceStore) CreateRequest(ctx context.Context, req assistance.SpecialRequest) (*assistance.SpecialRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req.ID = fmt.Sprintf("req-%d", len(s.requests)+1)
+	s.requests = append(s.requests, req)
+	res := req
+	return &res, nil
+}
+
+func (s *e2eAssistanceStore) GetRequestByID(ctx context.Context, id string) (*assistance.SpecialRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.requests {
+		if r.ID == id {
+			res := r
+			return &res, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *e2eAssistanceStore) ListByBookingID(ctx context.Context, bookingID string) ([]assistance.SpecialRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var res []assistance.SpecialRequest
+	for _, r := range s.requests {
+		if r.BookingID == bookingID {
+			res = append(res, r)
+		}
+	}
+	return res, nil
+}
+
+func (s *e2eAssistanceStore) ListStaffQueue(ctx context.Context, filter assistance.ListFilter) ([]assistance.StaffQueueItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var res []assistance.StaffQueueItem
+	for _, r := range s.requests {
+		if filter.Department != "" && string(r.Department) != filter.Department {
+			continue
+		}
+		if filter.Status != "" && string(r.Status) != filter.Status {
+			continue
+		}
+		if filter.BookingID != "" && r.BookingID != filter.BookingID {
+			continue
+		}
+		res = append(res, assistance.StaffQueueItem{
+			SpecialRequest: r,
+			GuestName:      s.tx.booking.GuestName,
+			RoomNumbers:    s.tx.rooms,
+			CheckInDate:    s.tx.booking.CheckIn.Format("2006-01-02"),
+			CheckOutDate:   s.tx.booking.CheckOut.Format("2006-01-02"),
+		})
+	}
+	return res, nil
+}
+
+func (s *e2eAssistanceStore) UpdateStatus(ctx context.Context, reqID string, toStatus assistance.Status, notes string, handledBy string, handledAt time.Time) (*assistance.SpecialRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, r := range s.requests {
+		if r.ID == reqID {
+			s.requests[i].Status = toStatus
+			s.requests[i].StaffNotes = notes
+			s.requests[i].HandledBy = handledBy
+			s.requests[i].HandledAt = &handledAt
+			s.requests[i].UpdatedAt = handledAt
+			res := s.requests[i]
+			return &res, nil
+		}
+	}
+	return nil, assistance.ErrRequestNotFound
+}
+
+func (s *e2eAssistanceStore) GetBookingOwner(ctx context.Context, bookingID string) (guestEmail string, exists bool, err error) {
+	if bookingID == "bk-other-guest-unowned" {
+		return "stranger@example.com", true, nil
+	}
+	return s.tx.booking.GuestEmail, true, nil
+}
+
 func newE2EFeatureFlagManager() featureflag.Manager {
 	flags := map[string]featureflag.Flag{
 		"ff_catalog_write":                {Key: "ff_catalog_write", Enabled: true, AllowedRoles: []string{"revenue_mgr", "gm_admin"}},
@@ -744,6 +840,7 @@ func newE2EFeatureFlagManager() featureflag.Manager {
 		"ff_room_readiness_checkin_guard": {Key: "ff_room_readiness_checkin_guard", Enabled: true},
 		"ff_front_desk_operations":        {Key: "ff_front_desk_operations", Enabled: true},
 		"ff_stay_modification":            {Key: "ff_stay_modification", Enabled: true},
+		"ff_guest_special_requests":       {Key: "ff_guest_special_requests", Enabled: true},
 	}
 	return featureflag.NewMemoryManager(flags)
 }
@@ -778,6 +875,8 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "finance", "/api/v1/finance/reconciliations", "GET"},
 		{"p", "receptionist", "/api/v1/front-desk/*", "*"},
 		{"p", "housekeeping", "/api/v1/front-desk/daily-roster", "GET"},
+		{"p", "housekeeping", "/api/v1/front-desk/special-requests", "GET"},
+		{"p", "housekeeping", "/api/v1/front-desk/special-requests/:id/status", "PUT"},
 		{"p", "revenue_mgr", "/api/v1/front-desk/daily-roster", "GET"},
 		{"p", "finance", "/api/v1/front-desk/daily-roster", "GET"},
 		{"p", "receptionist", "/api/v1/bookings/:id/room-move", "POST"},
@@ -867,6 +966,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.stayStore = stayStore
 	staySvc := stay.NewService(stayStore, rateEngine, nil)
 
+	astStore := newE2EAssistanceStore(tx)
+	tx.assistanceStore = astStore
+	astSvc := assistance.NewService(astStore, nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:      bkSvc,
 		InvStore:        inv,
@@ -881,6 +984,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		HousekeepingSvc: hkSvc,
 		FrontDeskSvc:    fdSvc,
 		StaySvc:         staySvc,
+		AssistanceSvc:   astSvc,
 		FeatureFlag:     newE2EFeatureFlagManager(),
 		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
@@ -3041,6 +3145,129 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		resSearch2, err := client.Do(reqSearch2)
 		if err != nil || resSearch2.StatusCode != http.StatusOK {
 			t.Fatalf("restored search status = %d, want 200 OK", resSearch2.StatusCode)
+		}
+	})
+
+	var specialRequestID string
+	var assistGuestSessionToken string
+
+	// 62. Guest submits structured special request (auto-routed to housekeeping)
+	t.Run("E2E-62: Guest submits special request & auto-routes to Housekeeping (201 Created)", func(t *testing.T) {
+		targetEmail := tx.booking.GuestEmail
+		targetBookingID := tx.booking.ID
+
+		// 1. Dapatkan sesi aktif tamu via challenge & verify (reset cooldown dari tes sebelumnya)
+		delete(tx.guestStore.challenges, targetEmail)
+		chalRes, _ := client.Post(srv.URL+"/api/v1/auth/guest/challenge", "application/json", strings.NewReader(fmt.Sprintf(`{"email":"%s"}`, targetEmail)))
+		if chalRes.StatusCode != http.StatusOK {
+			t.Fatalf("challenge failed: %d", chalRes.StatusCode)
+		}
+		verBody, _ := json.Marshal(map[string]string{"email": targetEmail, "code": tx.otpNotifier.lastOTP})
+		verRes, _ := client.Post(srv.URL+"/api/v1/auth/guest/verify", "application/json", bytes.NewReader(verBody))
+		var verResp map[string]any
+		_ = json.NewDecoder(verRes.Body).Decode(&verResp)
+		assistGuestSessionToken = verResp["token"].(string)
+
+		// 2. Submit special request
+		reqPayload := `{"category":"celebration_setup","description":"Anniversary ke-5, mohon handuk angsa dan kartu ucapan","target_time":"15:00"}`
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/guest/bookings/"+targetBookingID+"/special-requests", strings.NewReader(reqPayload))
+		req.Header.Set("Authorization", "Bearer "+assistGuestSessionToken)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		b, _ := io.ReadAll(res.Body)
+		if err != nil || res.StatusCode != http.StatusCreated {
+			t.Fatalf("submit special request status = %d, want 201 Created, body: %s", res.StatusCode, string(b))
+		}
+
+		var created assistance.SpecialRequest
+		_ = json.NewDecoder(bytes.NewReader(b)).Decode(&created)
+		if created.Department != assistance.DepartmentHousekeeping {
+			t.Errorf("expected department housekeeping, got %s", created.Department)
+		}
+		if created.Status != assistance.StatusPending {
+			t.Errorf("expected status pending, got %s", created.Status)
+		}
+		specialRequestID = created.ID
+	})
+
+	// 63. Anti-IDOR Defense on Guest Special Requests
+	t.Run("E2E-63: Guest special request Anti-IDOR defense (404 Not Found)", func(t *testing.T) {
+		reqPayload := `{"category":"baby_crib","description":"Boks bayi untuk balita"}`
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/guest/bookings/bk-other-guest-unowned/special-requests", strings.NewReader(reqPayload))
+		req.Header.Set("Authorization", "Bearer "+assistGuestSessionToken)
+		req.Header.Set("Content-Type", "application/json")
+		res, _ := client.Do(req)
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found for unowned booking IDOR attempt, got %d", res.StatusCode)
+		}
+	})
+
+	// 64. Staff inspects departmental special requests queue & RBAC isolation
+	t.Run("E2E-64: Staff inspects departmental special requests queue & RBAC isolation (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest akses queue staf -> 403 Forbidden
+		reqGuest, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/special-requests", nil)
+		resGuest, _ := client.Do(reqGuest)
+		if resGuest.StatusCode != http.StatusForbidden {
+			t.Errorf("guest accessing staff queue status = %d, want 403 Forbidden", resGuest.StatusCode)
+		}
+
+		// 2. Housekeeping staf akses queue -> 200 OK
+		reqHK, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/special-requests?department=housekeeping", nil)
+		reqHK.Header.Set("Authorization", "Bearer housekeeping")
+		resHK, err := client.Do(reqHK)
+		if err != nil || resHK.StatusCode != http.StatusOK {
+			t.Fatalf("housekeeping queue status = %d, want 200 OK", resHK.StatusCode)
+		}
+
+		var queueResp struct {
+			Items []assistance.StaffQueueItem `json:"items"`
+			Total int                         `json:"total"`
+		}
+		_ = json.NewDecoder(resHK.Body).Decode(&queueResp)
+		if queueResp.Total == 0 || len(queueResp.Items) == 0 {
+			t.Fatalf("expected at least 1 item in housekeeping queue, got 0")
+		}
+		if queueResp.Items[0].ID != specialRequestID {
+			t.Errorf("expected request ID %s in queue, got %s", specialRequestID, queueResp.Items[0].ID)
+		}
+	})
+
+	// 65. Housekeeping fulfills guest special request & Guest sees updated status
+	t.Run("E2E-65: Housekeeping fulfills special request & guest views fulfillment (200 OK)", func(t *testing.T) {
+		targetBookingID := tx.booking.ID
+
+		// 1. Housekeeping update status to fulfilled
+		updatePayload := `{"to_status":"fulfilled","staff_notes":"Handuk angsa dan kartu ucapan selamat anniversary telah siap di kamar 201"}`
+		reqUpdate, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/front-desk/special-requests/"+specialRequestID+"/status", strings.NewReader(updatePayload))
+		reqUpdate.Header.Set("Authorization", "Bearer housekeeping")
+		reqUpdate.Header.Set("Content-Type", "application/json")
+		resUpdate, err := client.Do(reqUpdate)
+		if err != nil || resUpdate.StatusCode != http.StatusOK {
+			t.Fatalf("housekeeping fulfill status = %d, want 200 OK", resUpdate.StatusCode)
+		}
+
+		// 2. Tamu memeriksa status permohonan di My Bookings -> 200 OK status fulfilled
+		reqGuestList, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/"+targetBookingID+"/special-requests", nil)
+		reqGuestList.Header.Set("Authorization", "Bearer "+assistGuestSessionToken)
+		resGuestList, err := client.Do(reqGuestList)
+		if err != nil || resGuestList.StatusCode != http.StatusOK {
+			t.Fatalf("guest list requests status = %d, want 200 OK", resGuestList.StatusCode)
+		}
+
+		var guestListResp struct {
+			BookingID string                      `json:"booking_id"`
+			Requests  []assistance.SpecialRequest `json:"requests"`
+		}
+		_ = json.NewDecoder(resGuestList.Body).Decode(&guestListResp)
+		if len(guestListResp.Requests) == 0 {
+			t.Fatalf("expected at least 1 request in guest list, got 0")
+		}
+		reqItem := guestListResp.Requests[0]
+		if reqItem.Status != assistance.StatusFulfilled {
+			t.Errorf("expected request status fulfilled, got %s", reqItem.Status)
+		}
+		if !strings.Contains(reqItem.StaffNotes, "selamat anniversary") {
+			t.Errorf("expected staff notes containing 'selamat anniversary', got %s", reqItem.StaffNotes)
 		}
 	})
 }

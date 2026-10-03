@@ -107,6 +107,7 @@ type PublicDTO struct {
 }
 
 // ToPublicDTO menyaring field sensitif (nama, email, telepon, guest_token) untuk akses unauthenticated.
+// BE-R02: Menyaring juga SpecialRequests dan EstimatedArrivalTime agar data preferensi/kesehatan pribadi tamu tidak bocor ke publik.
 func (b Booking) ToPublicDTO() PublicDTO {
 	return PublicDTO{
 		ID:                   b.ID,
@@ -115,8 +116,8 @@ func (b Booking) ToPublicDTO() PublicDTO {
 		CheckOut:             b.CheckOut,
 		NumRooms:             b.NumRooms,
 		Status:               b.Status,
-		EstimatedArrivalTime: b.EstimatedArrivalTime,
-		SpecialRequests:      b.SpecialRequests,
+		EstimatedArrivalTime: "",
+		SpecialRequests:      "",
 		ExpiresAt:            b.ExpiresAt,
 		CreatedAt:            b.CreatedAt,
 	}
