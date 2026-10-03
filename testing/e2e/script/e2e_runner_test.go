@@ -17,6 +17,7 @@ import (
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/finance"
+	"github.com/example/hotel-booking/internal/frontdesk"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
@@ -32,13 +33,14 @@ type e2eIncrementCall struct {
 }
 
 type e2eTxMock struct {
-	booking       booking.Booking
-	rooms         []string
-	increments    []e2eIncrementCall
-	otpNotifier   *e2eOTPNotifier
-	guestStore    *e2eGuestStore
-	finStore      *e2eFinanceStore
-	hkStore       *e2eHousekeepingStore
+	booking        booking.Booking
+	rooms          []string
+	increments     []e2eIncrementCall
+	otpNotifier    *e2eOTPNotifier
+	guestStore     *e2eGuestStore
+	finStore       *e2eFinanceStore
+	hkStore        *e2eHousekeepingStore
+	frontdeskStore *e2eFrontDeskStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -506,6 +508,107 @@ func (s *e2eHousekeepingStore) DeductInventoryForOOO(ctx context.Context, roomTy
 	return nil
 }
 
+type e2eFrontDeskStore struct {
+	tx    *e2eTxMock
+	notes []frontdesk.HandoverNote
+}
+
+func newE2EFrontDeskStore(tx *e2eTxMock) *e2eFrontDeskStore {
+	return &e2eFrontDeskStore{
+		tx: tx,
+	}
+}
+
+func (s *e2eFrontDeskStore) GetDailyRoster(ctx context.Context, targetDate time.Time) (*frontdesk.DailyRoster, error) {
+	occupied := 0
+	if s.tx.booking.Status == booking.StatusCheckedIn {
+		occupied = s.tx.booking.NumRooms
+	}
+	ooo := 0
+	clean := 0
+	dirty := 0
+	inspected := 0
+	if s.tx.hkStore != nil {
+		for _, r := range s.tx.hkStore.rooms {
+			switch r.CleanlinessStatus {
+			case housekeeping.StatusOutOfOrder:
+				ooo++
+			case housekeeping.StatusOccupied:
+				occupied++
+			case housekeeping.StatusInspected:
+				inspected++
+			case housekeeping.StatusVacantClean:
+				clean++
+			case housekeeping.StatusVacantDirty:
+				dirty++
+			}
+		}
+	}
+	sellable := 95 - ooo
+	occRate := 0.0
+	if sellable > 0 {
+		occRate = (float64(occupied) / float64(sellable)) * 100.0
+	}
+
+	return &frontdesk.DailyRoster{
+		Date: targetDate.Format("2006-01-02"),
+		Metrics: frontdesk.RosterMetrics{
+			TotalRooms:           95,
+			SellableRooms:        sellable,
+			OutOfOrderRooms:      ooo,
+			OccupiedRooms:        occupied,
+			VacantInspectedRooms: inspected,
+			VacantDirtyRooms:     dirty,
+			CleaningRooms:        clean,
+			OccupancyRatePercent: occRate,
+		},
+		ExpectedArrivals: []frontdesk.ExpectedArrivalItem{
+			{
+				BookingID:            s.tx.booking.ID,
+				GuestName:            s.tx.booking.GuestName,
+				GuestPhone:           s.tx.booking.GuestPhone,
+				RoomTypeID:           s.tx.booking.RoomTypeID,
+				RoomTypeName:         "Superior King",
+				AssignedRooms:        s.tx.rooms,
+				NumRooms:             s.tx.booking.NumRooms,
+				NumGuests:            s.tx.booking.NumGuests,
+				EstimatedArrivalTime: "14:00",
+				SpecialRequests:      "Quiet high floor room",
+				TotalPriceMinor:      s.tx.booking.TotalPriceMinor,
+			},
+		},
+		ExpectedDepartures: []frontdesk.ExpectedDepartureItem{
+			{
+				BookingID:    s.tx.booking.ID,
+				GuestName:    s.tx.booking.GuestName,
+				RoomNumbers:  s.tx.rooms,
+				CheckInDate:  s.tx.booking.CheckIn.Format("2006-01-02"),
+				CheckOutDate: s.tx.booking.CheckOut.Format("2006-01-02"),
+			},
+		},
+		InHouseCount: occupied,
+	}, nil
+}
+
+func (s *e2eFrontDeskStore) CreateHandoverNote(ctx context.Context, note *frontdesk.HandoverNote) error {
+	note.ID = fmt.Sprintf("hnd-e2e-%03d", len(s.notes)+1)
+	note.CreatedAt = time.Now().UTC()
+	s.notes = append([]frontdesk.HandoverNote{*note}, s.notes...)
+	return nil
+}
+
+func (s *e2eFrontDeskStore) ListHandoverNotes(ctx context.Context, limit, offset int) ([]frontdesk.HandoverNote, int, error) {
+	total := len(s.notes)
+	if offset >= total {
+		return []frontdesk.HandoverNote{}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return s.notes[offset:end], total, nil
+}
+
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
 
@@ -534,6 +637,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "finance", "/api/v1/finance/cases", "GET"},
 		{"p", "finance", "/api/v1/finance/cases/:id/resolve", "POST"},
 		{"p", "finance", "/api/v1/finance/reconciliations", "GET"},
+		{"p", "receptionist", "/api/v1/front-desk/*", "*"},
+		{"p", "housekeeping", "/api/v1/front-desk/daily-roster", "GET"},
+		{"p", "revenue_mgr", "/api/v1/front-desk/daily-roster", "GET"},
+		{"p", "finance", "/api/v1/front-desk/daily-roster", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
 		{"g", "revenue_mgr", "guest"},
@@ -609,6 +716,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.hkStore = hkStore
 	hkSvc := housekeeping.NewService(hkStore, nil)
 
+	fdStore := newE2EFrontDeskStore(tx)
+	tx.frontdeskStore = fdStore
+	fdSvc := frontdesk.NewService(fdStore, nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:      bkSvc,
 		InvStore:        inv,
@@ -621,6 +732,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		GuestSvc:        guestSvc,
 		FinanceSvc:      finSvc,
 		HousekeepingSvc: hkSvc,
+		FrontDeskSvc:    fdSvc,
 		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
@@ -2346,6 +2458,207 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		room203, _ := tx.hkStore.GetRoom(context.Background(), "203")
 		if room203.CleanlinessStatus != housekeeping.StatusOutOfOrder {
 			t.Errorf("room 203 status = %v, want out_of_order", room203.CleanlinessStatus)
+		}
+	})
+
+	// 52. Front Desk Daily Operations Roster Query & Multi-Role RBAC (FR-FDR-01, FR-FDR-02)
+	t.Run("E2E-52: Front Desk Daily Operations Roster Query & Multi-Role RBAC (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest mencoba akses roster -> 403 Forbidden
+		reqGuest, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster", nil)
+		resGuest, err := client.Do(reqGuest)
+		if err != nil {
+			t.Fatalf("guest roster request failed: %v", err)
+		}
+		if resGuest.StatusCode != http.StatusForbidden {
+			t.Errorf("guest roster status = %d, want 403 Forbidden", resGuest.StatusCode)
+		}
+
+		// 2. Receptionist akses roster -> 200 OK
+		reqRecep, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster", nil)
+		reqRecep.Header.Set("Authorization", "Bearer receptionist")
+		resRecep, err := client.Do(reqRecep)
+		if err != nil {
+			t.Fatalf("receptionist roster request failed: %v", err)
+		}
+		if resRecep.StatusCode != http.StatusOK {
+			t.Fatalf("receptionist roster status = %d, want 200 OK", resRecep.StatusCode)
+		}
+
+		var rosterResp map[string]any
+		_ = json.NewDecoder(resRecep.Body).Decode(&rosterResp)
+		if rosterResp["date"] == "" {
+			t.Error("expected non-empty date")
+		}
+		metrics, ok := rosterResp["metrics"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected metrics object in response, got %v", rosterResp["metrics"])
+		}
+		if metrics["total_rooms"] != float64(95) {
+			t.Errorf("total_rooms = %v, want 95", metrics["total_rooms"])
+		}
+		if metrics["sellable_rooms"] != float64(94) { // kamar 203 berstatus OOO di E2E-51
+			t.Errorf("sellable_rooms = %v, want 94", metrics["sellable_rooms"])
+		}
+		if metrics["out_of_order_rooms"] != float64(1) {
+			t.Errorf("out_of_order_rooms = %v, want 1", metrics["out_of_order_rooms"])
+		}
+
+		// 3. Housekeeping akses roster -> 200 OK
+		reqHK, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster", nil)
+		reqHK.Header.Set("Authorization", "Bearer housekeeping")
+		resHK, err := client.Do(reqHK)
+		if err != nil {
+			t.Fatalf("housekeeping roster request failed: %v", err)
+		}
+		if resHK.StatusCode != http.StatusOK {
+			t.Errorf("housekeeping roster status = %d, want 200 OK", resHK.StatusCode)
+		}
+
+		// 4. Revenue Manager akses roster -> 200 OK
+		reqRev, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster", nil)
+		reqRev.Header.Set("Authorization", "Bearer revenue_mgr")
+		resRev, err := client.Do(reqRev)
+		if err != nil {
+			t.Fatalf("revenue_mgr roster request failed: %v", err)
+		}
+		if resRev.StatusCode != http.StatusOK {
+			t.Errorf("revenue_mgr roster status = %d, want 200 OK", resRev.StatusCode)
+		}
+	})
+
+	// 53. Front Desk Daily Roster Forecast Date Query & Validation (FR-FDR-01)
+	t.Run("E2E-53: Front Desk Daily Roster Forecast Date Query & Validation (200 OK & 400 Bad Request)", func(t *testing.T) {
+		// 1. Format tanggal salah -> 400 Bad Request
+		reqBadDate, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster?date=10-10-2026", nil)
+		reqBadDate.Header.Set("Authorization", "Bearer receptionist")
+		resBadDate, err := client.Do(reqBadDate)
+		if err != nil {
+			t.Fatalf("bad date request failed: %v", err)
+		}
+		if resBadDate.StatusCode != http.StatusBadRequest {
+			t.Errorf("bad date status = %d, want 400 Bad Request", resBadDate.StatusCode)
+		}
+
+		// 2. Format tanggal valid YYYY-MM-DD -> 200 OK
+		reqValidDate, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/daily-roster?date=2026-10-10", nil)
+		reqValidDate.Header.Set("Authorization", "Bearer receptionist")
+		resValidDate, err := client.Do(reqValidDate)
+		if err != nil {
+			t.Fatalf("valid date request failed: %v", err)
+		}
+		if resValidDate.StatusCode != http.StatusOK {
+			t.Fatalf("valid date status = %d, want 200 OK", resValidDate.StatusCode)
+		}
+
+		var dateResp map[string]any
+		_ = json.NewDecoder(resValidDate.Body).Decode(&dateResp)
+		if dateResp["date"] != "2026-10-10" {
+			t.Errorf("date = %v, want 2026-10-10", dateResp["date"])
+		}
+	})
+
+	// 54. Front Desk Record Shift Handover Note (FR-FDR-03)
+	t.Run("E2E-54: Front Desk Record Shift Handover Note (201 Created, 400 Bad Request, & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest mencoba catat serah terima shift -> 403 Forbidden
+		bodyNote := `{"shift":"morning","cash_float_minor":1500000,"pending_issues":"Kunci kamar 201 perlu baterai baru","vip_guest_notes":"VIP Mr. Tan check-in jam 14.00"}`
+		reqGuestNote, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/front-desk/handover-notes", bytes.NewBufferString(bodyNote))
+		reqGuestNote.Header.Set("Content-Type", "application/json")
+		resGuestNote, _ := client.Do(reqGuestNote)
+		if resGuestNote.StatusCode != http.StatusForbidden {
+			t.Errorf("guest handover note status = %d, want 403 Forbidden", resGuestNote.StatusCode)
+		}
+
+		// 2. Resepsionis kirim input shift tidak valid -> 400 Bad Request
+		bodyInvalidShift := `{"shift":"evening","cash_float_minor":1500000,"pending_issues":"Issue"}`
+		reqInvalidShift, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/front-desk/handover-notes", bytes.NewBufferString(bodyInvalidShift))
+		reqInvalidShift.Header.Set("Authorization", "Bearer receptionist")
+		reqInvalidShift.Header.Set("Content-Type", "application/json")
+		resInvalidShift, _ := client.Do(reqInvalidShift)
+		if resInvalidShift.StatusCode != http.StatusBadRequest {
+			t.Errorf("invalid shift status = %d, want 400 Bad Request", resInvalidShift.StatusCode)
+		}
+
+		// 3. Resepsionis kirim catatan kosong -> 400 Bad Request
+		bodyEmptyNote := `{"shift":"morning","cash_float_minor":1500000,"pending_issues":"","vip_guest_notes":""}`
+		reqEmptyNote, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/front-desk/handover-notes", bytes.NewBufferString(bodyEmptyNote))
+		reqEmptyNote.Header.Set("Authorization", "Bearer receptionist")
+		reqEmptyNote.Header.Set("Content-Type", "application/json")
+		resEmptyNote, _ := client.Do(reqEmptyNote)
+		if resEmptyNote.StatusCode != http.StatusBadRequest {
+			t.Errorf("empty note status = %d, want 400 Bad Request", resEmptyNote.StatusCode)
+		}
+
+		// 4. Resepsionis sukses mencatat shift serah terima pagi -> 201 Created
+		reqValidNote, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/front-desk/handover-notes", bytes.NewBufferString(bodyNote))
+		reqValidNote.Header.Set("Authorization", "Bearer receptionist")
+		reqValidNote.Header.Set("Content-Type", "application/json")
+		resValidNote, err := client.Do(reqValidNote)
+		if err != nil {
+			t.Fatalf("valid note request failed: %v", err)
+		}
+		if resValidNote.StatusCode != http.StatusCreated {
+			t.Fatalf("valid note status = %d, want 201 Created", resValidNote.StatusCode)
+		}
+
+		var createdResp map[string]any
+		_ = json.NewDecoder(resValidNote.Body).Decode(&createdResp)
+		createdNote, ok := createdResp["note"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected note object in response, got %v", createdResp)
+		}
+		if createdNote["id"] == "" {
+			t.Error("expected non-empty handover note ID")
+		}
+		if createdNote["shift"] != "morning" {
+			t.Errorf("shift = %v, want morning", createdNote["shift"])
+		}
+		if createdNote["actor_role"] != "receptionist" {
+			t.Errorf("actor_role = %v, want receptionist", createdNote["actor_role"])
+		}
+	})
+
+	// 55. Front Desk List Shift Handover Notes History (FR-FDR-03)
+	t.Run("E2E-55: Front Desk List Shift Handover Notes History (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Resepsionis catat shift kedua (afternoon)
+		bodyAfternoon := `{"shift":"afternoon","cash_float_minor":1500000,"pending_issues":"Kunci 201 fixed","vip_guest_notes":"Mr. Tan in-house"}`
+		reqAfternoon, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/front-desk/handover-notes", bytes.NewBufferString(bodyAfternoon))
+		reqAfternoon.Header.Set("Authorization", "Bearer receptionist")
+		reqAfternoon.Header.Set("Content-Type", "application/json")
+		resAfternoon, _ := client.Do(reqAfternoon)
+		if resAfternoon.StatusCode != http.StatusCreated {
+			t.Fatalf("afternoon note status = %d, want 201 Created", resAfternoon.StatusCode)
+		}
+
+		// 2. Resepsionis baca riwayat handover logbook -> 200 OK
+		reqList, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/handover-notes?limit=10&offset=0", nil)
+		reqList.Header.Set("Authorization", "Bearer receptionist")
+		resList, err := client.Do(reqList)
+		if err != nil {
+			t.Fatalf("list notes request failed: %v", err)
+		}
+		if resList.StatusCode != http.StatusOK {
+			t.Fatalf("list notes status = %d, want 200 OK", resList.StatusCode)
+		}
+
+		var listResp map[string]any
+		_ = json.NewDecoder(resList.Body).Decode(&listResp)
+		if listResp["total"] != float64(2) {
+			t.Errorf("total notes = %v, want 2", listResp["total"])
+		}
+		notesList, ok := listResp["notes"].([]any)
+		if !ok || len(notesList) != 2 {
+			t.Fatalf("notes count = %v, want 2", len(notesList))
+		}
+
+		// 3. Housekeeping mencoba baca catatan serah terima shift meja depan -> 403 Forbidden
+		reqHKNotes, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/handover-notes", nil)
+		reqHKNotes.Header.Set("Authorization", "Bearer housekeeping")
+		resHKNotes, err := client.Do(reqHKNotes)
+		if err != nil {
+			t.Fatalf("housekeeping list notes failed: %v", err)
+		}
+		if resHKNotes.StatusCode != http.StatusForbidden {
+			t.Errorf("housekeeping list notes status = %d, want 403 Forbidden", resHKNotes.StatusCode)
 		}
 	})
 }
