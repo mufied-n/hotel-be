@@ -2620,3 +2620,93 @@ func TestCatalog_RateEngine_DynamicAndSearchGuard_R09(t *testing.T) {
 		}
 	})
 }
+
+func TestCalculateQuote_BreakfastMultiRoomAndChildTiers_R10(t *testing.T) {
+	catStore := catalog.NewMemoryStore([]catalog.RoomVariant{
+		{
+			ID:             "01900000-0000-7000-8000-000000000001",
+			Code:           "sup-king",
+			Name:           "Superior King",
+			MaxCapacity:    3,
+			MaxAdults:      2,
+			MaxChildren:    2,
+			BasePriceMinor: 500_000,
+		},
+		{
+			ID:             "01900000-0000-7000-8000-000000000006",
+			Code:           "jste-suite",
+			Name:           "Junior Suite",
+			MaxCapacity:    5,
+			MaxAdults:      3,
+			MaxChildren:    3,
+			BasePriceMinor: 1_500_000,
+		},
+	})
+
+	rateEng := rates.NewEngine(nil, 1.0)
+	rateEng.SetBaseRateSource(catStore)
+
+	handler := NewRouter(Deps{
+		StaffAuth:    TestStaffVerifier(),
+		Enforcer:     auth.DefaultTestEnforcer(),
+		CatalogStore: catStore,
+		RateEngine:   rateEng,
+		RateSvc:      rateEng,
+	})
+
+	t.Run("Multi-room Bed & Breakfast: 2 rooms, 4 adults, 1 night (no double count)", func(t *testing.T) {
+		body := `{"room_type_id":"01900000-0000-7000-8000-000000000001","rate_plan_code":"bed_and_breakfast","check_in":"2026-10-14","check_out":"2026-10-15","num_rooms":2,"adults":4,"children":0}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var lq rates.LockedQuote
+		_ = json.Unmarshal(rec.Body.Bytes(), &lq)
+		// 2 rooms * 500k = 1M subtotal
+		if lq.Pricing.RoomSubtotalMinor != 1_000_000 {
+			t.Errorf("subtotal = %d, want 1_000_000", lq.Pricing.RoomSubtotalMinor)
+		}
+		// 4 adults * 100k * 1 night = 400k (NOT 800k!)
+		if lq.Pricing.BreakfastChargeMinor != 400_000 {
+			t.Errorf("breakfast = %d, want 400_000", lq.Pricing.BreakfastChargeMinor)
+		}
+		// Tax = (1M + 400k) * 10% = 140k -> Total = 1.54M
+		if lq.Pricing.TotalPriceMinor != 1_540_000 {
+			t.Errorf("total = %d, want 1_540_000", lq.Pricing.TotalPriceMinor)
+		}
+	})
+
+	t.Run("Family Child Tiers: 2 adults, toddler (4), child (8), teen (14), 2 nights", func(t *testing.T) {
+		body := `{"room_type_id":"01900000-0000-7000-8000-000000000006","rate_plan_code":"bed_and_breakfast","check_in":"2026-10-14","check_out":"2026-10-16","num_rooms":1,"adults":2,"children":3,"child_ages":[4,8,14]}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var lq rates.LockedQuote
+		_ = json.Unmarshal(rec.Body.Bytes(), &lq)
+		// 2 nights * 1.5M = 3M subtotal
+		if lq.Pricing.RoomSubtotalMinor != 3_000_000 {
+			t.Errorf("subtotal = %d, want 3_000_000", lq.Pricing.RoomSubtotalMinor)
+		}
+		// Daily breakfast: 2*100k (adults) + 0 (4yo) + 50k (8yo) + 100k (14yo) = 350k
+		// 2 nights: 700k
+		if lq.Pricing.BreakfastChargeMinor != 700_000 {
+			t.Errorf("breakfast = %d, want 700_000", lq.Pricing.BreakfastChargeMinor)
+		}
+		// Tax = (3M + 700k) * 10% = 370k -> Total = 4.07M
+		if lq.Pricing.TotalPriceMinor != 4_070_000 {
+			t.Errorf("total = %d, want 4_070_000", lq.Pricing.TotalPriceMinor)
+		}
+		if lq.Adults != 2 || lq.Children != 3 || len(lq.ChildAges) != 3 {
+			t.Errorf("snapshot guest breakdown mismatch: adults=%d, children=%d, child_ages=%v", lq.Adults, lq.Children, lq.ChildAges)
+		}
+	})
+}

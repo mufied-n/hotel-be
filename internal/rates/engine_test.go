@@ -148,6 +148,90 @@ func TestCalculateLockedQuote_Scenarios(t *testing.T) {
 			},
 			wantErr: ErrInvalidRatePlan,
 		},
+		{
+			name: "Multi-room: 2 rooms, 4 adults, 2 nights (BE-R10 no double counting)",
+			req: QuoteRequest{
+				RoomTypeID:   "01900000-0000-7000-8000-000000000001",
+				RatePlanCode: "bed_and_breakfast",
+				CheckIn:      date("2026-10-10"),
+				CheckOut:     date("2026-10-12"), // 2 nights
+				NumRooms:     2,
+				Adults:       4,
+				Children:     0,
+			},
+			wantSubtotal:  2_200_000,
+			wantBreakfast: 800_000, // 4 adults * 2 nights * 100k (not multiplied by 2 rooms!)
+			wantDiscount:  0,
+			wantTax:       300_000, // 10% of 3M
+			wantTotal:     3_300_000,
+			wantPlan:      "bed_and_breakfast",
+			wantPolicy:    "flexible_48h",
+		},
+		{
+			name: "Multi-room: 3 rooms, 6 adults, 1 night (BE-R10)",
+			req: QuoteRequest{
+				RoomTypeID:   "01900000-0000-7000-8000-000000000001",
+				RatePlanCode: "bed_and_breakfast",
+				CheckIn:      date("2026-10-10"),
+				CheckOut:     date("2026-10-11"), // 1 night
+				NumRooms:     3,
+				Adults:       6,
+				Children:     0,
+			},
+			wantSubtotal:  1_650_000,
+			wantBreakfast: 600_000, // 6 adults * 1 night * 100k = 600k
+			wantDiscount:  0,
+			wantTax:       225_000, // 10% of 2.25M
+			wantTotal:     2_475_000,
+			wantPlan:      "bed_and_breakfast",
+			wantPolicy:    "flexible_48h",
+		},
+		{
+			name: "Family with Child Tiers: 2 adults, toddler (4yo), child (8yo), teen (14yo) (BE-R10)",
+			req: QuoteRequest{
+				RoomTypeID:   "01900000-0000-7000-8000-000000000001",
+				RatePlanCode: "bed_and_breakfast",
+				CheckIn:      date("2026-10-10"),
+				CheckOut:     date("2026-10-12"), // 2 nights
+				NumRooms:     1,
+				Adults:       2,
+				Children:     3,
+				ChildAges:    []int{4, 8, 14},
+			},
+			// Per night: 2*100k (adults) + 0 (4yo) + 50k (8yo) + 100k (14yo) = 350k
+			// 2 nights: 700k
+			// Subtotal: 550k * 2 = 1.1M
+			// Taxable: 1.1M + 700k = 1.8M -> Tax 10% = 180k -> Total = 1.98M
+			wantSubtotal:  1_100_000,
+			wantBreakfast: 700_000,
+			wantDiscount:  0,
+			wantTax:       180_000,
+			wantTotal:     1_980_000,
+			wantPlan:      "bed_and_breakfast",
+			wantPolicy:    "flexible_48h",
+		},
+		{
+			name: "Children without child_ages fallback to 50% rate (BE-R10)",
+			req: QuoteRequest{
+				RoomTypeID:   "01900000-0000-7000-8000-000000000001",
+				RatePlanCode: "bed_and_breakfast",
+				CheckIn:      date("2026-10-10"),
+				CheckOut:     date("2026-10-11"), // 1 night
+				NumRooms:     1,
+				Adults:       2,
+				Children:     2,
+			},
+			// Per night: 2*100k + 2*50k = 300k
+			// Subtotal: 550k
+			// Taxable: 850k -> Tax 10% = 85k -> Total = 935k
+			wantSubtotal:  550_000,
+			wantBreakfast: 300_000,
+			wantDiscount:  0,
+			wantTax:       85_000,
+			wantTotal:     935_000,
+			wantPlan:      "bed_and_breakfast",
+			wantPolicy:    "flexible_48h",
+		},
 	}
 
 	for _, tt := range tests {

@@ -76,7 +76,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R10 — Makna num_guests menyebabkan biaya sarapan ambigu
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G04/05; F01/F09.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03, lihat [laporan E2E](../../testing/e2e/report/2026-10-03-223500-breakfast-pricing-guest-tiers-r10-e2e-report.md)). **Hubungan:** BE-G04/05; F01/F09.
 
 **Bukti source.** [rates/engine.go](../../internal/rates/engine.go):230 menghitung `100000 × numGuests × nights × numRooms`. Search memakai adults/children total untuk semua kamar, sedangkan create/quote memakai num_guests tanpa distribusi atau pembeda dewasa/anak. Komentar biaya menyebut per orang dewasa.
 

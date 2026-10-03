@@ -23,7 +23,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R07 | P1 (RESOLVED 2026-10-03, catalog room capacity invariant on search/quote/checkout) | [Kapasitas search belum menjadi invariant checkout](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G03; F01/F08 |
 | BE-R08 | P1 | **RESOLVED 2026-10-03** (klaim atomik; risiko residual crash setelah commit, lihat laporan) — [Idempotency checkout masih lookup-create-save](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G09; F01/F05 |
 | BE-R09 | P1 (RESOLVED 2026-10-03, catalog CRUD rate sync & search pricing guard) | [Harga katalog CRUD tidak menjadi sumber rate engine](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G01/04/05; F08/F09 |
-| BE-R10 | P1 | [Makna num_guests menyebabkan biaya sarapan ambigu](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G04/05; F01/F09 |
+| BE-R10 | P1 (RESOLVED 2026-10-03, multi-room breakfast parity & child tiers) | [Makna num_guests menyebabkan biaya sarapan ambigu](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G04/05; F01/F09 |
 | BE-R11 | P1 | [Quote hanya tersimpan pada memori satu instance](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06; F01/F05 |
 | BE-R12 | P1 (RESOLVED 2026-10-03, WIB timezone alignment) | [Deadline pembatalan memakai UTC ketika kebijakan menyebut WIB](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G08/19; F06/F13 |
 | BE-R13 | P1 | [Gateway timeout dianggap gagal pasti dan ledger error diabaikan](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F05/F14 |
@@ -39,7 +39,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 |---|---|---|
 | BE-G01/G02 | Katalog tujuh varian, CRUD, horizon dan pencarian multi-malam tersedia | IMPLEMENTED IN PART; rate/catalog identity dan channel/maintenance masih terpisah |
 | BE-G03 | Date/LOS/room-count dan kapasitas agregat search ditambahkan | RESOLVED 2026-10-03; kapasitas katalog ditegakkan konsisten di search, quote, create (BE-R07) |
-| BE-G04/G05 | Room Only/Breakfast, promo 15%, breakdown, IDR integer rupiah tersedia | PARTIAL; ambiguity breakfast/rate ownership (BE-R09/R10) |
+| BE-G04/G05 | Room Only/Breakfast, promo 15%, breakdown, IDR integer rupiah tersedia | RESOLVED 2026-10-03; base price sync dari katalog CRUD (BE-R09) dan eliminasi multi-room breakfast double counting + child tiers (BE-R10) |
 | BE-G06 | Quote 15 menit dan wiring engine→BookingSvc tersedia | PARTIAL; in-memory durability dan public fallback (BE-R06/R11) |
 | BE-G07 | Phone, arrival dan request length validation tersedia | IMPLEMENTED fields; snapshot contact dan normalization masih perlu konsistensi |
 | BE-G08 | Quoted create meminta terms/privacy; cancel memeriksa non-refundable/deadline | PARTIAL; quote-less bypass dan timezone (BE-R06/R12) |

@@ -732,6 +732,9 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 			CheckOut:     to,
 			NumRooms:     numRooms,
 			NumGuests:    numGuests,
+			Adults:       in.Adults,
+			Children:     in.Children,
+			ChildAges:    in.ChildAges,
 			PromoCode:    in.PromoCode,
 		})
 		if errors.Is(err, rates.ErrInvalidRatePlan) {

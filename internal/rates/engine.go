@@ -23,8 +23,9 @@ const (
 	PolicyFlexible48h   = "flexible_48h"
 	PolicyNonRefundable = "non_refundable"
 
-	// Biaya sarapan resmi Pulang ke Uttara (Rp 100.000 / orang dewasa / malam)
-	BreakfastRatePerPersonPerNight = 100_000
+	// Biaya sarapan resmi Pulang ke Uttara (BE-G04, BE-R10)
+	BreakfastRatePerPersonPerNight = 100_000 // Dewasa (>=12 thn)
+	BreakfastRateChildPerNight     = 50_000  // Anak (6-11 thn: diskon 50%)
 )
 
 var (
@@ -78,6 +79,9 @@ type LockedQuote struct {
 	CheckOut         time.Time        `json:"check_out"`
 	NumRooms         int              `json:"num_rooms"`
 	NumGuests        int              `json:"num_guests"`
+	Adults           int              `json:"adults,omitempty"`
+	Children         int              `json:"children,omitempty"`
+	ChildAges        []int            `json:"child_ages,omitempty"`
 	NightlyRates     []Quote          `json:"nightly_rates"`
 	Pricing          PricingBreakdown `json:"pricing"`
 }
@@ -90,6 +94,9 @@ type QuoteRequest struct {
 	CheckOut     time.Time `json:"check_out"`
 	NumRooms     int       `json:"num_rooms"`
 	NumGuests    int       `json:"num_guests"`
+	Adults       int       `json:"adults,omitempty"`
+	Children     int       `json:"children,omitempty"`
+	ChildAges    []int     `json:"child_ages,omitempty"`
 	PromoCode    string    `json:"promo_code"`
 }
 
@@ -270,6 +277,9 @@ func (e *Engine) CalculateLockedQuote(ctx context.Context, req QuoteRequest) (Lo
 		numRooms = 1
 	}
 	numGuests := req.NumGuests
+	if req.Adults > 0 || req.Children > 0 {
+		numGuests = req.Adults + req.Children
+	}
 	if numGuests < 1 {
 		numGuests = 2
 	}
@@ -290,10 +300,33 @@ func (e *Engine) CalculateLockedQuote(ctx context.Context, req QuoteRequest) (Lo
 	}
 	roomSubtotal := sumNightlyBase * int64(numRooms)
 
-	// Biaya sarapan jika paket bed_and_breakfast
+	// Biaya sarapan jika paket bed_and_breakfast (BE-R10)
 	var breakfastCharge int64
 	if planCode == RatePlanBedBreakfast {
-		breakfastCharge = int64(BreakfastRatePerPersonPerNight) * int64(numGuests) * int64(numNights) * int64(numRooms)
+		var dailyBreakfast int64
+		if req.Adults > 0 || req.Children > 0 {
+			dailyBreakfast += int64(req.Adults) * int64(BreakfastRatePerPersonPerNight)
+			if len(req.ChildAges) > 0 {
+				for _, age := range req.ChildAges {
+					switch {
+					case age < 6:
+						// 0-5 tahun: gratis (complimentary)
+					case age <= 11:
+						// 6-11 tahun: diskon 50%
+						dailyBreakfast += int64(BreakfastRateChildPerNight)
+					default:
+						// >=12 tahun: tarif dewasa
+						dailyBreakfast += int64(BreakfastRatePerPersonPerNight)
+					}
+				}
+			} else if req.Children > 0 {
+				dailyBreakfast += int64(req.Children) * int64(BreakfastRateChildPerNight)
+			}
+		} else {
+			// Legacy / fallback jika hanya mengirim num_guests agregat
+			dailyBreakfast = int64(BreakfastRatePerPersonPerNight) * int64(numGuests)
+		}
+		breakfastCharge = dailyBreakfast * int64(numNights)
 	}
 
 	// Kebijakan pembatalan default
@@ -336,6 +369,9 @@ func (e *Engine) CalculateLockedQuote(ctx context.Context, req QuoteRequest) (Lo
 		CheckOut:         req.CheckOut,
 		NumRooms:         numRooms,
 		NumGuests:        numGuests,
+		Adults:           req.Adults,
+		Children:         req.Children,
+		ChildAges:        req.ChildAges,
 		NightlyRates:     nightly,
 		Pricing: PricingBreakdown{
 			RoomSubtotalMinor:    roomSubtotal,
