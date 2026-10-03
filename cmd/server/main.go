@@ -74,10 +74,27 @@ func main() {
 	}
 	rateEngine := rates.NewEngine(baseRates, 1.25) // weekend +25%
 
-	payGateway := payment.NewFake() // ganti: midtrans.New(cfg) / stripe.New(cfg)
-	notifier := notifier.NewLog(log)
+	var payGateway booking.PaymentGateway
+	var xenditGw *payment.XenditGateway
+	if cfg.XenditSecretKey != "" {
+		xenditGw = payment.NewXendit(cfg.XenditBaseURL, cfg.XenditSecretKey, cfg.XenditWebhookToken, cfg.AppBaseURL, log)
+		payGateway = xenditGw
+		log.Info("payment.gateway.xendit.active", "base_url", cfg.XenditBaseURL)
+	} else {
+		payGateway = payment.NewFake()
+		log.Info("payment.gateway.fake.active", "mode", "dev_fallback")
+	}
 
-	bkSvc := booking.NewService(bkRunner, invStore, rateEngine, payGateway, notifier, bkReader, cfg.HoldTimeout, log)
+	var notifierSvc booking.Notifier
+	if cfg.ResendAPIKey != "" {
+		notifierSvc = notifier.NewResend(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.ResendFromEmail, log)
+		log.Info("notifier.resend.active", "from", cfg.ResendFromEmail)
+	} else {
+		notifierSvc = notifier.NewLog(log)
+		log.Info("notifier.log.active", "mode", "dev_fallback")
+	}
+
+	bkSvc := booking.NewService(bkRunner, invStore, rateEngine, payGateway, notifierSvc, bkReader, cfg.HoldTimeout, log)
 	bkSvc.SetPaymentAttemptStore(booking.NewPostgresPaymentAttemptStore(pool))
 
 	// ---- asynq (job queue di Valkey — §5.4, §6) ----
@@ -95,7 +112,7 @@ func main() {
 		if err != nil {
 			return err
 		}
-		return notifier.SendBookingConfirmed(ctx, b)
+		return notifierSvc.SendBookingConfirmed(ctx, b)
 	}
 	onRelease := func(ctx context.Context, bookingID string) error {
 		return releaseHold(ctx, pool, bkSvc, bookingID)
@@ -213,6 +230,7 @@ func main() {
 		IdempotencyStore: api.NewPostgresIdempotencyStore(pool),
 		IsDevelopment:    cfg.IsDevelopment(),
 		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
+		XenditGateway:    xenditGw,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

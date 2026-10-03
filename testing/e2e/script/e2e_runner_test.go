@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/hotel-booking/internal/adapter/notifier"
+	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/inventory"
@@ -170,6 +172,8 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	quoteStore := rateEngine.QuoteStore()
 	bkSvc.SetQuoteStore(quoteStore)
 
+	xenditGw := payment.NewXendit("https://api.xendit.co", "test_xendit_sec", "test_e2e_xendit_webhook_token", "http://localhost:3000", nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:    bkSvc,
 		InvStore:      inv,
@@ -178,6 +182,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		QuoteStore:    quoteStore,
 		Enforcer:      enforcer,
 		IsDevelopment: true,
+		XenditGateway: xenditGw,
 		ReadyCheck:    func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
@@ -1061,6 +1066,109 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if !inc.To.Equal(tx.booking.CheckOut) {
 			t.Errorf("expected increment to %v, got %v", tx.booking.CheckOut, inc.To)
+		}
+	})
+
+	// 26. Xendit Webhook: Rejection of invalid callback token (401 Unauthorized)
+	t.Run("E2E-26: Xendit Webhook rejects invalid callback token (401 Unauthorized)", func(t *testing.T) {
+		payload := `{"id": "inv_test_wh_1", "external_id": "bk-e2e-001", "status": "PAID"}`
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks/xendit", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-callback-token", "invalid_attacker_token")
+
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("webhook request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 Unauthorized", res.StatusCode)
+		}
+	})
+
+	// 27. Xendit Webhook: Valid callback token with PAID confirms booking (200 OK)
+	t.Run("E2E-27: Xendit Webhook with PAID confirms booking idempotently (200 OK)", func(t *testing.T) {
+		tx.booking.Status = booking.StatusPending
+		futureExp := time.Now().UTC().Add(30 * time.Minute)
+		tx.booking.ExpiresAt = &futureExp
+		payload := `{"id": "inv_test_wh_2", "external_id": "bk-e2e-001", "status": "PAID", "amount": 1100000, "payment_method": "QRIS"}`
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks/xendit", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-callback-token", "test_e2e_xendit_webhook_token")
+
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("webhook request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 OK", res.StatusCode)
+		}
+		if tx.booking.Status != booking.StatusConfirmed {
+			t.Errorf("booking status = %s, want confirmed", tx.booking.Status)
+		}
+
+		// Replay webhook (idempotent 200 OK)
+		req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks/xendit", strings.NewReader(payload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("x-callback-token", "test_e2e_xendit_webhook_token")
+
+		res2, err := client.Do(req2)
+		if err != nil {
+			t.Fatalf("replay webhook failed: %v", err)
+		}
+		if res2.StatusCode != http.StatusOK {
+			t.Fatalf("replay status = %d, want 200 OK", res2.StatusCode)
+		}
+	})
+
+	// 28. Resend Notifier: Email confirmation dispatch with Idempotency-Key
+	t.Run("E2E-28: Resend Outbox email dispatch on confirmed booking", func(t *testing.T) {
+		var receivedAuth string
+		var receivedIdemp string
+		var receivedTo []string
+		var receivedSubject string
+
+		resendMockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedAuth = r.Header.Get("Authorization")
+			receivedIdemp = r.Header.Get("Idempotency-Key")
+
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if toList, ok := body["to"].([]any); ok {
+				for _, to := range toList {
+					receivedTo = append(receivedTo, to.(string))
+				}
+			}
+			if subj, ok := body["subject"].(string); ok {
+				receivedSubject = subj
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "re_msg_12345"})
+		}))
+		defer resendMockServer.Close()
+
+		resendClient := notifier.NewResend(resendMockServer.URL, "re_e2e_secret_key", "Pulang ke Uttara <reservations@pulangkeuttara.com>", nil)
+
+		b := tx.booking
+		b.Status = booking.StatusConfirmed
+		err := resendClient.SendBookingConfirmed(context.Background(), b)
+		if err != nil {
+			t.Fatalf("resend send failed: %v", err)
+		}
+
+		if receivedAuth != "Bearer re_e2e_secret_key" {
+			t.Errorf("Authorization = %s, want Bearer re_e2e_secret_key", receivedAuth)
+		}
+		expectedIdemp := fmt.Sprintf("email-confirmed-%s", b.ID)
+		if receivedIdemp != expectedIdemp {
+			t.Errorf("Idempotency-Key = %s, want %s", receivedIdemp, expectedIdemp)
+		}
+		if len(receivedTo) != 1 || receivedTo[0] != b.GuestEmail {
+			t.Errorf("to = %v, want [%s]", receivedTo, b.GuestEmail)
+		}
+		if !strings.Contains(receivedSubject, b.ID) {
+			t.Errorf("subject %s does not contain booking ID %s", receivedSubject, b.ID)
 		}
 	})
 }

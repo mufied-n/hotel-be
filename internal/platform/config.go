@@ -23,6 +23,19 @@ type Config struct {
 	HoldTimeout time.Duration
 	// OutboxInterval interval polling relay outbox.
 	OutboxInterval time.Duration
+
+	// AppBaseURL URL frontend/web untuk redirect URL
+	AppBaseURL string
+
+	// Xendit Payment Gateway
+	XenditBaseURL      string
+	XenditSecretKey    string
+	XenditWebhookToken string
+
+	// Resend Notifier
+	ResendBaseURL   string
+	ResendAPIKey    string
+	ResendFromEmail string
 }
 
 func (c Config) IsDevelopment() bool {
@@ -64,12 +77,19 @@ func LoadConfig() Config {
 	}
 
 	return Config{
-		Environment:    getenv("APP_ENV", "development"),
-		Port:           getenv("APP_PORT", "8080"),
-		DatabaseDSN:    getenv("DATABASE_URL", "postgres://postgres:dev@localhost:5432/booking?sslmode=disable"),
-		ValkeyAddr:     getenv("VALKEY_ADDR", "localhost:6379"),
-		HoldTimeout:    holdTimeout,
-		OutboxInterval: outboxInterval,
+		Environment:        getenv("APP_ENV", "development"),
+		Port:               getenv("APP_PORT", "8080"),
+		DatabaseDSN:        getenv("DATABASE_URL", "postgres://postgres:dev@localhost:5432/booking?sslmode=disable"),
+		ValkeyAddr:         getenv("VALKEY_ADDR", "localhost:6379"),
+		HoldTimeout:        holdTimeout,
+		OutboxInterval:     outboxInterval,
+		AppBaseURL:         getenv("APP_BASE_URL", "http://localhost:3000"),
+		XenditBaseURL:      getenv("XENDIT_BASE_URL", "https://api.xendit.co"),
+		XenditSecretKey:    getenv("XENDIT_SECRET_KEY", ""),
+		XenditWebhookToken: getenv("XENDIT_WEBHOOK_TOKEN", ""),
+		ResendBaseURL:      getenv("RESEND_BASE_URL", "https://api.resend.com"),
+		ResendAPIKey:       getenv("RESEND_API_KEY", ""),
+		ResendFromEmail:    getenv("RESEND_FROM_EMAIL", "Pulang ke Uttara <reservations@pulangkeuttara.com>"),
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
@@ -43,6 +44,7 @@ type Deps struct {
 	Enforcer      *casbin.SyncedEnforcer
 	IsDevelopment bool
 	RateLimiter   *RateLimiter
+	XenditGateway *payment.XenditGateway
 }
 
 // NewRouter merakit seluruh route.
@@ -73,6 +75,7 @@ func NewRouter(d Deps) http.Handler {
 
 	r.Get("/healthz", healthz)
 	r.Get("/ready", ready(d))
+	r.Post("/api/v1/webhooks/xendit", xenditWebhook(d))
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
 	r.Group(func(api chi.Router) {
@@ -839,4 +842,59 @@ func httpErrorCode(w http.ResponseWriter, code int, msg, errCode string) {
 
 func httpError(w http.ResponseWriter, code int, msg string) {
 	httpErrorCode(w, code, msg, "ERROR")
+}
+
+// POST /api/v1/webhooks/xendit (PCI-DSS SAQ A & OWASP API Top 10)
+// Menerima notifikasi callback pembayaran dari Xendit secara idempoten dan terverifikasi.
+func xenditWebhook(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.XenditGateway == nil {
+			httpErrorCode(w, http.StatusNotImplemented, "xendit gateway is not configured", "NOT_CONFIGURED")
+			return
+		}
+
+		token := r.Header.Get("x-callback-token")
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpErrorCode(w, http.StatusBadRequest, "failed to read webhook body", "BAD_REQUEST")
+			return
+		}
+
+		payload, err := d.XenditGateway.VerifyWebhook(token, bodyBytes)
+		if err != nil {
+			if errors.Is(err, payment.ErrInvalidWebhookToken) {
+				httpErrorCode(w, http.StatusUnauthorized, "invalid webhook token", "UNAUTHORIZED")
+				return
+			}
+			httpErrorCode(w, http.StatusBadRequest, err.Error(), "INVALID_WEBHOOK_PAYLOAD")
+			return
+		}
+
+		switch payload.Status {
+		case "PAID", "SETTLED":
+			if err := d.BookingSvc.Confirm(r.Context(), payload.ExternalID); err != nil {
+				if errors.Is(err, booking.ErrHoldExpired) {
+					httpErrorCode(w, http.StatusConflict, "hold has expired, payment rejected", "HOLD_EXPIRED")
+					return
+				}
+				httpErrorCode(w, http.StatusInternalServerError, "failed to confirm booking: "+err.Error(), "CONFIRM_FAILED")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status":  "ok",
+				"message": "booking confirmed",
+			})
+		case "EXPIRED":
+			_ = d.BookingSvc.Cancel(r.Context(), payload.ExternalID)
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status":  "ok",
+				"message": "booking cancelled due to invoice expiry",
+			})
+		default:
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status":  "ignored",
+				"message": "unhandled status: " + payload.Status,
+			})
+		}
+	}
 }
