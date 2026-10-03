@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
@@ -47,6 +48,7 @@ type Deps struct {
 	RateLimiter   *RateLimiter
 	XenditGateway *payment.XenditGateway
 	GuestSvc      guest.Service
+	FinanceSvc    finance.Service
 }
 
 // NewRouter merakit seluruh route.
@@ -90,9 +92,8 @@ func NewRouter(d Deps) http.Handler {
 		guestRouter.Get("/api/v1/guest/bookings/{id}", handleGuestBookingDetail(d))
 		guestRouter.Get("/api/v1/guest/bookings/{id}/receipt", handleGuestBookingReceipt(d))
 		guestRouter.Get("/api/v1/guest/bookings/{id}/calendar.ics", handleGuestBookingCalendar(d))
+		guestRouter.Get("/api/v1/guest/bookings/{id}/refund-status", handleGuestRefundStatus(d))
 	})
-
-
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
 	r.Group(func(api chi.Router) {
@@ -113,6 +114,12 @@ func NewRouter(d Deps) http.Handler {
 		api.Post("/api/v1/bookings/{id}/check-in", checkIn(d))
 		api.Post("/api/v1/bookings/{id}/check-out", checkOut(d))
 		api.Post("/api/v1/bookings/{id}/no-show", noShow(d))
+
+		// Finance Reconciliation & Refunds (F14)
+		api.Post("/api/v1/finance/refunds", handleFinanceRefund(d))
+		api.Get("/api/v1/finance/cases", handleFinanceCases(d))
+		api.Post("/api/v1/finance/cases/{id}/resolve", handleFinanceResolveCase(d))
+		api.Get("/api/v1/finance/reconciliations", handleFinanceSummary(d))
 
 		// Dev-only: simulasi pembayaran sukses (BE-G10: gate development only)
 		if d.IsDevelopment && d.FakePay != nil {
@@ -891,6 +898,9 @@ func xenditWebhook(d Deps) http.HandlerFunc {
 		case "PAID", "SETTLED":
 			if err := d.BookingSvc.Confirm(r.Context(), payload.ExternalID); err != nil {
 				if errors.Is(err, booking.ErrHoldExpired) {
+					if d.FinanceSvc != nil {
+						_, _ = d.FinanceSvc.CreateLatePaymentCase(r.Context(), payload.ExternalID, payload.ID, payload.Amount, "Hold expired before payment arrived")
+					}
 					httpErrorCode(w, http.StatusConflict, "hold has expired, payment rejected", "HOLD_EXPIRED")
 					return
 				}

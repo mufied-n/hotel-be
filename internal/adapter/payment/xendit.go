@@ -178,4 +178,95 @@ func (g *XenditGateway) VerifyWebhook(headerToken string, body []byte) (XenditWe
 	return payload, nil
 }
 
+// RefundRequest mewakili payload permintaan refund ke API Xendit.
+type RefundRequest struct {
+	ReferenceID string `json:"reference_id"` // Idempotency reference unik
+	InvoiceID   string `json:"invoice_id,omitempty"`
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	Reason      string `json:"reason"`
+}
+
+// RefundResult mewakili hasil eksekusi refund dari Xendit.
+type RefundResult struct {
+	RefundID    string `json:"refund_id"`
+	ReferenceID string `json:"reference_id"`
+	Status      string `json:"status"` // succeeded, pending, failed
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+}
+
+// CreateRefund memanggil endpoint POST /refunds pada API Xendit.
+func (g *XenditGateway) CreateRefund(ctx context.Context, req RefundRequest) (RefundResult, error) {
+	if req.ReferenceID == "" {
+		return RefundResult{}, errors.New("xendit: reference_id is required for refund")
+	}
+	if req.Amount <= 0 {
+		return RefundResult{}, errors.New("xendit: amount must be greater than zero")
+	}
+	if req.Currency == "" {
+		req.Currency = "IDR"
+	}
+	if req.Reason == "" {
+		req.Reason = "CANCELLATION"
+	}
+
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return RefundResult{}, fmt.Errorf("xendit: marshal refund request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/refunds", g.BaseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return RefundResult{}, fmt.Errorf("xendit: new refund request: %w", err)
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(g.SecretKey + ":"))
+	httpReq.Header.Set("Authorization", "Basic "+auth)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Idempotency-Key", req.ReferenceID)
+
+	resp, err := g.Client.Do(httpReq)
+	if err != nil {
+		return RefundResult{}, fmt.Errorf("xendit: do refund request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return RefundResult{}, fmt.Errorf("xendit: read refund response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		g.Log.ErrorContext(ctx, "xendit.create_refund_failed", "status", resp.StatusCode, "body", string(respBytes))
+		return RefundResult{}, fmt.Errorf("xendit: refund failed with status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var res struct {
+		ID          string `json:"id"`
+		ReferenceID string `json:"reference_id"`
+		Status      string `json:"status"`
+		Amount      int64  `json:"amount"`
+		Currency    string `json:"currency"`
+	}
+	if err := json.Unmarshal(respBytes, &res); err != nil {
+		return RefundResult{}, fmt.Errorf("xendit: unmarshal refund response: %w", err)
+	}
+
+	status := strings.ToLower(res.Status)
+	if status == "" {
+		status = "succeeded"
+	}
+
+	return RefundResult{
+		RefundID:    res.ID,
+		ReferenceID: res.ReferenceID,
+		Status:      status,
+		Amount:      res.Amount,
+		Currency:    res.Currency,
+	}, nil
+}
+
 var _ booking.PaymentGateway = (*XenditGateway)(nil)
+

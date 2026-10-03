@@ -16,6 +16,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
@@ -35,6 +36,7 @@ type e2eTxMock struct {
 	increments    []e2eIncrementCall
 	otpNotifier   *e2eOTPNotifier
 	guestStore    *e2eGuestStore
+	finStore      *e2eFinanceStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -279,6 +281,136 @@ func (n *e2eOTPNotifier) SendGuestOTP(ctx context.Context, email, otpCode string
 }
 
 
+type e2eFinanceStore struct {
+	tx        *e2eTxMock
+	refunds   map[string][]finance.PaymentRefund
+	cases     map[string]*finance.PaymentCase
+	refundSeq int
+	caseSeq   int
+}
+
+func newE2EFinanceStore(tx *e2eTxMock) *e2eFinanceStore {
+	return &e2eFinanceStore{
+		tx:      tx,
+		refunds: make(map[string][]finance.PaymentRefund),
+		cases:   make(map[string]*finance.PaymentCase),
+	}
+}
+
+func (s *e2eFinanceStore) GetRefundableBalance(ctx context.Context, bookingID string) (capturedMinor, refundedMinor, remainingMinor int64, bookingStatus string, invoiceID string, err error) {
+	if s.tx.booking.ID != bookingID {
+		return 0, 0, 0, "", "", finance.ErrBookingNotFound
+	}
+	var totalRefunded int64
+	for _, r := range s.refunds[bookingID] {
+		if r.Status == "succeeded" || r.Status == "pending" {
+			totalRefunded += r.AmountMinor
+		}
+	}
+	remaining := s.tx.booking.TotalPriceMinor - totalRefunded
+	if remaining < 0 {
+		remaining = 0
+	}
+	return s.tx.booking.TotalPriceMinor, totalRefunded, remaining, string(s.tx.booking.Status), "inv_e2e_12345", nil
+}
+
+func (s *e2eFinanceStore) CreateRefund(ctx context.Context, r *finance.PaymentRefund) error {
+	s.refundSeq++
+	r.ID = fmt.Sprintf("rfnd-e2e-%03d", s.refundSeq)
+	s.refunds[r.BookingID] = append(s.refunds[r.BookingID], *r)
+	return nil
+}
+
+func (s *e2eFinanceStore) UpdateRefundStatus(ctx context.Context, refundID, status, providerRefundID string) error {
+	for bID, list := range s.refunds {
+		for i, r := range list {
+			if r.ID == refundID {
+				list[i].Status = status
+				list[i].ProviderRefundID = providerRefundID
+				s.refunds[bID] = list
+				return nil
+			}
+		}
+	}
+	return finance.ErrRefundNotFound
+}
+
+func (s *e2eFinanceStore) ListRefundsByBookingID(ctx context.Context, bookingID string) ([]finance.PaymentRefund, error) {
+	return s.refunds[bookingID], nil
+}
+
+func (s *e2eFinanceStore) CreatePaymentCase(ctx context.Context, pc *finance.PaymentCase) error {
+	s.caseSeq++
+	pc.ID = fmt.Sprintf("case-e2e-%03d", s.caseSeq)
+	s.cases[pc.ID] = pc
+	return nil
+}
+
+func (s *e2eFinanceStore) GetPaymentCaseByID(ctx context.Context, caseID string) (*finance.PaymentCase, error) {
+	pc, ok := s.cases[caseID]
+	if !ok {
+		return nil, finance.ErrCaseNotFound
+	}
+	return pc, nil
+}
+
+func (s *e2eFinanceStore) ListPaymentCases(ctx context.Context, status string, limit int) ([]finance.PaymentCase, error) {
+	var results []finance.PaymentCase
+	for _, pc := range s.cases {
+		if status == "" || pc.Status == status {
+			results = append(results, *pc)
+		}
+	}
+	return results, nil
+}
+
+func (s *e2eFinanceStore) ResolvePaymentCase(ctx context.Context, caseID, action, notes, resolvedBy string) error {
+	pc, ok := s.cases[caseID]
+	if !ok {
+		return finance.ErrCaseNotFound
+	}
+	if pc.Status == "resolved" {
+		return finance.ErrCaseAlreadyResolved
+	}
+	pc.Status = "resolved"
+	pc.ResolutionAction = action
+	pc.Notes = pc.Notes + " | " + notes
+	pc.ResolvedBy = resolvedBy
+	now := time.Now()
+	pc.ResolvedAt = &now
+	return nil
+}
+
+func (s *e2eFinanceStore) GetReconciliationSummary(ctx context.Context) (*finance.ReconciliationSummary, error) {
+	var totalRefunded int64
+	var countRefunds int
+	for _, list := range s.refunds {
+		for _, r := range list {
+			if r.Status == "succeeded" {
+				totalRefunded += r.AmountMinor
+				countRefunds++
+			}
+		}
+	}
+	var openCases int
+	for _, pc := range s.cases {
+		if pc.Status == "open" {
+			openCases++
+		}
+	}
+	return &finance.ReconciliationSummary{
+		TotalSettledMinor:  150_000_000,
+		TotalRefundedMinor: totalRefunded,
+		NetCapturedMinor:   150_000_000 - totalRefunded,
+		OpenCasesCount:     openCases,
+		TotalRefundsCount:  countRefunds,
+	}, nil
+}
+
+func (s *e2eFinanceStore) VerifyBookingOwnership(ctx context.Context, bookingID, email string) (bool, error) {
+	return s.tx.booking.ID == bookingID && s.tx.booking.GuestEmail == email, nil
+}
+
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
 
@@ -300,6 +432,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "revenue_mgr", "/api/v1/catalog/rooms", "POST"},
 		{"p", "revenue_mgr", "/api/v1/catalog/rooms/:id", "PUT"},
 		{"p", "finance", "/api/v1/reports/*", "GET"},
+		{"p", "finance", "/api/v1/finance/refunds", "POST"},
+		{"p", "finance", "/api/v1/finance/cases", "GET"},
+		{"p", "finance", "/api/v1/finance/cases/:id/resolve", "POST"},
+		{"p", "finance", "/api/v1/finance/reconciliations", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
 		{"g", "revenue_mgr", "guest"},
@@ -367,6 +503,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.guestStore = guestStore
 	guestSvc := guest.NewService(guestStore, guestNotifier, nil)
 
+	finStore := newE2EFinanceStore(tx)
+	tx.finStore = finStore
+	finSvc := finance.NewService(finStore, nil, nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:    bkSvc,
 		InvStore:      inv,
@@ -377,6 +517,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		IsDevelopment: true,
 		XenditGateway: xenditGw,
 		GuestSvc:      guestSvc,
+		FinanceSvc:    finSvc,
 		ReadyCheck:    func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
@@ -1729,6 +1870,182 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if !strings.HasPrefix(receivedIdemp, "otp-rian@example.com") {
 			t.Errorf("Idempotency-Key = %s, want prefix 'otp-rian@example.com'", receivedIdemp)
+		}
+	})
+
+	// 41. Finance Refund: Valid refund by finance officer (201 Created) & RBAC rejection for receptionist (403 Forbidden)
+	t.Run("E2E-41: Finance refund processing & RBAC authorization", func(t *testing.T) {
+		// 1. Receptionist mencoba inisiasi refund -> 403 Forbidden
+		refundBody := `{"booking_id":"bk-e2e-001","amount_minor":500000,"reason":"Guest requested partial cancellation"}`
+		reqRec, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/refunds", strings.NewReader(refundBody))
+		reqRec.Header.Set("Authorization", "Bearer receptionist")
+		reqRec.Header.Set("Content-Type", "application/json")
+		resRec, err := client.Do(reqRec)
+		if err != nil {
+			t.Fatalf("receptionist refund request failed: %v", err)
+		}
+		if resRec.StatusCode != http.StatusForbidden {
+			t.Errorf("receptionist refund status = %d, want 403 Forbidden", resRec.StatusCode)
+		}
+
+		// 2. Finance officer memproses refund -> 201 Created
+		reqFin, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/refunds", strings.NewReader(refundBody))
+		reqFin.Header.Set("Authorization", "Bearer finance")
+		reqFin.Header.Set("Content-Type", "application/json")
+		resFin, err := client.Do(reqFin)
+		if err != nil {
+			t.Fatalf("finance refund request failed: %v", err)
+		}
+		if resFin.StatusCode != http.StatusCreated {
+			t.Fatalf("finance refund status = %d, want 201 Created", resFin.StatusCode)
+		}
+
+		var resp map[string]any
+		_ = json.NewDecoder(resFin.Body).Decode(&resp)
+		refundData, ok := resp["refund"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected refund object in response, got %v", resp)
+		}
+		if refundData["status"] != "succeeded" {
+			t.Errorf("refund status = %v, want succeeded", refundData["status"])
+		}
+		if refundData["amount_minor"].(float64) != 500000 {
+			t.Errorf("refund amount = %v, want 500000", refundData["amount_minor"])
+		}
+	})
+
+	// 42. Finance Anti-Over-Refund Guard (409 Conflict)
+	t.Run("E2E-42: Anti-over-refund guard strictly rejects excessive amount (409 Conflict)", func(t *testing.T) {
+		// Total booking 1.100.000, sudah di-refund 500.000 di E2E-41. Sisa saldo: 600.000.
+		// Permintaan refund 700.000 wajib ditolak dengan 409 Conflict.
+		overBody := `{"booking_id":"bk-e2e-001","amount_minor":700000,"reason":"Excessive refund attempt"}`
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/refunds", strings.NewReader(overBody))
+		req.Header.Set("Authorization", "Bearer finance")
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusConflict {
+			t.Fatalf("over-refund status = %d, want 409 Conflict", res.StatusCode)
+		}
+
+		var errResp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&errResp)
+		if errResp["code"] != "OVER_REFUND_EXCEEDED" {
+			t.Errorf("error code = %v, want OVER_REFUND_EXCEEDED", errResp["code"])
+		}
+	})
+
+	// 43. Late Payment Case & Resolution Workflow
+	t.Run("E2E-43: Late payment case listing and resolution workflow (200 OK)", func(t *testing.T) {
+		// Simulasikan payment case baru
+		_ = tx.finStore.CreatePaymentCase(context.Background(), &finance.PaymentCase{
+			BookingID:         "bk-e2e-001",
+			CaseType:          "late_payment",
+			Status:            "open",
+			AmountMinor:       1100000,
+			Currency:          "IDR",
+			ProviderReference: "inv_late_e2e_999",
+			Notes:             "Payment arrived after hold expired",
+			CreatedAt:         time.Now(),
+		})
+
+		// 1. Finance officer melihat daftar open cases
+		reqList, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/finance/cases?status=open", nil)
+		reqList.Header.Set("Authorization", "Bearer finance")
+		resList, err := client.Do(reqList)
+		if err != nil {
+			t.Fatalf("list cases request failed: %v", err)
+		}
+		if resList.StatusCode != http.StatusOK {
+			t.Fatalf("list cases status = %d, want 200 OK", resList.StatusCode)
+		}
+
+		// 2. Resolve payment case
+		resolveBody := `{"action":"refund","notes":"Manual refund dispatched to guest bank account"}`
+		reqRes, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/cases/case-e2e-001/resolve", strings.NewReader(resolveBody))
+		reqRes.Header.Set("Authorization", "Bearer finance")
+		reqRes.Header.Set("Content-Type", "application/json")
+		resRes, err := client.Do(reqRes)
+		if err != nil {
+			t.Fatalf("resolve case request failed: %v", err)
+		}
+		if resRes.StatusCode != http.StatusOK {
+			t.Fatalf("resolve case status = %d, want 200 OK", resRes.StatusCode)
+		}
+
+		// 3. Resolve ulang kasus yang sama wajib ditolak 409 Conflict
+		reqDup, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/finance/cases/case-e2e-001/resolve", strings.NewReader(resolveBody))
+		reqDup.Header.Set("Authorization", "Bearer finance")
+		reqDup.Header.Set("Content-Type", "application/json")
+		resDup, _ := client.Do(reqDup)
+		if resDup.StatusCode != http.StatusConflict {
+			t.Errorf("duplicate resolve status = %d, want 409 Conflict", resDup.StatusCode)
+		}
+	})
+
+	// 44. Finance Reconciliation Summary
+	t.Run("E2E-44: Finance reconciliation summary aggregation (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/finance/reconciliations", nil)
+		req.Header.Set("Authorization", "Bearer finance")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("summary request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("summary status = %d, want 200 OK", res.StatusCode)
+		}
+
+		var summary map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&summary)
+		if summary["total_settled_minor"].(float64) <= 0 {
+			t.Errorf("total_settled_minor = %v, want > 0", summary["total_settled_minor"])
+		}
+		if summary["net_captured_minor"].(float64) <= 0 {
+			t.Errorf("net_captured_minor = %v, want > 0", summary["net_captured_minor"])
+		}
+	})
+
+	// 45. Guest Refund Status Self-Service & Anti-IDOR Protection
+	t.Run("E2E-45: Guest refund status inquiry & anti-IDOR verification", func(t *testing.T) {
+		// Buat sesi tamu rian@example.com untuk pengujian (karena tx.booking.GuestEmail = "rian@example.com")
+		sessRian := &guest.GuestSession{
+			ID:           "sess-rian-refund",
+			GuestEmail:   "rian@example.com",
+			TokenHash:    guest.HashString("gst_sess_rian_refund_token"),
+			ExpiresAt:    time.Now().Add(24 * time.Hour),
+			LastActiveAt: time.Now(),
+			CreatedAt:    time.Now(),
+		}
+		_ = tx.guestStore.CreateSession(context.Background(), sessRian)
+
+		// 1. Tamu Rian melihat status refund booking miliknya -> 200 OK
+		reqRian, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/refund-status", nil)
+		reqRian.Header.Set("Authorization", "Bearer gst_sess_rian_refund_token")
+		resRian, err := client.Do(reqRian)
+		if err != nil {
+			t.Fatalf("guest refund status request failed: %v", err)
+		}
+		if resRian.StatusCode != http.StatusOK {
+			t.Fatalf("guest refund status = %d, want 200 OK", resRian.StatusCode)
+		}
+
+		var view map[string]any
+		_ = json.NewDecoder(resRian.Body).Decode(&view)
+		if view["has_refund"] != true {
+			t.Errorf("has_refund = %v, want true", view["has_refund"])
+		}
+
+		// 2. Anti-IDOR: Tamu mencoba mengakses booking orang lain -> 404 Not Found
+		reqIDOR, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-foreign-001/refund-status", nil)
+		reqIDOR.Header.Set("Authorization", "Bearer gst_sess_rian_refund_token")
+		resIDOR, err := client.Do(reqIDOR)
+		if err != nil {
+			t.Fatalf("idor request failed: %v", err)
+		}
+		if resIDOR.StatusCode != http.StatusNotFound {
+			t.Errorf("idor status = %d, want 404 Not Found", resIDOR.StatusCode)
 		}
 	})
 }

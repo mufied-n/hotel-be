@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
@@ -227,6 +228,10 @@ func main() {
 	guestStore := guest.NewPostgresStore(pool)
 	guestSvc := guest.NewService(guestStore, otpNotifier, log)
 
+	// ---- Finance Reconciliation & Refund Service (F14) ----
+	financeStore := finance.NewPostgresStore(pool)
+	financeSvc := finance.NewService(financeStore, xenditGw, log)
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,
@@ -242,6 +247,7 @@ func main() {
 		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
 		XenditGateway:    xenditGw,
 		GuestSvc:         guestSvc,
+		FinanceSvc:       financeSvc,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
