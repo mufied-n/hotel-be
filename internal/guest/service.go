@@ -227,6 +227,9 @@ func (s *DefaultService) GetBookingDetail(ctx context.Context, email, bookingID 
 	}
 
 	detail.AllowedActions = computeAllowedActions(detail, s.now())
+	if !detail.AllowedActions.CanPay {
+		detail.PaymentURL = ""
+	}
 	return detail, nil
 }
 

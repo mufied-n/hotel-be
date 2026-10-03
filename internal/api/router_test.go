@@ -2827,3 +2827,139 @@ func TestCreateBooking_PaymentGatewayErrors_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+type mockAttemptStoreForRouter struct {
+	attempts []booking.PaymentAttempt
+}
+
+func (m *mockAttemptStoreForRouter) RecordAttempt(_ context.Context, a booking.PaymentAttempt) error {
+	m.attempts = append(m.attempts, a)
+	return nil
+}
+func (m *mockAttemptStoreForRouter) UpdateAttemptStatus(_ context.Context, _, _ string) error { return nil }
+func (m *mockAttemptStoreForRouter) UpdateAttemptByID(_ context.Context, _, _, _ string, _ map[string]any) error {
+	return nil
+}
+func (m *mockAttemptStoreForRouter) GetAttemptsByBookingID(_ context.Context, _ string) ([]booking.PaymentAttempt, error) {
+	return m.attempts, nil
+}
+
+func TestGetBookingPayment_TableDriven(t *testing.T) {
+	futureHold := time.Now().Add(15 * time.Minute)
+	expiredHold := time.Now().Add(-5 * time.Minute)
+
+	tests := []struct {
+		name            string
+		bookingID       string
+		booking         booking.Booking
+		guestTokenHdr   string
+		attempts        []booking.PaymentAttempt
+		expectedCode    int
+		expectedCodeMsg string
+	}{
+		{
+			name:      "Valid guest token retrieves existing payment recovery (200 OK, BE-R15)",
+			bookingID: "bk-pay-1",
+			booking: booking.Booking{
+				ID:              "bk-pay-1",
+				Status:          booking.StatusPending,
+				GuestEmail:      "owner@example.com",
+				GuestToken:      "gst_valid_token_123",
+				TotalPriceMinor: 1_100_000,
+				Currency:        "IDR",
+				ExpiresAt:       &futureHold,
+			},
+			guestTokenHdr: "gst_valid_token_123",
+			attempts: []booking.PaymentAttempt{
+				{
+					ID:                "att-1",
+					BookingID:         "bk-pay-1",
+					Status:            "initiated",
+					ProviderReference: "inv-mock-123",
+					Payload: map[string]any{
+						"payment_url": "https://checkout.xendit.co/web/inv-mock-123",
+					},
+				},
+			},
+			expectedCode:    http.StatusOK,
+			expectedCodeMsg: "https://checkout.xendit.co/web/inv-mock-123",
+		},
+		{
+			name:      "Unauthorized guest token rejected with 404 (IDOR Defense, BE-R15)",
+			bookingID: "bk-pay-1",
+			booking: booking.Booking{
+				ID:         "bk-pay-1",
+				Status:     booking.StatusPending,
+				GuestEmail: "owner@example.com",
+				GuestToken: "gst_valid_token_123",
+				ExpiresAt:  &futureHold,
+			},
+			guestTokenHdr:   "gst_wrong_token_999",
+			expectedCode:    http.StatusNotFound,
+			expectedCodeMsg: "BOOKING_NOT_FOUND",
+		},
+		{
+			name:      "Expired hold rejected with 410 HOLD_EXPIRED (BE-R15)",
+			bookingID: "bk-pay-expired",
+			booking: booking.Booking{
+				ID:         "bk-pay-expired",
+				Status:     booking.StatusPending,
+				GuestEmail: "owner@example.com",
+				GuestToken: "gst_valid_token_123",
+				ExpiresAt:  &expiredHold,
+			},
+			guestTokenHdr:   "gst_valid_token_123",
+			expectedCode:    http.StatusGone,
+			expectedCodeMsg: "HOLD_EXPIRED",
+		},
+		{
+			name:      "Already confirmed booking rejected with 409 BOOKING_NOT_PENDING (BE-R15)",
+			bookingID: "bk-pay-confirmed",
+			booking: booking.Booking{
+				ID:         "bk-pay-confirmed",
+				Status:     booking.StatusConfirmed,
+				GuestEmail: "owner@example.com",
+				GuestToken: "gst_valid_token_123",
+				ExpiresAt:  &futureHold,
+			},
+			guestTokenHdr:   "gst_valid_token_123",
+			expectedCode:    http.StatusConflict,
+			expectedCodeMsg: "BOOKING_NOT_PENDING",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rMock := &mockReader{booking: tt.booking}
+			txMock := &mockTx{booking: tt.booking}
+			runner := &testRunner{tx: txMock}
+			invStore := &mockInvStore{}
+			gw := &mockPayment{}
+			bkSvc := booking.NewService(runner, invStore, &mockRates{}, gw, &mockNotifier{}, rMock, 30*time.Minute, nil)
+
+			if len(tt.attempts) > 0 {
+				bkSvc.SetPaymentAttemptStore(&mockAttemptStoreForRouter{attempts: tt.attempts})
+			}
+
+			router := NewRouter(Deps{
+				BookingSvc: bkSvc,
+				StaffAuth:  TestStaffVerifier(),
+				Enforcer:   auth.DefaultTestEnforcer(),
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/"+tt.bookingID+"/payment", nil)
+			if tt.guestTokenHdr != "" {
+				req.Header.Set("X-Guest-Token", tt.guestTokenHdr)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedCode {
+				t.Fatalf("expected HTTP status %d, got %d. Body: %s", tt.expectedCode, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tt.expectedCodeMsg) {
+				t.Fatalf("expected body to contain %s, got: %s", tt.expectedCodeMsg, w.Body.String())
+			}
+		})
+	}
+}

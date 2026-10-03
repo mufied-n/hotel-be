@@ -1891,3 +1891,185 @@ func TestIsGatewayTimeout_TableDriven(t *testing.T) {
 	}
 }
 
+type recoveryPaymentGw struct {
+	url    string
+	ref    string
+	err    error
+	onCall func()
+}
+
+func (p *recoveryPaymentGw) CreateCharge(_ context.Context, _ Booking, _ int64, _ string) (ChargeResult, error) {
+	if p.onCall != nil {
+		p.onCall()
+	}
+	if p.err != nil {
+		return ChargeResult{}, p.err
+	}
+	return ChargeResult{PaymentURL: p.url, Reference: p.ref}, nil
+}
+
+func TestService_GetPaymentRecovery_TableDriven(t *testing.T) {
+	now := time.Now().UTC()
+	futureHold := now.Add(15 * time.Minute)
+	expiredHold := now.Add(-5 * time.Minute)
+
+	tests := []struct {
+		name              string
+		bookingID         string
+		existingBooking   *Booking
+		initialAttempts   []PaymentAttempt
+		gatewayChargeURL  string
+		gatewayChargeRef  string
+		gatewayErr        error
+		wantErr           error
+		wantPaymentURL    string
+		wantProviderRef   string
+		wantGatewayCalled bool
+	}{
+		{
+			name:      "Booking not found returns ErrNotFound",
+			bookingID: "non-existent-id",
+			wantErr:   ErrNotFound,
+		},
+		{
+			name:      "Confirmed booking returns ErrPaymentRecoveryNotPending",
+			bookingID: "bk-confirmed",
+			existingBooking: &Booking{
+				ID:        "bk-confirmed",
+				Status:    StatusConfirmed,
+				ExpiresAt: &futureHold,
+			},
+			wantErr: ErrPaymentRecoveryNotPending,
+		},
+		{
+			name:      "Cancelled booking returns ErrPaymentRecoveryNotPending",
+			bookingID: "bk-cancelled",
+			existingBooking: &Booking{
+				ID:        "bk-cancelled",
+				Status:    StatusCancelled,
+				ExpiresAt: &futureHold,
+			},
+			wantErr: ErrPaymentRecoveryNotPending,
+		},
+		{
+			name:      "Expired hold returns ErrHoldExpired",
+			bookingID: "bk-expired-hold",
+			existingBooking: &Booking{
+				ID:        "bk-expired-hold",
+				Status:    StatusPending,
+				ExpiresAt: &expiredHold,
+			},
+			wantErr: ErrHoldExpired,
+		},
+		{
+			name:      "Pending booking with existing attempt URL reuses it without calling gateway (BE-R15)",
+			bookingID: "bk-reuse-url",
+			existingBooking: &Booking{
+				ID:              "bk-reuse-url",
+				Status:          StatusPending,
+				TotalPriceMinor: 1_100_000,
+				Currency:        "IDR",
+				ExpiresAt:       &futureHold,
+			},
+			initialAttempts: []PaymentAttempt{
+				{
+					ID:                "att-1",
+					BookingID:         "bk-reuse-url",
+					Status:            "initiated",
+					ProviderReference: "inv-existing-123",
+					Payload: map[string]any{
+						"payment_url": "https://checkout.xendit.co/web/inv-existing-123",
+					},
+				},
+			},
+			wantPaymentURL:    "https://checkout.xendit.co/web/inv-existing-123",
+			wantProviderRef:   "inv-existing-123",
+			wantGatewayCalled: false,
+		},
+		{
+			name:      "Pending booking without existing attempt URL creates charge via gateway (BE-R15)",
+			bookingID: "bk-fresh-url",
+			existingBooking: &Booking{
+				ID:              "bk-fresh-url",
+				Status:          StatusPending,
+				TotalPriceMinor: 1_100_000,
+				Currency:        "IDR",
+				ExpiresAt:       &futureHold,
+			},
+			initialAttempts:   nil,
+			gatewayChargeURL:  "https://checkout.xendit.co/web/inv-fresh-456",
+			gatewayChargeRef:  "inv-fresh-456",
+			wantPaymentURL:    "https://checkout.xendit.co/web/inv-fresh-456",
+			wantProviderRef:   "inv-fresh-456",
+			wantGatewayCalled: true,
+		},
+		{
+			name:      "Pending booking without existing URL where gateway times out returns ErrPaymentGatewayTimeout (BE-R15)",
+			bookingID: "bk-gw-timeout",
+			existingBooking: &Booking{
+				ID:              "bk-gw-timeout",
+				Status:          StatusPending,
+				TotalPriceMinor: 1_100_000,
+				Currency:        "IDR",
+				ExpiresAt:       &futureHold,
+			},
+			gatewayErr:        context.DeadlineExceeded,
+			wantErr:           ErrPaymentGatewayTimeout,
+			wantGatewayCalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bookings := make(map[string]*Booking)
+			if tt.existingBooking != nil {
+				bookings[tt.existingBooking.ID] = tt.existingBooking
+			}
+			tx := newFakeTx(bookings, map[string][]string{})
+			inv := &fakeInvStore{}
+			rates := &fakeRates{}
+			gwCalled := false
+			gw := &recoveryPaymentGw{
+				url: tt.gatewayChargeURL,
+				ref: tt.gatewayChargeRef,
+				err: tt.gatewayErr,
+				onCall: func() {
+					gwCalled = true
+				},
+			}
+			notifier := &fakeNotifier{}
+			attemptsStore := &mockAttemptStore{
+				attempts: append([]PaymentAttempt(nil), tt.initialAttempts...),
+			}
+			reader := &fakeReader{bookings: bookings}
+
+			svc := NewService(tx, inv, rates, gw, notifier, reader, 30*time.Minute, nil)
+			svc.SetPaymentAttemptStore(attemptsStore)
+			svc.SetNowFunc(func() time.Time { return now })
+
+			recovery, err := svc.GetPaymentRecovery(context.Background(), tt.bookingID)
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if recovery.PaymentURL != tt.wantPaymentURL {
+				t.Errorf("expected PaymentURL %s, got %s", tt.wantPaymentURL, recovery.PaymentURL)
+			}
+			if recovery.ProviderReference != tt.wantProviderRef {
+				t.Errorf("expected ProviderReference %s, got %s", tt.wantProviderRef, recovery.ProviderReference)
+			}
+			if gwCalled != tt.wantGatewayCalled {
+				t.Errorf("expected gatewayCalled %v, got %v", tt.wantGatewayCalled, gwCalled)
+			}
+		})
+	}
+}
+

@@ -78,6 +78,7 @@ type BookingDetail struct {
 	RatePlanCode         string         `json:"rate_plan_code,omitempty"`
 	ExpiresAt            *time.Time     `json:"expires_at,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
+	PaymentURL           string         `json:"payment_url,omitempty"`
 	AllowedActions       AllowedActions `json:"allowed_actions"`
 }
 

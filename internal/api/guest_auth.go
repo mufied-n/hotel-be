@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/gin-gonic/gin"
 )
@@ -352,6 +353,77 @@ func handleGuestBookingDetail(d Deps) gin.HandlerFunc {
 			"booking":         detail,
 			"allowed_actions": detail.AllowedActions,
 		})
+	}
+}
+
+// GET /api/v1/guest/bookings/:id/payment (BE-R15)
+func handleGuestBookingPayment(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sess := GuestSessionFromContext(c.Request.Context())
+		if sess == nil {
+			writeJSON(c, http.StatusUnauthorized, map[string]string{
+				"error":   "UNAUTHORIZED",
+				"message": "Sesi tidak ditemukan.",
+			})
+			return
+		}
+
+		if d.BookingSvc == nil {
+			writeJSON(c, http.StatusNotImplemented, map[string]string{
+				"error":   "NOT_IMPLEMENTED",
+				"message": "Layanan pemesanan belum dikonfigurasi.",
+			})
+			return
+		}
+
+		id := c.Param("id")
+		b, err := d.BookingSvc.Get(c.Request.Context(), id)
+		if err != nil || !strings.EqualFold(strings.TrimSpace(sess.GuestEmail), strings.TrimSpace(b.GuestEmail)) {
+			writeJSON(c, http.StatusNotFound, map[string]string{
+				"error":   "BOOKING_NOT_FOUND",
+				"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
+			})
+			return
+		}
+
+		recovery, err := d.BookingSvc.GetPaymentRecovery(c.Request.Context(), id)
+		if errors.Is(err, booking.ErrHoldExpired) {
+			writeJSON(c, http.StatusGone, map[string]string{
+				"error":   "HOLD_EXPIRED",
+				"message": "Batas waktu pembayaran reservasi telah kedaluwarsa, kamar telah dilepas ke publik.",
+			})
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentRecoveryNotPending) {
+			writeJSON(c, http.StatusConflict, map[string]string{
+				"error":   "BOOKING_NOT_PENDING",
+				"message": "Pembayaran tidak dapat dilanjutkan karena reservasi tidak berstatus pending.",
+			})
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentGatewayTimeout) {
+			writeJSON(c, http.StatusGatewayTimeout, map[string]string{
+				"error":   "GATEWAY_TIMEOUT",
+				"message": "Koneksi gateway pembayaran terputus, silakan coba beberapa saat lagi.",
+			})
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentDefinitiveFailure) {
+			writeJSON(c, http.StatusBadGateway, map[string]string{
+				"error":   "PAYMENT_FAILED",
+				"message": "Gateway pembayaran menolak pembuatan tagihan.",
+			})
+			return
+		}
+		if err != nil {
+			writeJSON(c, http.StatusInternalServerError, map[string]string{
+				"error":   "INTERNAL_SERVER_ERROR",
+				"message": "Gagal memulihkan tautan pembayaran.",
+			})
+			return
+		}
+
+		writeJSON(c, http.StatusOK, recovery)
 	}
 }
 

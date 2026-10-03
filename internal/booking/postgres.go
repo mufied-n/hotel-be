@@ -421,7 +421,7 @@ func (s *PostgresPaymentAttemptStore) GetAttemptsByBookingID(ctx context.Context
 		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, booking_id, provider, provider_reference, amount_minor, currency, status, created_at, updated_at
+		SELECT id, booking_id, provider, provider_reference, amount_minor, currency, status, payload, created_at, updated_at
 		FROM payment_attempts
 		WHERE booking_id = $1
 		ORDER BY created_at ASC`, bookingID,
@@ -434,8 +434,12 @@ func (s *PostgresPaymentAttemptStore) GetAttemptsByBookingID(ctx context.Context
 	var attempts []PaymentAttempt
 	for rows.Next() {
 		var a PaymentAttempt
-		if err := rows.Scan(&a.ID, &a.BookingID, &a.Provider, &a.ProviderReference, &a.AmountMinor, &a.Currency, &a.Status, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		var payloadBytes []byte
+		if err := rows.Scan(&a.ID, &a.BookingID, &a.Provider, &a.ProviderReference, &a.AmountMinor, &a.Currency, &a.Status, &payloadBytes, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if len(payloadBytes) > 0 {
+			_ = json.Unmarshal(payloadBytes, &a.Payload)
 		}
 		attempts = append(attempts, a)
 	}

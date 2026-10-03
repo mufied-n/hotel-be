@@ -387,6 +387,23 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			withGuestSvc:   true,
 			expectedStatus: http.StatusBadRequest,
 		},
+		{
+			name:           "Get booking payment without session returns 401 Unauthorized",
+			method:         http.MethodGet,
+			path:           "/api/v1/guest/bookings/bk_001/payment",
+			withGuestSvc:   true,
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:   "Get booking payment without configured BookingSvc returns 501 Not Implemented",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_001/payment",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusNotImplemented,
+		},
 	}
 
 	for _, tc := range tests {

@@ -38,7 +38,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R15 — Link pembayaran tidak tersedia untuk recovery lintas sesi
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G11/12; F03/F05.
+**Prioritas:** P1. **Status:** RESOLVED 2026-10-03 (cross-session payment recovery & zero duplicate charges). **Hubungan:** BE-G11/12; F03/F05.
 
 **Bukti source.** `createBooking` mengembalikan payment_url/reference sekali. [booking.go](../../internal/booking/booking.go) (lihat fungsi terkait) dan [guest/model.go](../../internal/guest/model.go), BookingDetail, tidak memuat payment URL. PaymentAttempt menyimpan provider_reference tetapi tidak URL; router belum memiliki resume/lookup endpoint.
 
@@ -54,7 +54,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R16 — Deployment production masih dapat memilih fake gateway dan log notifier
 
-**Prioritas:** P0. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G10/16; F05/F11/F15.
+**Prioritas:** P0. **Status:** RESOLVED 2026-10-03 (fail-fast production startup & readiness). **Hubungan:** BE-G10/16; F05/F11/F15.
 
 **Bukti source.** [cmd/server/main.go](../../cmd/server/main.go), wiring payment/notifier, memilih NewFake bila XenditSecretKey kosong dan LogNotifier bila ResendAPIKey kosong tanpa memeriksa production. Route fake-pay sekarang memang digate IsDevelopment; itu perbaikan nyata tetapi tidak menghentikan fallback adapter. LogNotifier OTP menulis kode ke log.
 

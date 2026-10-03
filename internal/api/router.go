@@ -150,6 +150,7 @@ func NewRouter(d Deps) *gin.Engine {
 		guestGroup.POST("/api/v1/auth/guest/logout", RequireFeature(d.FeatureFlag, "ff_guest_portal_auth"), handleGuestLogout(d))
 		guestGroup.GET("/api/v1/guest/bookings", RequireFeature(d.FeatureFlag, "ff_guest_my_bookings"), handleGuestBookings(d))
 		guestGroup.GET("/api/v1/guest/bookings/:id", RequireFeature(d.FeatureFlag, "ff_guest_my_bookings"), handleGuestBookingDetail(d))
+		guestGroup.GET("/api/v1/guest/bookings/:id/payment", RequireFeature(d.FeatureFlag, "ff_guest_my_bookings"), handleGuestBookingPayment(d))
 		guestGroup.GET("/api/v1/guest/bookings/:id/receipt", RequireFeature(d.FeatureFlag, "ff_booking_artifacts_receipt"), handleGuestBookingReceipt(d))
 		guestGroup.GET("/api/v1/guest/bookings/:id/calendar.ics", RequireFeature(d.FeatureFlag, "ff_booking_artifacts_icalendar"), handleGuestBookingCalendar(d))
 		guestGroup.GET("/api/v1/guest/bookings/:id/refund-status", RequireFeature(d.FeatureFlag, "ff_guest_my_bookings"), handleGuestRefundStatus(d))
@@ -172,6 +173,7 @@ func NewRouter(d Deps) *gin.Engine {
 		apiGroup.POST("/api/v1/quotes", RequireFeature(d.FeatureFlag, "ff_quote_locking_engine"), calculateQuote(d))
 		apiGroup.POST("/api/v1/bookings", createBooking(d))
 		apiGroup.GET("/api/v1/bookings/:id", getBooking(d))
+		apiGroup.GET("/api/v1/bookings/:id/payment", getBookingPayment(d))
 		apiGroup.POST("/api/v1/bookings/:id/cancel", cancelBooking(d))
 		apiGroup.POST("/api/v1/bookings/:id/check-in", checkIn(d))
 		apiGroup.POST("/api/v1/bookings/:id/check-out", checkOut(d))
@@ -1022,6 +1024,78 @@ func getBooking(d Deps) gin.HandlerFunc {
 		}
 
 		writeJSON(c, http.StatusOK, b.ToPublicDTO())
+	}
+}
+
+// GET /api/v1/bookings/{id}/payment
+func getBookingPayment(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.BookingSvc == nil {
+			httpErrorCode(c, http.StatusNotImplemented, "layanan pemesanan belum dikonfigurasi", "NOT_IMPLEMENTED")
+			return
+		}
+		id := c.Param("id")
+		b, err := d.BookingSvc.Get(c.Request.Context(), id)
+		if errors.Is(err, booking.ErrNotFound) {
+			httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan atau Anda tidak memiliki akses", "BOOKING_NOT_FOUND")
+			return
+		}
+		if err != nil {
+			httpErrorCode(c, http.StatusInternalServerError, "gagal membaca booking", "INTERNAL_ERROR")
+			return
+		}
+
+		authCtx := GetAuthContext(c.Request.Context())
+		guestToken := GetGuestToken(c.Request.Context())
+
+		// IDOR & Ownership Verification (BE-R15, BE-G13)
+		authorized := false
+		if authCtx.Role != "guest" {
+			authorized = true
+		} else if b.GuestToken != "" && guestToken == b.GuestToken {
+			authorized = true
+		} else if d.GuestSvc != nil {
+			sessionToken := extractGuestSessionToken(c.Request)
+			if sessionToken != "" {
+				sess, sErr := d.GuestSvc.ValidateSession(c.Request.Context(), sessionToken)
+				if sErr == nil && sess != nil && strings.EqualFold(strings.TrimSpace(sess.GuestEmail), strings.TrimSpace(b.GuestEmail)) {
+					authorized = true
+				}
+			}
+		}
+
+		if !authorized {
+			httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan atau Anda tidak memiliki akses", "BOOKING_NOT_FOUND")
+			return
+		}
+
+		recovery, err := d.BookingSvc.GetPaymentRecovery(c.Request.Context(), id)
+		if errors.Is(err, booking.ErrNotFound) {
+			httpErrorCode(c, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")
+			return
+		}
+		if errors.Is(err, booking.ErrHoldExpired) {
+			httpErrorCode(c, http.StatusGone, "batas waktu pembayaran reservasi telah kedaluwarsa, kamar telah dilepas ke publik", "HOLD_EXPIRED")
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentRecoveryNotPending) {
+			httpErrorCode(c, http.StatusConflict, "pembayaran tidak dapat dilanjutkan karena reservasi tidak berstatus pending", "BOOKING_NOT_PENDING")
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentGatewayTimeout) {
+			httpErrorCode(c, http.StatusGatewayTimeout, "koneksi gateway pembayaran terputus, silakan coba beberapa saat lagi", "GATEWAY_TIMEOUT")
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentDefinitiveFailure) {
+			httpErrorCode(c, http.StatusBadGateway, "gateway pembayaran menolak pembuatan tagihan", "PAYMENT_FAILED")
+			return
+		}
+		if err != nil {
+			httpErrorCode(c, http.StatusInternalServerError, "gagal memulihkan tautan pembayaran", "INTERNAL_ERROR")
+			return
+		}
+
+		writeJSON(c, http.StatusOK, recovery)
 	}
 }
 

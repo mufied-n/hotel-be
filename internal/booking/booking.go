@@ -241,6 +241,20 @@ var ErrPaymentGatewayTimeout = errors.New("booking: payment gateway timeout or n
 // Pada kondisi ini, kompensasi pembatalan booking dan pelepasan inventori dieksekusi.
 var ErrPaymentDefinitiveFailure = errors.New("booking: payment gateway definitive rejection")
 
+// ErrPaymentRecoveryNotPending dikembalikan saat pemulihan pembayaran diminta untuk booking yang bukan pending (BE-R15).
+var ErrPaymentRecoveryNotPending = errors.New("booking: payment recovery only available for pending bookings")
+
+// PaymentRecovery merangkum informasi pemulihan tautan pembayaran untuk sesi aktif (BE-R15).
+type PaymentRecovery struct {
+	BookingID         string     `json:"booking_id"`
+	Status            Status     `json:"status"`
+	PaymentURL        string     `json:"payment_url"`
+	ProviderReference string     `json:"provider_reference"`
+	AmountMinor       int64      `json:"amount_minor"`
+	Currency          string     `json:"currency"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+}
+
 // IsGatewayTimeout mendeteksi apakah error disebabkan oleh timeout, context deadline, atau gangguan jaringan sementara (BE-R13).
 func IsGatewayTimeout(err error) bool {
 	if err == nil {

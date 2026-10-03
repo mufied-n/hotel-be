@@ -586,6 +586,86 @@ func (s *Service) Get(ctx context.Context, id string) (Booking, error) {
 	return s.reader.Get(ctx, id)
 }
 
+// GetPaymentRecovery mengambil kembali tautan pembayaran invoice gateway yang sah untuk reservasi berstatus pending (BE-R15).
+// Sistem mengutamakan penggunaan invoice/attempt yang sudah terbit di buku besar tanpa membuat duplicate charges ke gateway.
+func (s *Service) GetPaymentRecovery(ctx context.Context, bookingID string) (PaymentRecovery, error) {
+	b, err := s.reader.Get(ctx, bookingID)
+	if err != nil {
+		return PaymentRecovery{}, err
+	}
+	if b.Status != StatusPending {
+		return PaymentRecovery{}, ErrPaymentRecoveryNotPending
+	}
+	if b.ExpiresAt != nil && !s.now().Before(*b.ExpiresAt) {
+		return PaymentRecovery{}, ErrHoldExpired
+	}
+
+	// 1. Cari attempt terakhir yang memiliki tautan pembayaran aktif (idempotent lookup tanpa duplicate charge)
+	if s.attempts != nil {
+		attempts, err := s.attempts.GetAttemptsByBookingID(ctx, bookingID)
+		if err == nil {
+			for i := len(attempts) - 1; i >= 0; i-- {
+				att := attempts[i]
+				if att.Status == "initiated" || att.Status == "unknown_timeout" {
+					if att.Payload != nil {
+						if url, ok := att.Payload["payment_url"].(string); ok && strings.TrimSpace(url) != "" {
+							return PaymentRecovery{
+								BookingID:         b.ID,
+								Status:            b.Status,
+								PaymentURL:        url,
+								ProviderReference: att.ProviderReference,
+								AmountMinor:       b.TotalPriceMinor,
+								Currency:          b.Currency,
+								ExpiresAt:         b.ExpiresAt,
+							}, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Jika belum ada invoice yang terbit sama sekali (misal timeout pada percobaan pertama sebelum URL diterima)
+	charge, err := s.payment.CreateCharge(ctx, b, b.TotalPriceMinor, b.Currency)
+	if err != nil {
+		if IsGatewayTimeout(err) {
+			return PaymentRecovery{}, fmt.Errorf("%w: %v", ErrPaymentGatewayTimeout, err)
+		}
+		return PaymentRecovery{}, fmt.Errorf("%w: %v", ErrPaymentDefinitiveFailure, err)
+	}
+
+	attemptID := uuid.NewV7().String()
+	if s.attempts != nil {
+		if recErr := s.attempts.RecordAttempt(ctx, PaymentAttempt{
+			ID:                attemptID,
+			BookingID:         b.ID,
+			Provider:          "gateway",
+			ProviderReference: charge.Reference,
+			AmountMinor:       b.TotalPriceMinor,
+			Currency:          b.Currency,
+			Status:            "initiated",
+			Payload: map[string]any{
+				"payment_url": charge.PaymentURL,
+				"reference":   charge.Reference,
+			},
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}); recErr != nil {
+			s.log.ErrorContext(ctx, "booking.payment_recovery.record_attempt_failed", "booking_id", b.ID, "attempt_id", attemptID, "err", recErr)
+		}
+	}
+
+	return PaymentRecovery{
+		BookingID:         b.ID,
+		Status:            b.Status,
+		PaymentURL:        charge.PaymentURL,
+		ProviderReference: charge.Reference,
+		AmountMinor:       b.TotalPriceMinor,
+		Currency:          b.Currency,
+		ExpiresAt:         b.ExpiresAt,
+	}, nil
+}
+
 // CheckInResult hasil use case check-in.
 type CheckInResult struct {
 	BookingID   string   `json:"id"`

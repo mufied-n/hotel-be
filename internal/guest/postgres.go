@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -369,6 +370,27 @@ func (s *PostgresStore) GetBookingDetailByEmail(ctx context.Context, email, book
 		}
 		return nil, fmt.Errorf("guest_store.get_booking_detail: %w", err)
 	}
+
+	// BE-R15: Resolusi tautan pembayaran dari attempt aktif jika reservasi berstatus pending
+	if d.Status == "pending" && d.ExpiresAt != nil && time.Now().UTC().Before(*d.ExpiresAt) {
+		var payloadJSON []byte
+		pQuery := `
+			SELECT payload
+			FROM payment_attempts
+			WHERE booking_id = $1 AND status IN ('initiated', 'unknown_timeout') AND payload ? 'payment_url'
+			ORDER BY created_at DESC
+			LIMIT 1
+		`
+		if pErr := s.pool.QueryRow(ctx, pQuery, bookingID).Scan(&payloadJSON); pErr == nil {
+			var pMap map[string]any
+			if json.Unmarshal(payloadJSON, &pMap) == nil {
+				if url, ok := pMap["payment_url"].(string); ok {
+					d.PaymentURL = url
+				}
+			}
+		}
+	}
+
 	return &d, nil
 }
 
