@@ -24,6 +24,7 @@ import (
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
+	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
@@ -232,6 +233,10 @@ func main() {
 	financeStore := finance.NewPostgresStore(pool)
 	financeSvc := finance.NewService(financeStore, xenditGw, log)
 
+	// ---- Housekeeping Room Status & Readiness Service (Proposed 01) ----
+	housekeepingStore := housekeeping.NewPostgresStore(pool)
+	housekeepingSvc := housekeeping.NewService(housekeepingStore, log)
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,
@@ -248,6 +253,7 @@ func main() {
 		XenditGateway:    xenditGw,
 		GuestSvc:         guestSvc,
 		FinanceSvc:       financeSvc,
+		HousekeepingSvc:  housekeepingSvc,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

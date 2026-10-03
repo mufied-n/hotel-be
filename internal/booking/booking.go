@@ -154,6 +154,9 @@ var ErrInsufficient = errors.New("booking: insufficient rooms")
 // (desain §13) menolak assignment yang tumpang tindih.
 var ErrNoRoomAvailable = errors.New("booking: no physical room available")
 
+// ErrRoomNotReady dikembalikan bila kamar fisik belum siap huni (status belum inspected).
+var ErrRoomNotReady = errors.New("booking: room is not ready for check-in (not inspected)")
+
 // ErrTransientConflict menandakan tabrakan konkuren sementara (SQLSTATE 23P01/40001)
 // yang dapat di-retry secara aman dengan snapshot transaksi baru.
 var ErrTransientConflict = errors.New("booking: transient concurrency conflict")

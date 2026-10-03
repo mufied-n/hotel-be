@@ -159,21 +159,32 @@ func (t *txCtx) UpdateStatus(ctx context.Context, id string, to Status) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if to == StatusCheckedOut {
+		_, _ = t.tx.Exec(ctx, `
+			UPDATE rooms
+			SET cleanliness_status = 'vacant_dirty', updated_by = 'front_desk', updated_at = now()
+			WHERE room_number IN (SELECT room_number FROM room_assignments WHERE booking_id = $1)`,
+			id)
+	}
 	return nil
 }
 
-// PickAndAssignRooms memilih kamar fisik bebas sejumlah count dan memasang assignment (BE-G17).
+// PickAndAssignRooms memilih kamar fisik bebas sejumlah count dan memasang assignment (BE-G17, FR-HK-04).
 //   - NOT EXISTS: hindari kamar yang sudah ter-assign untuk rentang overlap.
 //   - FOR UPDATE OF r SKIP LOCKED: kunci baris kandidat kamar sehingga check-in paralel
 //     memilih kamar fisik berikutnya secara otomatis tanpa saling menggagalkan.
 //   - EXCLUDE USING GIST: backstop bila terjadi exclusion_violation (23P01) pada query/rows.Err,
-//     keduanya dipetakan ke ErrNoRoomAvailable.
+//     keduanya dipetakan ke ErrTransientConflict.
+//   - FR-HK-04: Kamar yang dipilih WAJIB berstatus 'inspected'. Jika kamar bebas ada namun
+//     belum inspected (dirty/cleaning/out_of_service), kembalikan ErrRoomNotReady.
+//   - Saat assignment berhasil, status kebersihan kamar otomatis diubah menjadi 'occupied'.
 func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID string, checkIn, checkOut time.Time, count int) ([]string, error) {
 	rows, err := t.tx.Query(ctx, `
-		WITH free_rooms AS (
+		WITH free_inspected_rooms AS (
 			SELECT r.room_number
 			FROM rooms r
 			WHERE r.room_type_id = $1
+			  AND r.cleanliness_status = 'inspected'
 			  AND NOT EXISTS (
 				SELECT 1 FROM room_assignments ra
 				WHERE ra.room_number = r.room_number
@@ -185,7 +196,7 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 		)
 		INSERT INTO room_assignments (booking_id, room_number, stay_dates)
 		SELECT $5, room_number, daterange($2::date, $3::date, '[)')
-		FROM free_rooms
+		FROM free_inspected_rooms
 		RETURNING room_number`,
 		roomTypeID, checkIn, checkOut, count, bookingID)
 	if err != nil {
@@ -214,7 +225,33 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 	}
 
 	if len(assigned) < count {
+		// Evaluasi apakah kekurangan kamar disebabkan karena kamar memang habis atau belum diinspeksi (FR-HK-04)
+		var freeCount int
+		_ = t.tx.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM rooms r
+			WHERE r.room_type_id = $1
+			  AND r.cleanliness_status != 'out_of_order'
+			  AND NOT EXISTS (
+				SELECT 1 FROM room_assignments ra
+				WHERE ra.room_number = r.room_number
+				  AND ra.stay_dates && daterange($2::date, $3::date, '[)')
+			  )`,
+			roomTypeID, checkIn, checkOut).Scan(&freeCount)
+
+		if freeCount >= count {
+			return nil, ErrRoomNotReady
+		}
 		return nil, ErrNoRoomAvailable
+	}
+
+	_, err = t.tx.Exec(ctx, `
+		UPDATE rooms
+		SET cleanliness_status = 'occupied', updated_by = 'front_desk', updated_at = now()
+		WHERE room_number = ANY($1)`,
+		assigned)
+	if err != nil {
+		return nil, fmt.Errorf("booking: update room to occupied: %w", err)
 	}
 
 	return assigned, nil

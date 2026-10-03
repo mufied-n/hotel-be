@@ -18,6 +18,7 @@ import (
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
+	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
@@ -37,6 +38,7 @@ type e2eTxMock struct {
 	otpNotifier   *e2eOTPNotifier
 	guestStore    *e2eGuestStore
 	finStore      *e2eFinanceStore
+	hkStore       *e2eHousekeepingStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -63,9 +65,26 @@ func (m *e2eTxMock) GetForUpdate(_ context.Context, id string) (booking.Booking,
 }
 func (m *e2eTxMock) UpdateStatus(_ context.Context, _ string, to booking.Status) error {
 	m.booking.Status = to
+	if to == booking.StatusCheckedOut && m.hkStore != nil {
+		for _, r := range m.rooms {
+			if room, ok := m.hkStore.rooms[r]; ok {
+				room.CleanlinessStatus = housekeeping.StatusVacantDirty
+			}
+		}
+	}
 	return nil
 }
 func (m *e2eTxMock) PickAndAssignRooms(_ context.Context, _, _ string, _, _ time.Time, _ int) ([]string, error) {
+	if m.hkStore != nil {
+		for _, r := range m.rooms {
+			if room, ok := m.hkStore.rooms[r]; ok {
+				if room.CleanlinessStatus != housekeeping.StatusInspected {
+					return nil, booking.ErrRoomNotReady
+				}
+				room.CleanlinessStatus = housekeeping.StatusOccupied
+			}
+		}
+	}
 	return m.rooms, nil
 }
 func (m *e2eTxMock) GetRoomAssignments(_ context.Context, _ string) ([]string, error) {
@@ -411,6 +430,82 @@ func (s *e2eFinanceStore) VerifyBookingOwnership(ctx context.Context, bookingID,
 	return s.tx.booking.ID == bookingID && s.tx.booking.GuestEmail == email, nil
 }
 
+type e2eHousekeepingStore struct {
+	rooms map[string]*housekeeping.RoomOperationalView
+}
+
+func newE2EHousekeepingStore() *e2eHousekeepingStore {
+	store := &e2eHousekeepingStore{
+		rooms: make(map[string]*housekeeping.RoomOperationalView),
+	}
+	// Kamar lantai 2 (201..205)
+	for i := 201; i <= 205; i++ {
+		roomNum := fmt.Sprintf("%d", i)
+		store.rooms[roomNum] = &housekeeping.RoomOperationalView{
+			RoomNumber:        roomNum,
+			RoomTypeID:        "01900000-0000-7000-8000-000000000001",
+			RoomTypeName:      "Superior King",
+			Floor:             2,
+			CleanlinessStatus: housekeeping.StatusVacantDirty,
+			UpdatedAt:         time.Now().UTC(),
+			UpdatedBy:         "system",
+		}
+	}
+	// Kamar 301 (Lantai 3) default inspected untuk tes check-in awal
+	store.rooms["301"] = &housekeeping.RoomOperationalView{
+		RoomNumber:        "301",
+		RoomTypeID:        "01900000-0000-7000-8000-000000000003",
+		RoomTypeName:      "Deluxe King",
+		Floor:             3,
+		CleanlinessStatus: housekeeping.StatusInspected,
+		UpdatedAt:         time.Now().UTC(),
+		UpdatedBy:         "system",
+	}
+	return store
+}
+
+func (s *e2eHousekeepingStore) ListRooms(ctx context.Context, floor int, status string, roomTypeID string) ([]housekeeping.RoomOperationalView, error) {
+	var res []housekeeping.RoomOperationalView
+	for _, r := range s.rooms {
+		if floor > 0 && r.Floor != floor {
+			continue
+		}
+		if status != "" && string(r.CleanlinessStatus) != status {
+			continue
+		}
+		if roomTypeID != "" && r.RoomTypeID != roomTypeID {
+			continue
+		}
+		res = append(res, *r)
+	}
+	return res, nil
+}
+
+func (s *e2eHousekeepingStore) GetRoom(ctx context.Context, roomNumber string) (*housekeeping.RoomOperationalView, error) {
+	r, ok := s.rooms[roomNumber]
+	if !ok {
+		return nil, housekeeping.ErrRoomNotFound
+	}
+	copied := *r
+	return &copied, nil
+}
+
+func (s *e2eHousekeepingStore) UpdateRoomCleanliness(ctx context.Context, roomNumber string, status housekeeping.CleanlinessStatus, notes string, actor string) error {
+	r, ok := s.rooms[roomNumber]
+	if !ok {
+		return housekeeping.ErrRoomNotFound
+	}
+	r.CleanlinessStatus = status
+	r.MaintenanceNotes = notes
+	r.UpdatedBy = actor
+	r.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (s *e2eHousekeepingStore) DeductInventoryForOOO(ctx context.Context, roomTypeID string, startDate, endDate time.Time) error {
+	return nil
+}
+
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
 
@@ -428,6 +523,9 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "receptionist", "/api/v1/bookings/:id/check-out", "POST"},
 		{"p", "receptionist", "/api/v1/bookings/:id/no-show", "POST"},
 		{"p", "housekeeping", "/api/v1/rooms/housekeeping", "GET"},
+		{"p", "housekeeping", "/api/v1/housekeeping/rooms", "GET"},
+		{"p", "housekeeping", "/api/v1/housekeeping/rooms/:id/status", "PUT"},
+		{"p", "receptionist", "/api/v1/housekeeping/rooms", "GET"},
 		{"p", "revenue_mgr", "/api/v1/rates", "PUT"},
 		{"p", "revenue_mgr", "/api/v1/catalog/rooms", "POST"},
 		{"p", "revenue_mgr", "/api/v1/catalog/rooms/:id", "PUT"},
@@ -507,18 +605,23 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.finStore = finStore
 	finSvc := finance.NewService(finStore, nil, nil)
 
+	hkStore := newE2EHousekeepingStore()
+	tx.hkStore = hkStore
+	hkSvc := housekeeping.NewService(hkStore, nil)
+
 	handler := api.NewRouter(api.Deps{
-		BookingSvc:    bkSvc,
-		InvStore:      inv,
-		RateSvc:       ratesSvc,
-		RateEngine:    rateEngine,
-		QuoteStore:    quoteStore,
-		Enforcer:      enforcer,
-		IsDevelopment: true,
-		XenditGateway: xenditGw,
-		GuestSvc:      guestSvc,
-		FinanceSvc:    finSvc,
-		ReadyCheck:    func(ctx context.Context) error { return nil },
+		BookingSvc:      bkSvc,
+		InvStore:        inv,
+		RateSvc:         ratesSvc,
+		RateEngine:      rateEngine,
+		QuoteStore:      quoteStore,
+		Enforcer:        enforcer,
+		IsDevelopment:   true,
+		XenditGateway:   xenditGw,
+		GuestSvc:        guestSvc,
+		FinanceSvc:      finSvc,
+		HousekeepingSvc: hkSvc,
+		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
 			if bID == "" {
@@ -2046,6 +2149,203 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if resIDOR.StatusCode != http.StatusNotFound {
 			t.Errorf("idor status = %d, want 404 Not Found", resIDOR.StatusCode)
+		}
+	})
+
+	// 46. Housekeeping Room Board Query & Floor Filter (FR-HK-01)
+	t.Run("E2E-46: Housekeeping Room Board Query & Floor Filter (200 OK)", func(t *testing.T) {
+		// 1. Staf Housekeeping memanggil GET /api/v1/housekeeping/rooms?floor=2
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/housekeeping/rooms?floor=2", nil)
+		req.Header.Set("Authorization", "Bearer housekeeping")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("housekeeping board request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("housekeeping board status = %d, want 200", res.StatusCode)
+		}
+
+		var board map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&board)
+		rooms, ok := board["rooms"].([]any)
+		if !ok || len(rooms) != 5 {
+			t.Fatalf("expected 5 rooms on floor 2, got %v", board["total_rooms"])
+		}
+
+		// 2. Resepsionis juga berwenang memantau status operasional kamar
+		reqRec, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/housekeeping/rooms", nil)
+		reqRec.Header.Set("Authorization", "Bearer receptionist")
+		resRec, err := client.Do(reqRec)
+		if err != nil || resRec.StatusCode != http.StatusOK {
+			t.Fatalf("receptionist board access status = %d, want 200", resRec.StatusCode)
+		}
+
+		// 3. Guest ditolak dari housekeeping dashboard (403 Forbidden)
+		reqGuest, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/housekeeping/rooms", nil)
+		reqGuest.Header.Set("Authorization", "Bearer guest")
+		resGuest, _ := client.Do(reqGuest)
+		if resGuest.StatusCode != http.StatusForbidden {
+			t.Errorf("guest board access status = %d, want 403", resGuest.StatusCode)
+		}
+	})
+
+	// 47. Cleanliness Lifecycle Transition & Anti-Bypass Guard (FR-HK-02)
+	t.Run("E2E-47: Cleanliness Lifecycle Transition & Anti-Bypass Guard (200 OK & 409 Conflict)", func(t *testing.T) {
+		// 1. Room Attendant mulai membersihkan kamar 202: vacant_dirty -> cleaning
+		reqStart, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/housekeeping/rooms/202/status",
+			bytes.NewBufferString(`{"to_status":"cleaning","notes":"Attendant Ahmad started cleaning"}`))
+		reqStart.Header.Set("Authorization", "Bearer housekeeping")
+		reqStart.Header.Set("Content-Type", "application/json")
+		resStart, err := client.Do(reqStart)
+		if err != nil || resStart.StatusCode != http.StatusOK {
+			t.Fatalf("start cleaning status = %d, want 200", resStart.StatusCode)
+		}
+
+		// 2. Room Attendant selesai membersihkan: cleaning -> vacant_clean
+		reqClean, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/housekeeping/rooms/202/status",
+			bytes.NewBufferString(`{"to_status":"vacant_clean","notes":"Linen replaced, amenities stocked"}`))
+		reqClean.Header.Set("Authorization", "Bearer housekeeping")
+		reqClean.Header.Set("Content-Type", "application/json")
+		resClean, err := client.Do(reqClean)
+		if err != nil || resClean.StatusCode != http.StatusOK {
+			t.Fatalf("finish cleaning status = %d, want 200", resClean.StatusCode)
+		}
+
+		// 3. HK Supervisor melakukan QC dan inspeksi: vacant_clean -> inspected
+		reqInspect, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/housekeeping/rooms/202/status",
+			bytes.NewBufferString(`{"to_status":"inspected","notes":"QC inspection passed"}`))
+		reqInspect.Header.Set("Authorization", "Bearer housekeeping")
+		reqInspect.Header.Set("Content-Type", "application/json")
+		resInspect, err := client.Do(reqInspect)
+		if err != nil || resInspect.StatusCode != http.StatusOK {
+			t.Fatalf("inspect room status = %d, want 200", resInspect.StatusCode)
+		}
+
+		// 4. Anti-Bypass Guard: Kamar 204 masih vacant_dirty, coba langsung loncat ke inspected -> 409 Conflict
+		reqBypass, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/housekeeping/rooms/204/status",
+			bytes.NewBufferString(`{"to_status":"inspected","notes":"Direct bypass attempt"}`))
+		reqBypass.Header.Set("Authorization", "Bearer housekeeping")
+		reqBypass.Header.Set("Content-Type", "application/json")
+		resBypass, err := client.Do(reqBypass)
+		if err != nil || resBypass.StatusCode != http.StatusConflict {
+			t.Fatalf("bypass attempt status = %d, want 409 Conflict", resBypass.StatusCode)
+		}
+		var errResp map[string]any
+		_ = json.NewDecoder(resBypass.Body).Decode(&errResp)
+		if errResp["code"] != "INVALID_STATUS_TRANSITION" {
+			t.Errorf("error code = %v, want INVALID_STATUS_TRANSITION", errResp["code"])
+		}
+	})
+
+	// 48. Front Desk Check-In Guard Rejection on Dirty Room (FR-HK-04)
+	t.Run("E2E-48: Front Desk Check-In Guard Rejection on Dirty Room (409 ROOM_NOT_READY)", func(t *testing.T) {
+		// Pasang kamar 301 ke status vacant_dirty dan siapkan booking confirmed
+		_ = tx.hkStore.UpdateRoomCleanliness(context.Background(), "301", housekeeping.StatusVacantDirty, "dirty", "system")
+		tx.booking.Status = booking.StatusConfirmed
+
+		// Resepsionis mencoba check-in tamu ke kamar kotor
+		reqCheckIn, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-in", nil)
+		reqCheckIn.Header.Set("Authorization", "Bearer receptionist")
+		resCheckIn, err := client.Do(reqCheckIn)
+		if err != nil {
+			t.Fatalf("check-in request failed: %v", err)
+		}
+		if resCheckIn.StatusCode != http.StatusConflict {
+			t.Fatalf("check-in on dirty room status = %d, want 409 Conflict", resCheckIn.StatusCode)
+		}
+
+		var errResp map[string]any
+		_ = json.NewDecoder(resCheckIn.Body).Decode(&errResp)
+		if errResp["code"] != "ROOM_NOT_READY" {
+			t.Errorf("error code = %v, want ROOM_NOT_READY", errResp["code"])
+		}
+	})
+
+	// 49. Front Desk Check-In on Inspected Room & Auto-Occupied Transition (FR-HK-04)
+	t.Run("E2E-49: Front Desk Check-In on Inspected Room & Auto-Occupied Transition (200 OK)", func(t *testing.T) {
+		// HK Supervisor menginspeksi kamar 301 sehingga berstatus inspected
+		_ = tx.hkStore.UpdateRoomCleanliness(context.Background(), "301", housekeeping.StatusInspected, "inspected and ready", "hk_supervisor")
+		tx.booking.Status = booking.StatusConfirmed
+
+		// Resepsionis check-in tamu
+		reqCheckIn, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-in", nil)
+		reqCheckIn.Header.Set("Authorization", "Bearer receptionist")
+		resCheckIn, err := client.Do(reqCheckIn)
+		if err != nil {
+			t.Fatalf("check-in request failed: %v", err)
+		}
+		if resCheckIn.StatusCode != http.StatusOK {
+			t.Fatalf("check-in status = %d, want 200 OK", resCheckIn.StatusCode)
+		}
+
+		// Verifikasi status kamar di housekeeping board berubah otomatis menjadi occupied
+		room301, err := tx.hkStore.GetRoom(context.Background(), "301")
+		if err != nil {
+			t.Fatalf("failed to get room 301: %v", err)
+		}
+		if room301.CleanlinessStatus != housekeeping.StatusOccupied {
+			t.Errorf("room 301 status = %v, want occupied", room301.CleanlinessStatus)
+		}
+	})
+
+	// 50. Front Desk Check-Out & Auto-Dirty Transition (FR-HK-05)
+	t.Run("E2E-50: Front Desk Check-Out & Auto-Dirty Transition (200 OK)", func(t *testing.T) {
+		// Tamu melakukan check-out lewat front desk
+		reqOut, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/check-out", nil)
+		reqOut.Header.Set("Authorization", "Bearer receptionist")
+		resOut, err := client.Do(reqOut)
+		if err != nil {
+			t.Fatalf("check-out request failed: %v", err)
+		}
+		if resOut.StatusCode != http.StatusOK {
+			t.Fatalf("check-out status = %d, want 200 OK", resOut.StatusCode)
+		}
+
+		// Verifikasi status kamar 301 otomatis bertransisi menjadi vacant_dirty
+		room301, err := tx.hkStore.GetRoom(context.Background(), "301")
+		if err != nil {
+			t.Fatalf("failed to get room 301: %v", err)
+		}
+		if room301.CleanlinessStatus != housekeeping.StatusVacantDirty {
+			t.Errorf("room 301 status = %v, want vacant_dirty", room301.CleanlinessStatus)
+		}
+	})
+
+	// 51. GM Admin Out-of-Order (OOO) Isolation & Non-GM Rejection (FR-HK-03)
+	t.Run("E2E-51: GM Admin Out-of-Order (OOO) Isolation & Non-GM Rejection (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Resepsionis mencoba menetapkan status OOO -> 403 Forbidden
+		reqNonGM, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/housekeeping/rooms/203/out-of-order",
+			bytes.NewBufferString(`{"start_date":"2026-10-10","end_date":"2026-10-15","reason":"AC repair"}`))
+		reqNonGM.Header.Set("Authorization", "Bearer receptionist")
+		reqNonGM.Header.Set("Content-Type", "application/json")
+		resNonGM, _ := client.Do(reqNonGM)
+		if resNonGM.StatusCode != http.StatusForbidden {
+			t.Errorf("receptionist OOO status = %d, want 403 Forbidden", resNonGM.StatusCode)
+		}
+
+		// 2. GM Admin menetapkan kamar 203 menjadi Out of Order -> 200 OK
+		reqGM, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/housekeeping/rooms/203/out-of-order",
+			bytes.NewBufferString(`{"start_date":"2026-10-10","end_date":"2026-10-15","reason":"Major bathroom plumbing overhaul"}`))
+		reqGM.Header.Set("Authorization", "Bearer gm_admin")
+		reqGM.Header.Set("Content-Type", "application/json")
+		resGM, err := client.Do(reqGM)
+		if err != nil {
+			t.Fatalf("gm OOO request failed: %v", err)
+		}
+		if resGM.StatusCode != http.StatusOK {
+			t.Fatalf("gm OOO status = %d, want 200 OK", resGM.StatusCode)
+		}
+
+		var oooResp map[string]any
+		_ = json.NewDecoder(resGM.Body).Decode(&oooResp)
+		if oooResp["cleanliness_status"] != "out_of_order" {
+			t.Errorf("cleanliness_status = %v, want out_of_order", oooResp["cleanliness_status"])
+		}
+
+		// Verifikasi status kamar 203 di store adalah out_of_order
+		room203, _ := tx.hkStore.GetRoom(context.Background(), "203")
+		if room203.CleanlinessStatus != housekeeping.StatusOutOfOrder {
+			t.Errorf("room 203 status = %v, want out_of_order", room203.CleanlinessStatus)
 		}
 	})
 }

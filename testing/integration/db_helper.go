@@ -64,6 +64,11 @@ func ResetTestData(t *testing.T, pool *pgxpool.Pool) {
 		t.Fatalf("failed to truncate test tables: %v", err)
 	}
 
+	// Reset seluruh 95 kamar ke status siap huni default (inspected)
+	if _, err := pool.Exec(ctx, "UPDATE rooms SET cleanliness_status = 'inspected', maintenance_notes = '', updated_by = 'system', updated_at = now();"); err != nil {
+		t.Fatalf("failed to reset rooms cleanliness: %v", err)
+	}
+
 	// Reset ketersediaan inventaris untuk tipe Deluxe Balcony King (01900000-0000-7000-8000-000000000001)
 	roomTypeID := "01900000-0000-7000-8000-000000000001"
 	if _, err := pool.Exec(ctx, "DELETE FROM inventory WHERE room_type_id = $1;", roomTypeID); err != nil {

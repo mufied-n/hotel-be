@@ -24,6 +24,7 @@ import (
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/guest"
+	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
@@ -43,12 +44,13 @@ type Deps struct {
 	// FakePay memicu konfirmasi pembayaran pada mode dev (FakeGateway).
 	FakePay       func(w http.ResponseWriter, r *http.Request)
 	// Enforcer untuk evaluasi RBAC Casbin thread-safe.
-	Enforcer      *casbin.SyncedEnforcer
-	IsDevelopment bool
-	RateLimiter   *RateLimiter
-	XenditGateway *payment.XenditGateway
-	GuestSvc      guest.Service
-	FinanceSvc    finance.Service
+	Enforcer        *casbin.SyncedEnforcer
+	IsDevelopment   bool
+	RateLimiter     *RateLimiter
+	XenditGateway   *payment.XenditGateway
+	GuestSvc        guest.Service
+	FinanceSvc      finance.Service
+	HousekeepingSvc housekeeping.Service
 }
 
 // NewRouter merakit seluruh route.
@@ -120,6 +122,11 @@ func NewRouter(d Deps) http.Handler {
 		api.Get("/api/v1/finance/cases", handleFinanceCases(d))
 		api.Post("/api/v1/finance/cases/{id}/resolve", handleFinanceResolveCase(d))
 		api.Get("/api/v1/finance/reconciliations", handleFinanceSummary(d))
+
+		// Housekeeping Room Status & Readiness Lifecycle (Proposed 01)
+		api.Get("/api/v1/housekeeping/rooms", handleHousekeepingRooms(d))
+		api.Put("/api/v1/housekeeping/rooms/{id}/status", handleHousekeepingStatus(d))
+		api.Post("/api/v1/housekeeping/rooms/{id}/out-of-order", handleHousekeepingOOO(d))
 
 		// Dev-only: simulasi pembayaran sukses (BE-G10: gate development only)
 		if d.IsDevelopment && d.FakePay != nil {
@@ -783,6 +790,9 @@ func checkIn(d Deps) http.HandlerFunc {
 			return
 		case errors.Is(err, booking.ErrIllegalTransition):
 			httpErrorCode(w, http.StatusConflict, err.Error(), "ILLEGAL_TRANSITION")
+			return
+		case errors.Is(err, booking.ErrRoomNotReady):
+			httpErrorCode(w, http.StatusConflict, "kamar belum siap huni (belum diinspeksi oleh housekeeping)", "ROOM_NOT_READY")
 			return
 		case errors.Is(err, booking.ErrNoRoomAvailable):
 			httpErrorCode(w, http.StatusConflict, "tidak ada kamar fisik bebas untuk rentang menginap ini", "NO_ROOM_AVAILABLE")
