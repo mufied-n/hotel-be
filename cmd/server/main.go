@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
@@ -86,11 +87,16 @@ func main() {
 	}
 
 	var notifierSvc booking.Notifier
+	var otpNotifier guest.OTPNotifier
 	if cfg.ResendAPIKey != "" {
-		notifierSvc = notifier.NewResend(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.ResendFromEmail, log)
+		resendNotifier := notifier.NewResend(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.ResendFromEmail, log)
+		notifierSvc = resendNotifier
+		otpNotifier = resendNotifier
 		log.Info("notifier.resend.active", "from", cfg.ResendFromEmail)
 	} else {
-		notifierSvc = notifier.NewLog(log)
+		logNotifier := notifier.NewLog(log)
+		notifierSvc = logNotifier
+		otpNotifier = logNotifier
 		log.Info("notifier.log.active", "mode", "dev_fallback")
 	}
 
@@ -217,6 +223,10 @@ func main() {
 		log.Info("casbin.enforcer.ready")
 	}
 
+	// ---- Guest Auth & My Bookings Service (F02 & F03) ----
+	guestStore := guest.NewPostgresStore(pool)
+	guestSvc := guest.NewService(guestStore, otpNotifier, log)
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,
@@ -231,6 +241,7 @@ func main() {
 		IsDevelopment:    cfg.IsDevelopment(),
 		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
 		XenditGateway:    xenditGw,
+		GuestSvc:         guestSvc,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

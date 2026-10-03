@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/workers"
@@ -45,6 +46,7 @@ type Deps struct {
 	IsDevelopment bool
 	RateLimiter   *RateLimiter
 	XenditGateway *payment.XenditGateway
+	GuestSvc      guest.Service
 }
 
 // NewRouter merakit seluruh route.
@@ -76,6 +78,18 @@ func NewRouter(d Deps) http.Handler {
 	r.Get("/healthz", healthz)
 	r.Get("/ready", ready(d))
 	r.Post("/api/v1/webhooks/xendit", xenditWebhook(d))
+
+	// Guest Auth & My Bookings (F02 & F03)
+	r.Post("/api/v1/auth/guest/challenge", handleGuestChallenge(d))
+	r.Post("/api/v1/auth/guest/verify", handleGuestVerify(d))
+	r.Group(func(guestRouter chi.Router) {
+		guestRouter.Use(requireGuestSession(d.GuestSvc))
+		guestRouter.Get("/api/v1/auth/guest/me", handleGuestMe(d))
+		guestRouter.Post("/api/v1/auth/guest/logout", handleGuestLogout(d))
+		guestRouter.Get("/api/v1/guest/bookings", handleGuestBookings(d))
+		guestRouter.Get("/api/v1/guest/bookings/{id}", handleGuestBookingDetail(d))
+	})
+
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)
 	r.Group(func(api chi.Router) {

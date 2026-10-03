@@ -120,6 +120,96 @@ func (n *ResendNotifier) SendBookingConfirmed(ctx context.Context, b booking.Boo
 	return nil
 }
 
+// SendGuestOTP menyusun template email OTP login dan mengirimkannya via Resend API.
+func (n *ResendNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+	if n.APIKey == "" {
+		return errors.New("resend: API key is not configured")
+	}
+
+	htmlBody := renderGuestOTPHTML(otpCode)
+
+	reqBody := sendEmailRequest{
+		From:    n.FromEmail,
+		To:      []string{email},
+		Subject: "Kode Verifikasi Masuk — Pulang ke Uttara",
+		HTML:    htmlBody,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("resend: marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/emails", n.BaseURL)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("resend: new request: %w", err)
+	}
+
+	httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", n.APIKey))
+	httpReq.Header.Set("Content-Type", "application/json")
+	// Idempotency-Key per kode OTP agar pengiriman aman
+	httpReq.Header.Set("Idempotency-Key", fmt.Sprintf("otp-%s-%d", email, time.Now().Unix()/60))
+
+	resp, err := n.Client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("resend: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: status %d: %s", ErrEmailDispatchFailed, resp.StatusCode, string(respBytes))
+	}
+
+	var res sendEmailResponse
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	n.Log.InfoContext(ctx, "resend.otp_sent", "email", email, "resend_id", res.ID)
+	return nil
+}
+
+// renderGuestOTPHTML menghasilkan template email kode OTP bermerek Pulang ke Uttara.
+func renderGuestOTPHTML(otpCode string) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F7F5F0; margin: 0; padding: 24px; color: #2D2B2A; }
+    .card { max-width: 520px; margin: 0 auto; background: #FFFFFF; border-radius: 8px; border: 1px solid #E6E2D8; padding: 32px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .header { text-align: center; border-bottom: 2px solid #9B4A2C; padding-bottom: 20px; margin-bottom: 24px; }
+    .header h1 { margin: 0; color: #2D2B2A; font-size: 22px; letter-spacing: 1px; }
+    .header p { margin: 4px 0 0; color: #9B4A2C; font-size: 13px; text-transform: uppercase; font-weight: bold; }
+    .otp-box { background: #F9F8F6; border: 1px dashed #9B4A2C; border-radius: 8px; padding: 20px; text-align: center; margin: 24px 0; }
+    .otp-code { font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #9B4A2C; font-family: monospace; }
+    .notice { font-size: 13px; color: #777; line-height: 1.5; margin-top: 16px; }
+    .footer { text-align: center; font-size: 12px; color: #888; border-top: 1px solid #E6E2D8; padding-top: 20px; margin-top: 32px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <h1>PULANG KE UTTARA</h1>
+      <p>Verifikasi Akses Tamu</p>
+    </div>
+    <p>Halo,</p>
+    <p>Gunakan kode verifikasi berikut untuk masuk ke akun Anda dan mengakses <strong>Booking Saya</strong>:</p>
+    
+    <div class="otp-box">
+      <div class="otp-code">%s</div>
+    </div>
+
+    <p class="notice">Kode ini berlaku selama <strong>10 menit</strong>. Demi keamanan privasi reservasi Anda, jangan berikan kode ini kepada pihak manapun termasuk staf hotel.</p>
+
+    <div class="footer">
+      <p>Jl. Kaliurang KM 5.5 No. 12, Sleman, D.I. Yogyakarta</p>
+      <p>Email: reservations@pulangkeuttara.com | Telp: +62 274 555-0199</p>
+    </div>
+  </div>
+</body>
+</html>`, otpCode)
+}
+
 // renderBookingConfirmationHTML menghasilkan template email responsif bermerek Pulang ke Uttara (Yogyakarta).
 func renderBookingConfirmationHTML(b booking.Booking) string {
 	checkInStr := b.CheckIn.Format("02 Jan 2006")
@@ -181,3 +271,4 @@ func renderBookingConfirmationHTML(b booking.Booking) string {
 }
 
 var _ booking.Notifier = (*ResendNotifier)(nil)
+

@@ -29,4 +29,14 @@ func (n *LogNotifier) SendBookingConfirmed(ctx context.Context, b booking.Bookin
 	return nil
 }
 
+// SendGuestOTP mencatat kode OTP tamu ke log untuk keperluan dev/testing.
+func (n *LogNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+	n.Log.InfoContext(ctx, "email.guest_otp",
+		"to", email,
+		"otp", otpCode,
+	)
+	return nil
+}
+
 var _ booking.Notifier = (*LogNotifier)(nil)
+

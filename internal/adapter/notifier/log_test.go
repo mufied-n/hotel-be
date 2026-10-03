@@ -26,4 +26,10 @@ func TestLogNotifier_TableTest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
+	err = n.SendGuestOTP(context.Background(), "siti@example.com", "123456")
+	if err != nil {
+		t.Fatalf("unexpected error on SendGuestOTP: %v", err)
+	}
 }
+

@@ -16,6 +16,7 @@ import (
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
@@ -29,9 +30,11 @@ type e2eIncrementCall struct {
 }
 
 type e2eTxMock struct {
-	booking    booking.Booking
-	rooms      []string
-	increments []e2eIncrementCall
+	booking       booking.Booking
+	rooms         []string
+	increments    []e2eIncrementCall
+	otpNotifier   *e2eOTPNotifier
+	guestStore    *e2eGuestStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -91,6 +94,133 @@ type e2eNotifierMock struct{}
 func (m *e2eNotifierMock) SendBookingConfirmed(_ context.Context, _ booking.Booking) error {
 	return nil
 }
+
+type e2eGuestStore struct {
+	challenges map[string]*guest.Challenge
+	sessions   map[string]*guest.GuestSession
+	tx         *e2eTxMock
+}
+
+func newE2EGuestStore(tx *e2eTxMock) *e2eGuestStore {
+	return &e2eGuestStore{
+		challenges: make(map[string]*guest.Challenge),
+		sessions:   make(map[string]*guest.GuestSession),
+		tx:         tx,
+	}
+}
+
+func (s *e2eGuestStore) CreateChallenge(ctx context.Context, c *guest.Challenge) error {
+	c.ID = "ch-e2e-001"
+	s.challenges[c.Email] = c
+	return nil
+}
+
+func (s *e2eGuestStore) GetLatestActiveChallenge(ctx context.Context, email string) (*guest.Challenge, error) {
+	return s.challenges[email], nil
+}
+
+func (s *e2eGuestStore) UpdateChallengeAttempts(ctx context.Context, id string, attempts int) error {
+	for _, c := range s.challenges {
+		if c.ID == id {
+			c.Attempts = attempts
+		}
+	}
+	return nil
+}
+
+func (s *e2eGuestStore) MarkChallengeVerified(ctx context.Context, id string, verifiedAt time.Time) error {
+	for _, c := range s.challenges {
+		if c.ID == id {
+			c.VerifiedAt = &verifiedAt
+		}
+	}
+	return nil
+}
+
+func (s *e2eGuestStore) CreateSession(ctx context.Context, sess *guest.GuestSession) error {
+	sess.ID = "sess-e2e-001"
+	s.sessions[sess.TokenHash] = sess
+	return nil
+}
+
+func (s *e2eGuestStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (*guest.GuestSession, error) {
+	return s.sessions[tokenHash], nil
+}
+
+func (s *e2eGuestStore) TouchSession(ctx context.Context, id string, lastActiveAt, expiresAt time.Time) error {
+	for _, sess := range s.sessions {
+		if sess.ID == id {
+			sess.LastActiveAt = lastActiveAt
+			sess.ExpiresAt = expiresAt
+		}
+	}
+	return nil
+}
+
+func (s *e2eGuestStore) DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error {
+	delete(s.sessions, tokenHash)
+	return nil
+}
+
+func (s *e2eGuestStore) CountActiveBookingsByEmail(ctx context.Context, email string) (int, error) {
+	if s.tx.booking.GuestEmail == email {
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func (s *e2eGuestStore) ListBookingsByEmail(ctx context.Context, email, status string, limit int) ([]guest.BookingSummary, error) {
+	if s.tx.booking.GuestEmail == email {
+		return []guest.BookingSummary{
+			{
+				ID:              s.tx.booking.ID,
+				RoomTypeID:      s.tx.booking.RoomTypeID,
+				RoomTypeName:    "Deluxe Premier",
+				CheckIn:         s.tx.booking.CheckIn.Format("2006-01-02"),
+				CheckOut:        s.tx.booking.CheckOut.Format("2006-01-02"),
+				NumRooms:        s.tx.booking.NumRooms,
+				NumGuests:       s.tx.booking.NumGuests,
+				Status:          string(s.tx.booking.Status),
+				TotalPriceMinor: s.tx.booking.TotalPriceMinor,
+				Currency:        s.tx.booking.Currency,
+				CreatedAt:       s.tx.booking.CreatedAt,
+			},
+		}, nil
+	}
+	return []guest.BookingSummary{}, nil
+}
+
+func (s *e2eGuestStore) GetBookingDetailByEmail(ctx context.Context, email, bookingID string) (*guest.BookingDetail, error) {
+	if s.tx.booking.GuestEmail == email && s.tx.booking.ID == bookingID {
+		return &guest.BookingDetail{
+			ID:              s.tx.booking.ID,
+			RoomTypeID:      s.tx.booking.RoomTypeID,
+			RoomTypeName:    "Deluxe Premier",
+			CheckIn:         s.tx.booking.CheckIn.Format("2006-01-02"),
+			CheckOut:        s.tx.booking.CheckOut.Format("2006-01-02"),
+			NumRooms:        s.tx.booking.NumRooms,
+			NumGuests:       s.tx.booking.NumGuests,
+			Status:          string(s.tx.booking.Status),
+			TotalPriceMinor: s.tx.booking.TotalPriceMinor,
+			Currency:        s.tx.booking.Currency,
+			GuestName:       s.tx.booking.GuestName,
+			GuestEmail:      s.tx.booking.GuestEmail,
+			GuestPhone:      s.tx.booking.GuestPhone,
+			CreatedAt:       s.tx.booking.CreatedAt,
+		}, nil
+	}
+	return nil, nil
+}
+
+type e2eOTPNotifier struct {
+	lastOTP string
+}
+
+func (n *e2eOTPNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+	n.lastOTP = otpCode
+	return nil
+}
+
 
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
@@ -174,6 +304,12 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 
 	xenditGw := payment.NewXendit("https://api.xendit.co", "test_xendit_sec", "test_e2e_xendit_webhook_token", "http://localhost:3000", nil)
 
+	guestStore := newE2EGuestStore(tx)
+	guestNotifier := &e2eOTPNotifier{}
+	tx.otpNotifier = guestNotifier
+	tx.guestStore = guestStore
+	guestSvc := guest.NewService(guestStore, guestNotifier, nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:    bkSvc,
 		InvStore:      inv,
@@ -183,6 +319,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		Enforcer:      enforcer,
 		IsDevelopment: true,
 		XenditGateway: xenditGw,
+		GuestSvc:      guestSvc,
 		ReadyCheck:    func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
@@ -1171,6 +1308,216 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 			t.Errorf("subject %s does not contain booking ID %s", receivedSubject, b.ID)
 		}
 	})
+
+	var guestSessionToken string
+
+	// 29. Guest Request OTP Challenge
+	t.Run("E2E-29: Guest requests OTP challenge (200 OK)", func(t *testing.T) {
+		body := map[string]string{"email": "rian@example.com"}
+		bBytes, _ := json.Marshal(body)
+		res, err := client.Post(srv.URL+"/api/v1/auth/guest/challenge", "application/json", bytes.NewReader(bBytes))
+		if err != nil {
+			t.Fatalf("challenge request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("challenge status = %d, want 200", res.StatusCode)
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		if resp["status"] != "ok" {
+			t.Errorf("status = %v, want ok", resp["status"])
+		}
+		if tx.otpNotifier.lastOTP == "" || len(tx.otpNotifier.lastOTP) != 6 {
+			t.Errorf("expected 6-digit OTP captured, got %s", tx.otpNotifier.lastOTP)
+		}
+	})
+
+	// 30. Guest Verifies OTP and receives Session Token
+	t.Run("E2E-30: Guest verifies OTP and receives session token (200 OK)", func(t *testing.T) {
+		body := map[string]string{
+			"email": "rian@example.com",
+			"code":  tx.otpNotifier.lastOTP,
+		}
+		bBytes, _ := json.Marshal(body)
+		res, err := client.Post(srv.URL+"/api/v1/auth/guest/verify", "application/json", bytes.NewReader(bBytes))
+		if err != nil {
+			t.Fatalf("verify request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("verify status = %d, want 200", res.StatusCode)
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		token, ok := resp["token"].(string)
+		if !ok || !strings.HasPrefix(token, "gst_sess_") {
+			t.Fatalf("expected token starting with gst_sess_, got %v", resp["token"])
+		}
+		guestSessionToken = token
+
+		cookies := res.Cookies()
+		foundCookie := false
+		for _, c := range cookies {
+			if c.Name == "guest_session" && c.Value == token {
+				foundCookie = true
+				break
+			}
+		}
+		if !foundCookie {
+			t.Errorf("expected guest_session cookie in response")
+		}
+	})
+
+	// 31. Guest Accesses Profile via Session
+	t.Run("E2E-31: Guest inspects profile via /auth/guest/me (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/auth/guest/me", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("me request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("me status = %d, want 200", res.StatusCode)
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		if resp["email"] != "rian@example.com" {
+			t.Errorf("email = %v, want rian@example.com", resp["email"])
+		}
+	})
+
+	// 32. Guest Accesses My Bookings List
+	t.Run("E2E-32: Guest lists own reservations via /guest/bookings (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings?status=all", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("list bookings request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("list bookings status = %d, want 200", res.StatusCode)
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		data, ok := resp["data"].([]any)
+		if !ok || len(data) == 0 {
+			t.Fatalf("expected bookings in data, got %v", resp)
+		}
+		first := data[0].(map[string]any)
+		if first["id"] != "bk-e2e-001" {
+			t.Errorf("booking id = %v, want bk-e2e-001", first["id"])
+		}
+	})
+
+	// 33. Guest Accesses Booking Detail with Allowed Actions
+	t.Run("E2E-33: Guest views booking detail with allowed actions (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("detail request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("detail status = %d, want 200", res.StatusCode)
+		}
+		var resp map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&resp)
+		bk, ok := resp["booking"].(map[string]any)
+		if !ok || bk["id"] != "bk-e2e-001" {
+			t.Errorf("booking id = %v, want bk-e2e-001", bk["id"])
+		}
+		if bk["guest_email"] != "rian@example.com" {
+			t.Errorf("guest_email = %v, want rian@example.com", bk["guest_email"])
+		}
+		actions, ok := resp["allowed_actions"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected allowed_actions map in response")
+		}
+		if actions["can_download_receipt"] != true {
+			t.Errorf("expected can_download_receipt true, got %v", actions["can_download_receipt"])
+		}
+	})
+
+	// 34. IDOR Defense: Accessing Another Guest's Booking returns 404 Not Found
+	t.Run("E2E-34: IDOR defense returns 404 for another guest's booking", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-other-user", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("IDOR status = %d, want 404 Not Found", res.StatusCode)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		if body["error"] != "BOOKING_NOT_FOUND" {
+			t.Errorf("error = %v, want BOOKING_NOT_FOUND", body["error"])
+		}
+	})
+
+	// 35. Guest Logout and Revocation
+	t.Run("E2E-35: Guest logout revokes session (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/auth/guest/logout", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("logout request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("logout status = %d, want 200", res.StatusCode)
+		}
+
+		// Permintaan berikutnya ke /me wajib gagal 401 Unauthorized
+		reqMe, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/auth/guest/me", nil)
+		reqMe.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		resMe, err := client.Do(reqMe)
+		if err != nil {
+			t.Fatalf("me request failed: %v", err)
+		}
+		if resMe.StatusCode != http.StatusUnauthorized {
+			t.Errorf("me status after logout = %d, want 401 Unauthorized", resMe.StatusCode)
+		}
+	})
+
+	// 36. Resend Notifier: Guest OTP email dispatch
+	t.Run("E2E-36: Resend dispatch guest OTP email", func(t *testing.T) {
+		var receivedSubject string
+		var receivedTo []string
+		var receivedIdemp string
+
+		resendMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedIdemp = r.Header.Get("Idempotency-Key")
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if toList, ok := body["to"].([]any); ok {
+				for _, to := range toList {
+					receivedTo = append(receivedTo, to.(string))
+				}
+			}
+			if s, ok := body["subject"].(string); ok {
+				receivedSubject = s
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "re_otp_9999"})
+		}))
+		defer resendMock.Close()
+
+		resendClient := notifier.NewResend(resendMock.URL, "re_e2e_otp_key", "Pulang ke Uttara <reservations@pulangkeuttara.com>", nil)
+		err := resendClient.SendGuestOTP(context.Background(), "rian@example.com", "987123")
+		if err != nil {
+			t.Fatalf("SendGuestOTP failed: %v", err)
+		}
+		if len(receivedTo) != 1 || receivedTo[0] != "rian@example.com" {
+			t.Errorf("to = %v, want [rian@example.com]", receivedTo)
+		}
+		if !strings.Contains(receivedSubject, "Kode Verifikasi") {
+			t.Errorf("subject = %s, want to contain 'Kode Verifikasi'", receivedSubject)
+		}
+		if !strings.HasPrefix(receivedIdemp, "otp-rian@example.com") {
+			t.Errorf("Idempotency-Key = %s, want prefix 'otp-rian@example.com'", receivedIdemp)
+		}
+	})
 }
+
 
 

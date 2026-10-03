@@ -103,3 +103,77 @@ func TestResendNotifier_SendBookingConfirmed_TableTest(t *testing.T) {
 		})
 	}
 }
+
+func TestResendNotifier_SendGuestOTP_TableTest(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiKey     string
+		email      string
+		otp        string
+		statusCode int
+		respBody   any
+		expectErr  error
+	}{
+		{
+			name:       "Successful OTP email dispatch (HTTP 200)",
+			apiKey:     "re_test_api_key_123",
+			email:      "tamu@example.com",
+			otp:        "847291",
+			statusCode: http.StatusOK,
+			respBody: map[string]any{
+				"id": "email_resend_otp_111",
+			},
+			expectErr: nil,
+		},
+		{
+			name:       "Resend API Error (HTTP 422)",
+			apiKey:     "re_test_api_key_123",
+			email:      "invalid-email",
+			otp:        "847291",
+			statusCode: http.StatusUnprocessableEntity,
+			respBody: map[string]any{
+				"message": "Invalid recipient",
+			},
+			expectErr: ErrEmailDispatchFailed,
+		},
+		{
+			name:      "Unconfigured API key",
+			apiKey:    "",
+			email:     "tamu@example.com",
+			otp:       "847291",
+			expectErr: errors.New("resend: API key is not configured"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/emails" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.WriteHeader(tc.statusCode)
+				_ = json.NewEncoder(w).Encode(tc.respBody)
+			}))
+			defer server.Close()
+
+			resend := NewResend(server.URL, tc.apiKey, "Pulang ke Uttara <test@hotel.com>", slog.Default())
+			err := resend.SendGuestOTP(context.Background(), tc.email, tc.otp)
+
+			if tc.expectErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tc.expectErr)
+				}
+				if !errors.Is(err, tc.expectErr) && err.Error() != tc.expectErr.Error() {
+					t.Errorf("expected err %v, got %v", tc.expectErr, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
