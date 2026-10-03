@@ -189,13 +189,18 @@ func handleGuestVerify(d Deps) gin.HandlerFunc {
 			return
 		}
 
-		// Pasang cookie session yang aman
+		// Pasang header anti-cache pada response data privat sesi (BE-R04)
+		c.Header("Cache-Control", "no-store, private")
+		c.Header("Pragma", "no-cache")
+
+		// Pasang cookie session yang aman (OWASP ASVS V3, BE-R04)
 		http.SetCookie(c.Writer, &http.Cookie{
 			Name:     "guest_session",
 			Value:    token,
 			Path:     "/",
 			Expires:  sess.ExpiresAt,
 			HttpOnly: true,
+			Secure:   isSecureCookie(c, d.IsDevelopment),
 			SameSite: http.SameSiteLaxMode,
 		})
 
@@ -207,8 +212,21 @@ func handleGuestVerify(d Deps) gin.HandlerFunc {
 	}
 }
 
+func isSecureCookie(c *gin.Context, isDev bool) bool {
+	if c.Request != nil && c.Request.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return !isDev
+}
+
 func handleGuestMe(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store, private")
+		c.Header("Pragma", "no-cache")
+
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
 			writeJSON(c, http.StatusUnauthorized, map[string]string{
@@ -233,18 +251,29 @@ func handleGuestMe(d Deps) gin.HandlerFunc {
 
 func handleGuestLogout(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store, private")
+		c.Header("Pragma", "no-cache")
+
 		token := extractGuestSessionToken(c.Request)
 		if token != "" && d.GuestSvc != nil {
-			_ = d.GuestSvc.RevokeSession(c.Request.Context(), token)
+			if err := d.GuestSvc.RevokeSession(c.Request.Context(), token); err != nil {
+				writeJSON(c, http.StatusServiceUnavailable, map[string]string{
+					"error":   "LOGOUT_FAILED",
+					"message": "Gagal mencabut sesi pada server. Silakan coba lagi.",
+				})
+				return
+			}
 		}
 
-		// Hapus cookie session
+		// Hapus cookie session secara aman (BE-R04)
 		http.SetCookie(c.Writer, &http.Cookie{
 			Name:     "guest_session",
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
 			HttpOnly: true,
+			Secure:   isSecureCookie(c, d.IsDevelopment),
 			SameSite: http.SameSiteLaxMode,
 		})
 

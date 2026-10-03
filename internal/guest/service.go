@@ -155,9 +155,12 @@ func (s *DefaultService) ValidateSession(ctx context.Context, rawToken string) (
 		newExpiresAt = maxExpiry
 	}
 
-	_ = s.store.TouchSession(ctx, session.ID, now, newExpiresAt)
-	session.LastActiveAt = now
-	session.ExpiresAt = newExpiresAt
+	if err := s.store.TouchSession(ctx, session.ID, now, newExpiresAt); err != nil {
+		s.log.WarnContext(ctx, "guest.touch_session_failed", "session_id", session.ID, "err", err)
+	} else {
+		session.LastActiveAt = now
+		session.ExpiresAt = newExpiresAt
+	}
 
 	return session, nil
 }

@@ -54,7 +54,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R04 — Logout mengaku berhasil walau pencabutan sesi gagal
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** F02/F12.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03, lihat [laporan](../../testing/e2e/report/2026-10-03-205100-guest-session-logout-hardening-r04-e2e-report.md)). **Hubungan:** F02/F12.
 
 **Bukti source.** [guest_auth.go](../../internal/api/guest_auth.go), `handleGuestLogout`, mengabaikan error `RevokeSession`, menghapus cookie lalu mengembalikan sukses. [guest/service.go](../../internal/guest/service.go) (lihat fungsi terkait) mengabaikan `TouchSession` lalu mengembalikan expiry baru seolah tersimpan. Handler verify memasang HttpOnly/SameSite cookie tetapi tanpa `Secure`, serta mengirim raw token dalam JSON.
 

@@ -3,8 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,6 +279,21 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			expectedStatus: http.StatusOK,
 		},
 		{
+			name:   "Logout when RevokeSession fails returns 503 Service Unavailable",
+			method: http.MethodPost,
+			path:   "/api/v1/auth/guest/logout",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			setupMock: func(m *mockGuestService) {
+				m.revokeSessionFunc = func(ctx context.Context, rawToken string) error {
+					return errors.New("db disconnect")
+				}
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusServiceUnavailable,
+		},
+		{
 			name:   "List bookings with valid session returns 200 OK",
 			method: http.MethodGet,
 			path:   "/api/v1/guest/bookings?status=upcoming",
@@ -408,5 +425,84 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 				t.Fatalf("expected status %d, got %d. Body: %s", tc.expectedStatus, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestGuestAPI_SecurityHeadersAndCookies(t *testing.T) {
+	mockSvc := &mockGuestService{}
+
+	// 1. In dev mode without TLS/HTTPS: Secure is false, HttpOnly is true, SameSite is Lax
+	depsDev := Deps{
+		IsDevelopment: true,
+		GuestSvc:      mockSvc,
+	}
+	routerDev := NewRouter(depsDev)
+
+	reqVerify := httptest.NewRequest(http.MethodPost, "/api/v1/auth/guest/verify", strings.NewReader(`{"email":"tamu@example.com","code":"123456"}`))
+	reqVerify.Header.Set("Content-Type", "application/json")
+	recVerify := httptest.NewRecorder()
+	routerDev.ServeHTTP(recVerify, reqVerify)
+
+	if recVerify.Code != http.StatusOK {
+		t.Fatalf("verify failed: %d", recVerify.Code)
+	}
+	if cc := recVerify.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("expected Cache-Control: no-store, got %q", cc)
+	}
+	cookieHeader := recVerify.Header().Get("Set-Cookie")
+	if !strings.Contains(cookieHeader, "HttpOnly") {
+		t.Errorf("expected HttpOnly in cookie, got %q", cookieHeader)
+	}
+	if strings.Contains(cookieHeader, "Secure") {
+		t.Errorf("expected non-Secure cookie in plain dev mode, got %q", cookieHeader)
+	}
+
+	// 2. With X-Forwarded-Proto: https in dev mode: Secure is true
+	reqHttps := httptest.NewRequest(http.MethodPost, "/api/v1/auth/guest/verify", strings.NewReader(`{"email":"tamu@example.com","code":"123456"}`))
+	reqHttps.Header.Set("Content-Type", "application/json")
+	reqHttps.Header.Set("X-Forwarded-Proto", "https")
+	recHttps := httptest.NewRecorder()
+	routerDev.ServeHTTP(recHttps, reqHttps)
+
+	cookieHttps := recHttps.Header().Get("Set-Cookie")
+	if !strings.Contains(cookieHttps, "Secure") {
+		t.Errorf("expected Secure flag when X-Forwarded-Proto: https, got %q", cookieHttps)
+	}
+
+	// 3. In production mode (!IsDevelopment): Secure is true
+	depsProd := Deps{
+		IsDevelopment: false,
+		GuestSvc:      mockSvc,
+	}
+	routerProd := NewRouter(depsProd)
+
+	reqProd := httptest.NewRequest(http.MethodPost, "/api/v1/auth/guest/verify", strings.NewReader(`{"email":"tamu@example.com","code":"123456"}`))
+	reqProd.Header.Set("Content-Type", "application/json")
+	recProd := httptest.NewRecorder()
+	routerProd.ServeHTTP(recProd, reqProd)
+
+	cookieProd := recProd.Header().Get("Set-Cookie")
+	if !strings.Contains(cookieProd, "Secure") {
+		t.Errorf("expected Secure flag in production mode, got %q", cookieProd)
+	}
+
+	// 4. Logout in production mode sets Secure expired cookie
+	reqLogout := httptest.NewRequest(http.MethodPost, "/api/v1/auth/guest/logout", nil)
+	reqLogout.Header.Set("Authorization", "Bearer gst_sess_valid")
+	recLogout := httptest.NewRecorder()
+	routerProd.ServeHTTP(recLogout, reqLogout)
+
+	if recLogout.Code != http.StatusOK {
+		t.Fatalf("logout failed: %d", recLogout.Code)
+	}
+	if cc := recLogout.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("expected Cache-Control: no-store on logout, got %q", cc)
+	}
+	cookieLogout := recLogout.Header().Get("Set-Cookie")
+	if !strings.Contains(cookieLogout, "Max-Age=0") && !strings.Contains(cookieLogout, "Max-Age=-1") {
+		t.Errorf("expected cookie cleared on logout, got %q", cookieLogout)
+	}
+	if !strings.Contains(cookieLogout, "Secure") {
+		t.Errorf("expected Secure flag on cleared cookie in prod, got %q", cookieLogout)
 	}
 }

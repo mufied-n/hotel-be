@@ -20,6 +20,7 @@ type mockStore struct {
 	createErr  error
 	updateErr  error
 	sessionErr error
+	touchErr   error
 	listErr    error
 	detailErr  error
 	receiptErr error
@@ -148,6 +149,11 @@ func (m *mockStore) GetSessionByTokenHash(ctx context.Context, tokenHash string)
 }
 
 func (m *mockStore) TouchSession(ctx context.Context, id string, lastActiveAt, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.touchErr != nil {
+		return m.touchErr
+	}
 	for _, s := range m.sessions {
 		if s.ID == id {
 			s.LastActiveAt = lastActiveAt
@@ -510,6 +516,28 @@ func TestGuestService_ValidateAndRevokeSession_TableTest(t *testing.T) {
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("expected ErrSessionNotFound after revoke, got %v", err)
 	}
+
+	// 5. TouchSession DB failure does not extend in-memory expiry (BE-R04)
+	token2 := "gst_sess_touch_fail"
+	tokenHash2 := HashString(token2)
+	initialExpiry := now.Add(2 * time.Hour)
+	store.sessions[tokenHash2] = &GuestSession{
+		ID:           "sess_touch_fail",
+		GuestEmail:   "tamu2@example.com",
+		TokenHash:    tokenHash2,
+		ExpiresAt:    initialExpiry,
+		LastActiveAt: now.Add(-1 * time.Hour),
+		CreatedAt:    now.Add(-2 * time.Hour),
+	}
+	store.touchErr = errors.New("db disconnect")
+	sess2, err := svc.ValidateSession(context.Background(), token2)
+	if err != nil {
+		t.Fatalf("expected non-nil session despite touch error, got %v", err)
+	}
+	if !sess2.ExpiresAt.Equal(initialExpiry) {
+		t.Errorf("expected expiry to remain unchanged at %v, got %v", initialExpiry, sess2.ExpiresAt)
+	}
+	store.touchErr = nil
 }
 
 func TestGuestService_BookingsAndIDOR_TableTest(t *testing.T) {
