@@ -30,6 +30,7 @@ import (
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
+	"github.com/example/hotel-booking/internal/stay"
 	"github.com/example/hotel-booking/internal/workers"
 )
 
@@ -242,6 +243,10 @@ func main() {
 	frontdeskStore := frontdesk.NewPostgresStore(pool)
 	frontdeskSvc := frontdesk.NewService(frontdeskStore, log)
 
+	// ---- Stay Modification & Room Move Service (Proposed 03) ----
+	stayStore := stay.NewPostgresStore(pool)
+	staySvc := stay.NewService(stayStore, rateEngine, log)
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,
@@ -260,6 +265,7 @@ func main() {
 		FinanceSvc:       financeSvc,
 		HousekeepingSvc:  housekeepingSvc,
 		FrontDeskSvc:     frontdeskSvc,
+		StaySvc:          staySvc,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

@@ -23,6 +23,7 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
+	"github.com/example/hotel-booking/internal/stay"
 )
 
 type e2eIncrementCall struct {
@@ -41,6 +42,7 @@ type e2eTxMock struct {
 	finStore       *e2eFinanceStore
 	hkStore        *e2eHousekeepingStore
 	frontdeskStore *e2eFrontDeskStore
+	stayStore      *e2eStayStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -609,6 +611,117 @@ func (s *e2eFrontDeskStore) ListHandoverNotes(ctx context.Context, limit, offset
 	return s.notes[offset:end], total, nil
 }
 
+type e2eStayStore struct {
+	tx    *e2eTxMock
+	moves []stay.RoomMoveLog
+}
+
+func newE2EStayStore(tx *e2eTxMock) *e2eStayStore {
+	return &e2eStayStore{tx: tx}
+}
+
+func (s *e2eStayStore) GetBooking(ctx context.Context, bookingID string) (*stay.BookingDetails, error) {
+	if s.tx.booking.ID != bookingID {
+		return nil, stay.ErrBookingNotFound
+	}
+	currentRoom := ""
+	if len(s.tx.rooms) > 0 {
+		currentRoom = s.tx.rooms[len(s.tx.rooms)-1]
+	}
+	return &stay.BookingDetails{
+		ID:              s.tx.booking.ID,
+		Status:          string(s.tx.booking.Status),
+		RoomTypeID:      s.tx.booking.RoomTypeID,
+		CheckIn:         s.tx.booking.CheckIn,
+		CheckOut:        s.tx.booking.CheckOut,
+		NumRooms:        s.tx.booking.NumRooms,
+		TotalPriceMinor: s.tx.booking.TotalPriceMinor,
+		CurrentRoom:     currentRoom,
+	}, nil
+}
+
+func (s *e2eStayStore) MoveRoom(ctx context.Context, input stay.RoomMoveInput, moveDate time.Time) (*stay.RoomMoveResult, error) {
+	if s.tx.booking.ID != input.BookingID {
+		return nil, stay.ErrBookingNotFound
+	}
+	if s.tx.booking.Status != booking.StatusCheckedIn {
+		return nil, stay.ErrInvalidBookingStatus
+	}
+	currentRoom := ""
+	if len(s.tx.rooms) > 0 {
+		currentRoom = s.tx.rooms[0]
+	}
+	if currentRoom == input.TargetRoomNumber {
+		return nil, stay.ErrSameRoomMove
+	}
+
+	targetRoom, ok := s.tx.hkStore.rooms[input.TargetRoomNumber]
+	if !ok || targetRoom.CleanlinessStatus != housekeeping.StatusInspected {
+		return nil, stay.ErrTargetRoomNotReady
+	}
+
+	if oldRoom, ok := s.tx.hkStore.rooms[currentRoom]; ok {
+		oldRoom.CleanlinessStatus = housekeeping.StatusVacantDirty
+		oldRoom.MaintenanceNotes = fmt.Sprintf("Room moved to %s: %s", input.TargetRoomNumber, input.Notes)
+	}
+	targetRoom.CleanlinessStatus = housekeeping.StatusOccupied
+
+	s.tx.rooms = []string{input.TargetRoomNumber}
+
+	logEntry := stay.RoomMoveLog{
+		ID:             fmt.Sprintf("mov-e2e-%03d", len(s.moves)+1),
+		BookingID:      input.BookingID,
+		FromRoomNumber: currentRoom,
+		ToRoomNumber:   input.TargetRoomNumber,
+		MoveDate:       moveDate.Format("2006-01-02"),
+		ReasonCategory: string(input.ReasonCategory),
+		Notes:          input.Notes,
+		ActorID:        input.ActorID,
+		CreatedAt:      time.Now().UTC(),
+	}
+	s.moves = append([]stay.RoomMoveLog{logEntry}, s.moves...)
+
+	return &stay.RoomMoveResult{
+		Status:             "ok",
+		BookingID:          input.BookingID,
+		PreviousRoomNumber: currentRoom,
+		NewRoomNumber:      input.TargetRoomNumber,
+		MoveDate:           moveDate.Format("2006-01-02"),
+		Message:            fmt.Sprintf("pemindahan kamar berhasil; kamar %s telah ditandai vacant_dirty", currentRoom),
+	}, nil
+}
+
+func (s *e2eStayStore) ExtendStay(ctx context.Context, bookingID string, additionalNights int, newCheckOut time.Time, additionalRates []int64, additionalTotal int64) (*stay.ExtendStayResult, error) {
+	if s.tx.booking.ID != bookingID {
+		return nil, stay.ErrBookingNotFound
+	}
+	if s.tx.booking.Status != booking.StatusCheckedIn && s.tx.booking.Status != booking.StatusConfirmed {
+		return nil, stay.ErrInvalidBookingStatus
+	}
+
+	oldCheckOut := s.tx.booking.CheckOut
+	s.tx.booking.CheckOut = newCheckOut
+	s.tx.booking.TotalPriceMinor += additionalTotal
+
+	return &stay.ExtendStayResult{
+		Status:                "ok",
+		BookingID:             bookingID,
+		PreviousCheckOut:      oldCheckOut.Format("2006-01-02"),
+		NewCheckOut:           newCheckOut.Format("2006-01-02"),
+		AdditionalNights:      additionalNights,
+		AdditionalAmountMinor: additionalTotal,
+		NewTotalPriceMinor:    s.tx.booking.TotalPriceMinor,
+		PaymentStatus:         "settled",
+	}, nil
+}
+
+func (s *e2eStayStore) ListRoomMoves(ctx context.Context, bookingID string) ([]stay.RoomMoveLog, error) {
+	if s.tx.booking.ID != bookingID {
+		return nil, stay.ErrBookingNotFound
+	}
+	return s.moves, nil
+}
+
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
 
@@ -641,6 +754,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		{"p", "housekeeping", "/api/v1/front-desk/daily-roster", "GET"},
 		{"p", "revenue_mgr", "/api/v1/front-desk/daily-roster", "GET"},
 		{"p", "finance", "/api/v1/front-desk/daily-roster", "GET"},
+		{"p", "receptionist", "/api/v1/bookings/:id/room-move", "POST"},
+		{"p", "receptionist", "/api/v1/bookings/:id/extend-stay", "POST"},
+		{"p", "receptionist", "/api/v1/bookings/:id/room-moves", "GET"},
+		{"p", "finance", "/api/v1/bookings/:id/room-moves", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
 		{"g", "revenue_mgr", "guest"},
@@ -720,6 +837,10 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.frontdeskStore = fdStore
 	fdSvc := frontdesk.NewService(fdStore, nil)
 
+	stayStore := newE2EStayStore(tx)
+	tx.stayStore = stayStore
+	staySvc := stay.NewService(stayStore, rateEngine, nil)
+
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:      bkSvc,
 		InvStore:        inv,
@@ -733,6 +854,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		FinanceSvc:      finSvc,
 		HousekeepingSvc: hkSvc,
 		FrontDeskSvc:    fdSvc,
+		StaySvc:         staySvc,
 		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")
@@ -2659,6 +2781,179 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 		if resHKNotes.StatusCode != http.StatusForbidden {
 			t.Errorf("housekeeping list notes status = %d, want 403 Forbidden", resHKNotes.StatusCode)
+		}
+	})
+
+	// 56. Mid-Stay Room Move on Inspected Room & Auto-Dirty Transition (FR-STAY-01)
+	t.Run("E2E-56: Mid-Stay Room Move on Inspected Room & Auto-Dirty Transition (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest mencoba memindahkan kamar -> 403 Forbidden
+		bodyMove := `{"target_room_number":"202","reason_category":"maintenance_defect","notes":"AC 301 bocor"}`
+		reqGuestMove, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/room-move", bytes.NewBufferString(bodyMove))
+		reqGuestMove.Header.Set("Content-Type", "application/json")
+		resGuestMove, _ := client.Do(reqGuestMove)
+		if resGuestMove.StatusCode != http.StatusForbidden {
+			t.Errorf("guest room move status = %d, want 403 Forbidden", resGuestMove.StatusCode)
+		}
+
+		// Siapkan status booking checked_in di kamar 301 dan kamar 202 inspected
+		tx.booking.Status = booking.StatusCheckedIn
+		tx.rooms = []string{"301"}
+		_ = tx.hkStore.UpdateRoomCleanliness(context.Background(), "202", housekeeping.StatusInspected, "inspected and ready", "hk_supervisor")
+
+		// 2. Receptionist memindahkan tamu dari 301 ke 202 -> 200 OK
+		reqRecepMove, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/room-move", bytes.NewBufferString(bodyMove))
+		reqRecepMove.Header.Set("Authorization", "Bearer receptionist")
+		reqRecepMove.Header.Set("Content-Type", "application/json")
+		resRecepMove, err := client.Do(reqRecepMove)
+		if err != nil {
+			t.Fatalf("receptionist room move failed: %v", err)
+		}
+		if resRecepMove.StatusCode != http.StatusOK {
+			t.Fatalf("receptionist room move status = %d, want 200 OK", resRecepMove.StatusCode)
+		}
+
+		var moveResp map[string]any
+		_ = json.NewDecoder(resRecepMove.Body).Decode(&moveResp)
+		if moveResp["previous_room_number"] != "301" {
+			t.Errorf("previous_room_number = %v, want 301", moveResp["previous_room_number"])
+		}
+		if moveResp["new_room_number"] != "202" {
+			t.Errorf("new_room_number = %v, want 202", moveResp["new_room_number"])
+		}
+
+		// Verifikasi status kebersihan di housekeeping board: 301 -> vacant_dirty, 202 -> occupied
+		room301, _ := tx.hkStore.GetRoom(context.Background(), "301")
+		room202, _ := tx.hkStore.GetRoom(context.Background(), "202")
+		if room301.CleanlinessStatus != housekeeping.StatusVacantDirty {
+			t.Errorf("room 301 status = %v, want vacant_dirty", room301.CleanlinessStatus)
+		}
+		if room202.CleanlinessStatus != housekeeping.StatusOccupied {
+			t.Errorf("room 202 status = %v, want occupied", room202.CleanlinessStatus)
+		}
+	})
+
+	// 57. Room Move Readiness Guard Rejection on Dirty Target Room (FR-STAY-01)
+	t.Run("E2E-57: Room Move Readiness Guard Rejection on Dirty Target Room (409 Conflict)", func(t *testing.T) {
+		// Kamar 204 berstatus vacant_dirty
+		_ = tx.hkStore.UpdateRoomCleanliness(context.Background(), "204", housekeeping.StatusVacantDirty, "uncleaned", "system")
+
+		bodyMoveDirty := `{"target_room_number":"204","reason_category":"guest_request","notes":"Wants lower floor"}`
+		reqMoveDirty, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/room-move", bytes.NewBufferString(bodyMoveDirty))
+		reqMoveDirty.Header.Set("Authorization", "Bearer receptionist")
+		reqMoveDirty.Header.Set("Content-Type", "application/json")
+		resMoveDirty, err := client.Do(reqMoveDirty)
+		if err != nil {
+			t.Fatalf("room move to dirty request failed: %v", err)
+		}
+		if resMoveDirty.StatusCode != http.StatusConflict {
+			t.Fatalf("room move to dirty status = %d, want 409 Conflict", resMoveDirty.StatusCode)
+		}
+
+		var errResp map[string]any
+		_ = json.NewDecoder(resMoveDirty.Body).Decode(&errResp)
+		if errResp["code"] != "TARGET_ROOM_NOT_READY" {
+			t.Errorf("error code = %v, want TARGET_ROOM_NOT_READY", errResp["code"])
+		}
+	})
+
+	// 58. Stay Extension with Dynamic Pricing & Inventory Calculation (FR-STAY-02)
+	t.Run("E2E-58: Stay Extension with Dynamic Pricing & Inventory Calculation (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest mencoba panggil extend stay -> 403 Forbidden
+		bodyExtend := `{"additional_nights":2,"payment_method":"front_desk_edc"}`
+		reqGuestExt, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/extend-stay", bytes.NewBufferString(bodyExtend))
+		reqGuestExt.Header.Set("Content-Type", "application/json")
+		resGuestExt, _ := client.Do(reqGuestExt)
+		if resGuestExt.StatusCode != http.StatusForbidden {
+			t.Errorf("guest extend stay status = %d, want 403 Forbidden", resGuestExt.StatusCode)
+		}
+
+		oldCheckOut := tx.booking.CheckOut
+
+		// 2. Receptionist memperpanjang masa menginap 2 malam -> 200 OK
+		reqRecepExt, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/extend-stay", bytes.NewBufferString(bodyExtend))
+		reqRecepExt.Header.Set("Authorization", "Bearer receptionist")
+		reqRecepExt.Header.Set("Content-Type", "application/json")
+		resRecepExt, err := client.Do(reqRecepExt)
+		if err != nil {
+			t.Fatalf("receptionist extend stay request failed: %v", err)
+		}
+		if resRecepExt.StatusCode != http.StatusOK {
+			t.Fatalf("receptionist extend stay status = %d, want 200 OK", resRecepExt.StatusCode)
+		}
+
+		var extResp map[string]any
+		_ = json.NewDecoder(resRecepExt.Body).Decode(&extResp)
+		if extResp["additional_nights"] != float64(2) {
+			t.Errorf("additional_nights = %v, want 2", extResp["additional_nights"])
+		}
+		if extResp["previous_check_out"] != oldCheckOut.Format("2006-01-02") {
+			t.Errorf("previous_check_out = %v, want %s", extResp["previous_check_out"], oldCheckOut.Format("2006-01-02"))
+		}
+		expectedNewCheckOut := oldCheckOut.AddDate(0, 0, 2).Format("2006-01-02")
+		if extResp["new_check_out"] != expectedNewCheckOut {
+			t.Errorf("new_check_out = %v, want %s", extResp["new_check_out"], expectedNewCheckOut)
+		}
+		if extResp["additional_amount_minor"].(float64) <= 0 {
+			t.Error("expected additional_amount_minor > 0")
+		}
+	})
+
+	// 59. Stay Extension Validation: Rejection on Zero Nights (FR-STAY-02)
+	t.Run("E2E-59: Stay Extension Validation: Rejection on Zero Nights (400 Bad Request)", func(t *testing.T) {
+		bodyZero := `{"additional_nights":0}`
+		reqZero, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings/bk-e2e-001/extend-stay", bytes.NewBufferString(bodyZero))
+		reqZero.Header.Set("Authorization", "Bearer receptionist")
+		reqZero.Header.Set("Content-Type", "application/json")
+		resZero, err := client.Do(reqZero)
+		if err != nil {
+			t.Fatalf("zero nights request failed: %v", err)
+		}
+		if resZero.StatusCode != http.StatusBadRequest {
+			t.Fatalf("zero nights status = %d, want 400 Bad Request", resZero.StatusCode)
+		}
+
+		var errResp map[string]any
+		_ = json.NewDecoder(resZero.Body).Decode(&errResp)
+		if errResp["code"] != "INVALID_ADDITIONAL_NIGHTS" {
+			t.Errorf("error code = %v, want INVALID_ADDITIONAL_NIGHTS", errResp["code"])
+		}
+	})
+
+	// 60. Room Move Audit Log Inquiry & RBAC Isolation (FR-STAY-03)
+	t.Run("E2E-60: Room Move Audit Log Inquiry & RBAC Isolation (200 OK & 403 Forbidden)", func(t *testing.T) {
+		// 1. Guest mencoba membaca riwayat pemindahan kamar -> 403 Forbidden
+		reqGuestMoves, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/bookings/bk-e2e-001/room-moves", nil)
+		resGuestMoves, _ := client.Do(reqGuestMoves)
+		if resGuestMoves.StatusCode != http.StatusForbidden {
+			t.Errorf("guest list room moves status = %d, want 403 Forbidden", resGuestMoves.StatusCode)
+		}
+
+		// 2. Receptionist membaca riwayat pemindahan kamar -> 200 OK
+		reqRecepMoves, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/bookings/bk-e2e-001/room-moves", nil)
+		reqRecepMoves.Header.Set("Authorization", "Bearer receptionist")
+		resRecepMoves, err := client.Do(reqRecepMoves)
+		if err != nil {
+			t.Fatalf("receptionist list room moves failed: %v", err)
+		}
+		if resRecepMoves.StatusCode != http.StatusOK {
+			t.Fatalf("receptionist list room moves status = %d, want 200 OK", resRecepMoves.StatusCode)
+		}
+
+		var listResp map[string]any
+		_ = json.NewDecoder(resRecepMoves.Body).Decode(&listResp)
+		moves, ok := listResp["moves"].([]any)
+		if !ok || len(moves) == 0 {
+			t.Fatalf("expected moves array in response, got %v", listResp["moves"])
+		}
+		firstMove, ok := moves[0].(map[string]any)
+		if !ok {
+			t.Fatalf("expected move object in moves[0], got %v", moves[0])
+		}
+		if firstMove["from_room_number"] != "301" || firstMove["to_room_number"] != "202" {
+			t.Errorf("unexpected move log: %v", firstMove)
+		}
+		if firstMove["reason_category"] != "maintenance_defect" {
+			t.Errorf("reason_category = %v, want maintenance_defect", firstMove["reason_category"])
 		}
 	})
 }

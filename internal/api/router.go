@@ -28,6 +28,7 @@ import (
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
+	"github.com/example/hotel-booking/internal/stay"
 	"github.com/example/hotel-booking/internal/workers"
 )
 
@@ -53,6 +54,7 @@ type Deps struct {
 	FinanceSvc      finance.Service
 	HousekeepingSvc housekeeping.Service
 	FrontDeskSvc    frontdesk.Service
+	StaySvc         stay.Service
 }
 
 // NewRouter merakit seluruh route.
@@ -134,6 +136,11 @@ func NewRouter(d Deps) http.Handler {
 		api.Get("/api/v1/front-desk/daily-roster", handleFrontDeskDailyRoster(d))
 		api.Get("/api/v1/front-desk/handover-notes", handleFrontDeskListHandovers(d))
 		api.Post("/api/v1/front-desk/handover-notes", handleFrontDeskRecordHandover(d))
+
+		// Stay Modification: Room Move & Stay Extension (Proposed 03)
+		api.Post("/api/v1/bookings/{id}/room-move", handleRoomMove(d))
+		api.Post("/api/v1/bookings/{id}/extend-stay", handleExtendStay(d))
+		api.Get("/api/v1/bookings/{id}/room-moves", handleListRoomMoves(d))
 
 		// Dev-only: simulasi pembayaran sukses (BE-G10: gate development only)
 		if d.IsDevelopment && d.FakePay != nil {
