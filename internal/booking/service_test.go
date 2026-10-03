@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 )
@@ -1625,3 +1626,107 @@ func TestBypassRoomReadinessContext(t *testing.T) {
 		})
 	}
 }
+
+type fakeCatalogReader struct {
+	variants map[string]catalog.RoomVariant
+}
+
+func (f *fakeCatalogReader) GetVariant(_ context.Context, idOrCode string) (catalog.RoomVariant, error) {
+	v, ok := f.variants[idOrCode]
+	if !ok {
+		return catalog.RoomVariant{}, catalog.ErrVariantNotFound
+	}
+	return v, nil
+}
+
+func TestServiceCreate_CatalogCapacityInvariant(t *testing.T) {
+	fakeCat := &fakeCatalogReader{
+		variants: map[string]catalog.RoomVariant{
+			"sup-king": {
+				ID:          "sup-king",
+				Code:        "sup-king",
+				MaxCapacity: 3,
+				MaxAdults:   2,
+				MaxChildren: 1,
+			},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		roomTypeID string
+		numRooms   int
+		numGuests  int
+		wantErr    error
+	}{
+		{
+			name:       "num_guests kurang dari num_rooms ditolak",
+			roomTypeID: "sup-king",
+			numRooms:   2,
+			numGuests:  1,
+			wantErr:    ErrInvalidCapacity,
+		},
+		{
+			name:       "melebihi kapasitas varian kamar ditolak",
+			roomTypeID: "sup-king",
+			numRooms:   1,
+			numGuests:  4, // max 3
+			wantErr:    ErrExceedsCapacity,
+		},
+		{
+			name:       "melebihi kapasitas varian multi-kamar ditolak",
+			roomTypeID: "sup-king",
+			numRooms:   2,
+			numGuests:  7, // max 3 * 2 = 6
+			wantErr:    ErrExceedsCapacity,
+		},
+		{
+			name:       "varian tidak ditemukan di katalog ditolak",
+			roomTypeID: "unknown-variant",
+			numRooms:   1,
+			numGuests:  2,
+			wantErr:    ErrNotFound,
+		},
+		{
+			name:       "kapasitas valid diterima",
+			roomTypeID: "sup-king",
+			numRooms:   1,
+			numGuests:  3,
+			wantErr:    nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := newFakeTx(nil, map[string][]string{"sup-king": {"101", "102"}})
+			tx.inventory["sup-king|2026-10-10"] = 5
+			tx.inventory["sup-king|2026-10-11"] = 5
+			inv := &fakeInvStore{avail: []inventory.Availability{
+				{Date: date("2026-10-10"), TotalRooms: 5, AvailableRooms: 5},
+				{Date: date("2026-10-11"), TotalRooms: 5, AvailableRooms: 5},
+			}}
+			svc := NewService(tx, inv, &fakeRates{}, &fakePayment{}, &fakeNotifier{}, &fakeReader{bookings: tx.bookings}, 30*time.Minute, slog.Default())
+			svc.SetCatalogStore(fakeCat)
+
+			input := CreateInput{
+				RoomTypeID:      tc.roomTypeID,
+				CheckIn:         date("2026-10-10"),
+				CheckOut:        date("2026-10-12"),
+				NumRooms:        tc.numRooms,
+				NumGuests:       tc.numGuests,
+				GuestName:       "Tamu Uji",
+				GuestEmail:      "tamu@example.com",
+				TermsAccepted:   true,
+				PrivacyAccepted: true,
+			}
+			if tc.wantErr == nil || errors.Is(tc.wantErr, ErrExceedsCapacity) || errors.Is(tc.wantErr, ErrNotFound) {
+				input = withQuote(svc, input)
+			}
+			_, _, err := svc.Create(context.Background(), input)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+

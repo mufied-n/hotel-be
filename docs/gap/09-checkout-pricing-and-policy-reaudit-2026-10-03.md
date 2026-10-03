@@ -22,7 +22,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R07 — Kapasitas search belum menjadi invariant checkout
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G03; F01/F08.
+**Prioritas:** P1. **Status:** **RESOLVED 2026-10-03** ([laporan](../../testing/e2e/report/2026-10-03-213000-search-quote-checkout-capacity-r07-e2e-report.md)). **Hubungan:** BE-G03; F01/F08.
 
 **Bukti source.** [router.go](../../internal/api/router.go), `searchRooms`, membandingkan total tamu dan dewasa terhadap kapasitas agregat. Tidak memeriksa MaxChildren atau equality jumlah child_ages dengan children. [booking/service.go](../../internal/booking/service.go) (lihat fungsi terkait) hanya membatasi jumlah kamar dan guests positif, tanpa membaca kapasitas katalog; quote juga menerima jumlah yang dinormalisasi.
 
@@ -31,6 +31,12 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 **Dampak.** Reservasi dapat diterima meskipun kamar tidak memenuhi kapasitas fisik. FE validation tidak melindungi direct API.
 
 **Rekomendasi.** Jadikan validasi kapasitas katalog, adults/children/ages dan distribusi kamar bagian quote/create. Bila v1 sengaja hanya menerima jumlah total, tetapkan batas agregat konservatif dan nyatakan keterbatasannya; jangan mengklaim validasi per kamar yang tidak disimpan. Search dan checkout harus menggunakan aturan yang sama.
+
+**Resolusi (2026-10-03).** Penegakan invariant kapasitas fisik kamar katalog telah diimplementasikan secara terintegrasi pada seluruh alur pencarian, kuotasi harga, dan checkout:
+1. `searchRooms` memvalidasi `adults >= rooms`, `len(child_ages) == children`, umur dalam $[0, 17]$, dan menandai varian `available: false` (`EXCEEDS_CAPACITY`) bila `adults > MaxAdults*rooms`, `children > MaxChildren*rooms`, atau `totalGuests > MaxCapacity*rooms`.
+2. `calculateQuote` membaca `CatalogStore.GetVariant`, menolak overcapacity dengan 400 `EXCEEDS_CAPACITY` serta rasio tamu invalid dengan 400 `INVALID_GUEST_COUNT`.
+3. `booking.Service.Create` dan `createBooking` mengikat port `CatalogReader` dan menolak pembuatan booking overcapacity dengan `ErrExceedsCapacity` (HTTP 400 `EXCEEDS_CAPACITY`) dan `ErrInvalidCapacity`.
+4. Dokumen siklus hidup: [PRD](../../docs/prd/search-quote-checkout-capacity-invariant-r07-2026-10-03.md), [SRS](../../docs/srs/search-quote-checkout-capacity-invariant-r07-2026-10-03.md), [Tech Architecture](../../docs/tech/search-quote-checkout-capacity-invariant-architecture-2026-10-03.md), [Walkthrough](../../docs/walkthrough/search-quote-checkout-capacity-invariant-r07-walkthrough-2026-10-03.md), [E2E Test Report](../../testing/e2e/report/2026-10-03-213000-search-quote-checkout-capacity-r07-e2e-report.md).
 
 **Kriteria penerimaan dan verifikasi.** Uji bypass search, overcapacity, MaxAdults/MaxChildren, jumlah age tidak cocok, adults kurang dari jumlah kamar dan distribusi invalid. Semua ditolak sebelum hold/provider; valid boundary diterima. Perubahan kapasitas setelah quote harus mengikuti policy version yang disepakati.
 

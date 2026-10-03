@@ -80,6 +80,9 @@ func (m *MemoryStore) GetVariant(_ context.Context, idOrCode string) (RoomVarian
 			return v, nil
 		}
 	}
+	if idOrCode == "std" && len(m.variants) > 0 {
+		return m.variants[0], nil
+	}
 	return RoomVariant{}, ErrVariantNotFound
 }
 

@@ -257,6 +257,9 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 	quoteStore := rateEngine.QuoteStore()
 	bkSvc.SetQuoteStore(quoteStore)
 
+	catalogStore := catalog.NewMemoryStore(catalog.DefaultVariants())
+	bkSvc.SetCatalogStore(catalogStore)
+
 	handler := NewRouter(Deps{
 		StaffAuth:        TestStaffVerifier(),
 		BookingSvc:       bkSvc,
@@ -265,6 +268,7 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 		RateSvc:          ratesSvc,
 		RateEngine:       rateEngine,
 		QuoteStore:       quoteStore,
+		CatalogStore:     catalogStore,
 		Enqueuer:         &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
 		Enforcer:         auth.DefaultTestEnforcer(),
 		IsDevelopment:    true,
@@ -2198,6 +2202,236 @@ func TestTransportModernization_JSONv2_And_Validator(t *testing.T) {
 				if tc.authBearer != "" {
 					req.Header.Set("Authorization", "Bearer "+tc.authBearer)
 				}
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+				}
+				if tc.wantCode != "" {
+					var prob ProblemDetails
+					_ = newTestDecoder(rec.Body).Decode(&prob)
+					if prob.Code != tc.wantCode {
+						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
+					}
+				}
+			})
+		}
+	})
+}
+
+func TestCapacityInvariant_SearchQuoteCheckout_R07(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	t.Run("Search Parameter Invariants and Capacity Checks", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			query      string
+			wantStatus int
+			wantCode   string
+		}{
+			{
+				name:       "adults kurang dari rooms ditolak",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=1&rooms=2",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_GUEST_COUNT",
+			},
+			{
+				name:       "children 0 tapi ada child_ages ditolak",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=2&children=0&child_ages=5",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "CHILD_AGE_COUNT_MISMATCH",
+			},
+			{
+				name:       "jumlah child_ages tidak cocok dengan children ditolak",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=2&children=2&child_ages=5",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "CHILD_AGE_COUNT_MISMATCH",
+			},
+			{
+				name:       "child age melebihi 17 ditolak",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=2&children=1&child_ages=18",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_CHILD_AGE",
+			},
+			{
+				name:       "child age negatif ditolak",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=2&children=1&child_ages=-1",
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_CHILD_AGE",
+			},
+			{
+				name:       "valid search query lolos",
+				query:      "check_in=2026-10-10&check_out=2026-10-12&adults=2&children=1&child_ages=5&rooms=1",
+				wantStatus: http.StatusOK,
+				wantCode:   "",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/search?"+tc.query, nil)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+				}
+				if tc.wantCode != "" {
+					var prob ProblemDetails
+					_ = newTestDecoder(rec.Body).Decode(&prob)
+					if prob.Code != tc.wantCode {
+						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("Search Variant Overcapacity Flagged", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=3&rooms=1", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", rec.Code)
+		}
+		var resp struct {
+			Results []SearchResultItem `json:"results"`
+		}
+		_ = newTestDecoder(rec.Body).Decode(&resp)
+		foundSupKing := false
+		for _, r := range resp.Results {
+			if r.RoomVariant.Code == "sup-king" {
+				foundSupKing = true
+				if r.Available {
+					t.Errorf("expected sup-king to be unavailable for 3 adults in 1 room")
+				}
+				if r.UnavailableReason != "EXCEEDS_CAPACITY" {
+					t.Errorf("expected reason EXCEEDS_CAPACITY, got %s", r.UnavailableReason)
+				}
+			}
+		}
+		if !foundSupKing {
+			t.Errorf("sup-king not found in search results")
+		}
+	})
+
+	t.Run("Quote Capacity Invariants", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			body       string
+			wantStatus int
+			wantCode   string
+		}{
+			{
+				name:       "quote overcapacity total guests ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":5}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "EXCEEDS_CAPACITY",
+			},
+			{
+				name:       "quote num_guests kurang dari num_rooms ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":2,"num_guests":1}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_GUEST_COUNT",
+			},
+			{
+				name:       "quote adults kurang dari rooms ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":2,"adults":1,"children":1,"child_ages":[5]}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_GUEST_COUNT",
+			},
+			{
+				name:       "quote adults melebihi max_adults ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"adults":3,"children":0}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "EXCEEDS_CAPACITY",
+			},
+			{
+				name:       "quote children melebihi max_children ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"adults":1,"children":2,"child_ages":[5,7]}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "EXCEEDS_CAPACITY",
+			},
+			{
+				name:       "quote child age count mismatch ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"adults":1,"children":2,"child_ages":[5]}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "CHILD_AGE_COUNT_MISMATCH",
+			},
+			{
+				name:       "quote child age tidak valid ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"adults":1,"children":1,"child_ages":[19]}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_CHILD_AGE",
+			},
+			{
+				name:       "quote tipe kamar tidak dikenal ditolak 404",
+				body:       `{"room_type_id":"unknown-type-xyz","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":2}`,
+				wantStatus: http.StatusNotFound,
+				wantCode:   "ROOM_NOT_FOUND",
+			},
+			{
+				name:       "quote boundary valid sukses",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":3}`,
+				wantStatus: http.StatusOK,
+				wantCode:   "",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(tc.body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, req)
+
+				if rec.Code != tc.wantStatus {
+					t.Fatalf("expected status %d, got %d (body: %s)", tc.wantStatus, rec.Code, rec.Body.String())
+				}
+				if tc.wantCode != "" {
+					var prob ProblemDetails
+					_ = newTestDecoder(rec.Body).Decode(&prob)
+					if prob.Code != tc.wantCode {
+						t.Errorf("expected code %s, got %s", tc.wantCode, prob.Code)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("Create Booking Direct Bypass Overcapacity Guard", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			body       string
+			wantStatus int
+			wantCode   string
+		}{
+			{
+				name:       "direct create overcapacity ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":5,"guest_name":"Budi","guest_email":"budi@example.com","terms_accepted":true,"privacy_accepted":true}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "EXCEEDS_CAPACITY",
+			},
+			{
+				name:       "direct create num_guests kurang dari rooms ditolak",
+				body:       `{"room_type_id":"sup-king","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":2,"num_guests":1,"guest_name":"Budi","guest_email":"budi@example.com","terms_accepted":true,"privacy_accepted":true}`,
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "INVALID_GUEST_COUNT",
+			},
+			{
+				name:       "direct create tipe kamar tidak ditemukan ditolak 404",
+				body:       `{"room_type_id":"unknown-variant-999","check_in":"2026-10-10","check_out":"2026-10-12","num_rooms":1,"num_guests":2,"guest_name":"Budi","guest_email":"budi@example.com","terms_accepted":true,"privacy_accepted":true}`,
+				wantStatus: http.StatusNotFound,
+				wantCode:   "ROOM_NOT_FOUND",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", bytes.NewBufferString(tc.body))
+				req.Header.Set("Content-Type", "application/json")
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
 

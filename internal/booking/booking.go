@@ -165,6 +165,9 @@ var ErrInvalidDateRange = errors.New("booking: check_out must be after check_in"
 // ErrInvalidCapacity diembalikan bila num_rooms atau num_guests kurang dari 1 atau melebihi batas.
 var ErrInvalidCapacity = errors.New("booking: num_rooms (1-8) and num_guests must be positive")
 
+// ErrExceedsCapacity diembalikan bila jumlah tamu melebihi kapasitas fisik varian kamar (BE-R07).
+var ErrExceedsCapacity = errors.New("booking: number of guests exceeds room maximum capacity")
+
 // ErrExceedsMaxStay diembalikan bila durasi menginap melebihi batas maksimal 30 malam (BE-G03).
 var ErrExceedsMaxStay = errors.New("booking: stay duration exceeds maximum 30 nights")
 

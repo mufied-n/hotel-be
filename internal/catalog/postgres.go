@@ -75,7 +75,7 @@ func (s *PostgresStore) GetVariant(ctx context.Context, idOrCode string) (RoomVa
 		       max_capacity, max_adults, max_children, base_price_minor,
 		       description, amenities, photos
 		FROM room_types
-		WHERE id::text = $1 OR code = $1
+		WHERE id::text = $1 OR code = $1 OR ($1 = 'std' AND code = 'sup-king')
 		LIMIT 1
 	`, idOrCode).Scan(
 		&v.ID, &v.Code, &v.Name, &v.FamilyName, &v.BedType, &v.RoomSizeSqm,

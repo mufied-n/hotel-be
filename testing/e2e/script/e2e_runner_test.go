@@ -19,6 +19,7 @@ import (
 	"github.com/example/hotel-booking/internal/api"
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/frontdesk"
 	"github.com/example/hotel-booking/internal/guest"
@@ -986,6 +987,8 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	}, 1.25)
 	quoteStore := rateEngine.QuoteStore()
 	bkSvc.SetQuoteStore(quoteStore)
+	catalogStore := catalog.NewMemoryStore(catalog.DefaultVariants())
+	bkSvc.SetCatalogStore(catalogStore)
 
 	xenditGw := payment.NewXendit("https://api.xendit.co", "test_xendit_sec", "test_e2e_xendit_webhook_token", "http://localhost:3000", nil)
 
@@ -1022,6 +1025,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		RateSvc:         ratesSvc,
 		RateEngine:      rateEngine,
 		QuoteStore:      quoteStore,
+		CatalogStore:    catalogStore,
 		Enforcer:        enforcer,
 		IsDevelopment:   true,
 		XenditGateway:   xenditGw,

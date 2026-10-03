@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
 )
@@ -63,6 +64,10 @@ type (
 	Notifier interface {
 		SendBookingConfirmed(ctx context.Context, b Booking) error
 	}
+	// CatalogReader mendefinisikan port pembaca varian kamar untuk validasi kapasitas fisik (BE-R07).
+	CatalogReader interface {
+		GetVariant(ctx context.Context, idOrCode string) (catalog.RoomVariant, error)
+	}
 )
 
 // ChargeResult adalah hasil permintaan pembayaran — bahasa domain, bukan
@@ -91,17 +96,18 @@ type CreateInput struct {
 
 // Service adalah use case inti booking.
 type Service struct {
-	tx          TxRunner // transaksi lintas modul (booking + inventory + outbox)
-	inv         inventory.AvailabilityStore
-	rates       rates.RateProvider
-	quoteStore  rates.QuoteStore
-	payment     PaymentGateway
-	attempts    PaymentAttemptStore
-	notify      Notifier
-	reader      Reader
-	holdTimeout time.Duration
-	log         *slog.Logger
-	nowFunc     func() time.Time
+	tx           TxRunner // transaksi lintas modul (booking + inventory + outbox)
+	inv          inventory.AvailabilityStore
+	rates        rates.RateProvider
+	quoteStore   rates.QuoteStore
+	catalogStore CatalogReader
+	payment      PaymentGateway
+	attempts     PaymentAttemptStore
+	notify       Notifier
+	reader       Reader
+	holdTimeout  time.Duration
+	log          *slog.Logger
+	nowFunc      func() time.Time
 }
 
 // LocationWIB adalah zona waktu resmi Pulang ke Uttara (Waktu Indonesia Barat, UTC+7)
@@ -160,6 +166,11 @@ func (s *Service) SetQuoteStore(qs rates.QuoteStore) {
 	s.quoteStore = qs
 }
 
+// SetCatalogStore menyematkan catalog store untuk validasi kapasitas fisik varian kamar (BE-R07).
+func (s *Service) SetCatalogStore(cs CatalogReader) {
+	s.catalogStore = cs
+}
+
 // SetPaymentAttemptStore menyematkan store buku besar percobaan pembayaran (BE-G11).
 func (s *Service) SetPaymentAttemptStore(pas PaymentAttemptStore) {
 	s.attempts = pas
@@ -196,6 +207,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	}
 	if in.NumRooms < 1 || in.NumRooms > 8 || in.NumGuests < 1 {
 		return Booking{}, ChargeResult{}, ErrInvalidCapacity
+	}
+	if in.NumGuests < in.NumRooms {
+		return Booking{}, ChargeResult{}, ErrInvalidCapacity
+	}
+	if s.catalogStore != nil {
+		variant, err := s.catalogStore.GetVariant(ctx, in.RoomTypeID)
+		if err != nil {
+			if errors.Is(err, catalog.ErrVariantNotFound) {
+				return Booking{}, ChargeResult{}, ErrNotFound
+			}
+			return Booking{}, ChargeResult{}, fmt.Errorf("booking: catalog lookup: %w", err)
+		}
+		if in.NumGuests > variant.MaxCapacity*in.NumRooms {
+			return Booking{}, ChargeResult{}, ErrExceedsCapacity
+		}
 	}
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)

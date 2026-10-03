@@ -20,7 +20,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R04 | P1 (RESOLVED 2026-10-03, honest logout & secure cookie) | [Logout mengaku berhasil walau pencabutan sesi gagal](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F12 |
 | BE-R05 | P1 (RESOLVED 2026-10-03, canonical email ownership & policy-driven allowed_actions) | [Ownership email dan allowed_actions belum konsisten dengan booking](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F03/F05/F06 |
 | BE-R06 | P1 | **RESOLVED 2026-10-03** ([laporan](../../testing/e2e/report/2026-10-03-133600-checkout-integrity-e2e-report.md)) — [Create tanpa quote melewati consent dan snapshot harga lengkap](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06/08; F01 |
-| BE-R07 | P1 | [Kapasitas search belum menjadi invariant checkout](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G03; F01/F08 |
+| BE-R07 | P1 (RESOLVED 2026-10-03, catalog room capacity invariant on search/quote/checkout) | [Kapasitas search belum menjadi invariant checkout](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G03; F01/F08 |
 | BE-R08 | P1 | **RESOLVED 2026-10-03** (klaim atomik; risiko residual crash setelah commit, lihat laporan) — [Idempotency checkout masih lookup-create-save](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G09; F01/F05 |
 | BE-R09 | P1 | [Harga katalog CRUD tidak menjadi sumber rate engine](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G01/04/05; F08/F09 |
 | BE-R10 | P1 | [Makna num_guests menyebabkan biaya sarapan ambigu](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G04/05; F01/F09 |
@@ -38,7 +38,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | Audit lama | Perubahan yang terlihat | Status review ulang |
 |---|---|---|
 | BE-G01/G02 | Katalog tujuh varian, CRUD, horizon dan pencarian multi-malam tersedia | IMPLEMENTED IN PART; rate/catalog identity dan channel/maintenance masih terpisah |
-| BE-G03 | Date/LOS/room-count dan kapasitas agregat search ditambahkan | PARTIAL; create belum menegakkan kapasitas katalog (BE-R07) |
+| BE-G03 | Date/LOS/room-count dan kapasitas agregat search ditambahkan | RESOLVED 2026-10-03; kapasitas katalog ditegakkan konsisten di search, quote, create (BE-R07) |
 | BE-G04/G05 | Room Only/Breakfast, promo 15%, breakdown, IDR integer rupiah tersedia | PARTIAL; ambiguity breakfast/rate ownership (BE-R09/R10) |
 | BE-G06 | Quote 15 menit dan wiring engine→BookingSvc tersedia | PARTIAL; in-memory durability dan public fallback (BE-R06/R11) |
 | BE-G07 | Phone, arrival dan request length validation tersedia | IMPLEMENTED fields; snapshot contact dan normalization masih perlu konsistensi |

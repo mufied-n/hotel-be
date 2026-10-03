@@ -422,8 +422,15 @@ func searchRooms(d Deps) gin.HandlerFunc {
 			}
 		}
 
+		if adults < rooms {
+			httpErrorCode(c, http.StatusBadRequest, "adults count must be greater than or equal to rooms count", "INVALID_GUEST_COUNT")
+			return
+		}
+
 		children := 0
+		hasChildrenParam := false
 		if s := c.Query("children"); s != "" {
+			hasChildrenParam = true
 			var err error
 			children, err = strconv.Atoi(s)
 			if err != nil || children < 0 {
@@ -432,14 +439,36 @@ func searchRooms(d Deps) gin.HandlerFunc {
 			}
 		}
 
-		if childAgesStr := c.Query("child_ages"); childAgesStr != "" {
+		childAgesStr := c.Query("child_ages")
+		if hasChildrenParam && children == 0 && childAgesStr != "" {
+			httpErrorCode(c, http.StatusBadRequest, "child_ages cannot be provided when children is 0", "CHILD_AGE_COUNT_MISMATCH")
+			return
+		}
+
+		if childAgesStr != "" {
+			var childAges []int
 			for _, ageStr := range strings.Split(childAgesStr, ",") {
-				age, err := strconv.Atoi(strings.TrimSpace(ageStr))
+				trimmed := strings.TrimSpace(ageStr)
+				if trimmed == "" {
+					continue
+				}
+				age, err := strconv.Atoi(trimmed)
 				if err != nil || age < 0 || age > 17 {
 					httpErrorCode(c, http.StatusBadRequest, "child age must be between 0 and 17", "INVALID_CHILD_AGE")
 					return
 				}
+				childAges = append(childAges, age)
 			}
+			if hasChildrenParam && len(childAges) != children {
+				httpErrorCode(c, http.StatusBadRequest, "child_ages count must match children count", "CHILD_AGE_COUNT_MISMATCH")
+				return
+			}
+			if !hasChildrenParam {
+				children = len(childAges)
+			}
+		} else if hasChildrenParam && children > 0 {
+			httpErrorCode(c, http.StatusBadRequest, "child_ages count must match children count", "CHILD_AGE_COUNT_MISMATCH")
+			return
 		}
 
 		variants, err := d.CatalogStore.ListVariants(c.Request.Context())
@@ -457,12 +486,12 @@ func searchRooms(d Deps) gin.HandlerFunc {
 				Currency:    "IDR",
 			}
 
-			// Kapasitas okupansi (BE-G03):
+			// Kapasitas okupansi (BE-G03, BE-R07):
 			// - Tamu per kamar tidak boleh melebihi max_capacity
 			// - Dewasa per kamar tidak boleh melebihi max_adults
-			// - Minimal 1 dewasa per kamar yang dipesan
+			// - Anak per kamar tidak boleh melebihi max_children
 			totalGuests := adults + children
-			if totalGuests > v.MaxCapacity*rooms || adults > v.MaxAdults*rooms || adults < rooms {
+			if totalGuests > v.MaxCapacity*rooms || adults > v.MaxAdults*rooms || children > v.MaxChildren*rooms {
 				item.Available = false
 				item.UnavailableReason = "EXCEEDS_CAPACITY"
 				results = append(results, item)
@@ -575,6 +604,9 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 		CheckOut     string `json:"check_out" validate:"required"`
 		NumRooms     int    `json:"num_rooms"`
 		NumGuests    int    `json:"num_guests"`
+		Adults       int    `json:"adults,omitempty"`
+		Children     int    `json:"children,omitempty"`
+		ChildAges    []int  `json:"child_ages,omitempty"`
 		PromoCode    string `json:"promo_code"`
 	}
 	return func(c *gin.Context) {
@@ -592,6 +624,80 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusBadRequest, "room_type_id, check_in, check_out (check_in < check_out) wajib valid", "INVALID_DATE_FORMAT")
 			return
 		}
+
+		numRooms := in.NumRooms
+		if numRooms <= 0 {
+			numRooms = 1
+		}
+		if numRooms > 8 {
+			httpErrorCode(c, http.StatusBadRequest, "rooms must be between 1 and 8", "INVALID_ROOM_COUNT")
+			return
+		}
+
+		numGuests := in.NumGuests
+		if in.Adults > 0 || in.Children > 0 || len(in.ChildAges) > 0 {
+			if in.Adults < numRooms {
+				httpErrorCode(c, http.StatusBadRequest, "adults count must be greater than or equal to rooms count", "INVALID_GUEST_COUNT")
+				return
+			}
+			if in.Children < 0 {
+				httpErrorCode(c, http.StatusBadRequest, "children cannot be negative", "INVALID_GUEST_COUNT")
+				return
+			}
+			if in.Children == 0 && len(in.ChildAges) > 0 {
+				httpErrorCode(c, http.StatusBadRequest, "child_ages cannot be provided when children is 0", "CHILD_AGE_COUNT_MISMATCH")
+				return
+			}
+			if in.Children > 0 {
+				if len(in.ChildAges) != in.Children {
+					httpErrorCode(c, http.StatusBadRequest, "child_ages count must match children count", "CHILD_AGE_COUNT_MISMATCH")
+					return
+				}
+				for _, age := range in.ChildAges {
+					if age < 0 || age > 17 {
+						httpErrorCode(c, http.StatusBadRequest, "child age must be between 0 and 17", "INVALID_CHILD_AGE")
+						return
+					}
+				}
+			}
+			numGuests = in.Adults + in.Children
+		} else {
+			if numGuests < 1 {
+				numGuests = 1
+			}
+			if numGuests < numRooms {
+				httpErrorCode(c, http.StatusBadRequest, "guests count must be greater than or equal to rooms count", "INVALID_GUEST_COUNT")
+				return
+			}
+		}
+
+		roomTypeID := in.RoomTypeID
+		// Validasi batas fisik kapasitas kamar terhadap katalog (BE-R07)
+		if d.CatalogStore != nil {
+			variant, err := d.CatalogStore.GetVariant(c.Request.Context(), in.RoomTypeID)
+			if err != nil {
+				if errors.Is(err, catalog.ErrVariantNotFound) {
+					httpErrorCode(c, http.StatusNotFound, "tipe kamar tidak ditemukan", "ROOM_NOT_FOUND")
+					return
+				}
+				httpErrorCode(c, http.StatusInternalServerError, "gagal membaca varian kamar", "CATALOG_ERROR")
+				return
+			}
+			roomTypeID = variant.ID
+			if in.Adults > 0 && in.Adults > variant.MaxAdults*numRooms {
+				httpErrorCode(c, http.StatusBadRequest, "jumlah dewasa melebihi kapasitas kamar", "EXCEEDS_CAPACITY")
+				return
+			}
+			if in.Children > 0 && in.Children > variant.MaxChildren*numRooms {
+				httpErrorCode(c, http.StatusBadRequest, "jumlah anak melebihi kapasitas kamar", "EXCEEDS_CAPACITY")
+				return
+			}
+			if numGuests > variant.MaxCapacity*numRooms {
+				httpErrorCode(c, http.StatusBadRequest, "jumlah tamu melebihi kapasitas maksimum varian kamar", "EXCEEDS_CAPACITY")
+				return
+			}
+		}
+
 		if strings.TrimSpace(in.PromoCode) != "" && (d.FeatureFlag != nil && !d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_promotions_engine")) {
 			httpErrorCode(c, http.StatusBadRequest, "fitur kode promosi sedang dinonaktifkan sementara", "PROMOTIONS_DISABLED")
 			return
@@ -601,12 +707,12 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 			return
 		}
 		q, err := d.RateEngine.CalculateLockedQuote(c.Request.Context(), rates.QuoteRequest{
-			RoomTypeID:   in.RoomTypeID,
+			RoomTypeID:   roomTypeID,
 			RatePlanCode: in.RatePlanCode,
 			CheckIn:      from,
 			CheckOut:     to,
-			NumRooms:     in.NumRooms,
-			NumGuests:    in.NumGuests,
+			NumRooms:     numRooms,
+			NumGuests:    numGuests,
 			PromoCode:    in.PromoCode,
 		})
 		if errors.Is(err, rates.ErrInvalidRatePlan) {
@@ -702,6 +808,30 @@ func createBooking(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusBadRequest, "check_in/check_out wajib format YYYY-MM-DD", "INVALID_DATE_FORMAT")
 			return
 		}
+
+		roomsCount := in.NumRooms
+		if roomsCount <= 0 {
+			roomsCount = 1
+		}
+		if in.NumGuests > 0 && in.NumGuests < roomsCount {
+			httpErrorCode(c, http.StatusBadRequest, "guests count must be greater than or equal to rooms count", "INVALID_GUEST_COUNT")
+			return
+		}
+		if d.CatalogStore != nil && in.RoomTypeID != "" {
+			variant, err := d.CatalogStore.GetVariant(c.Request.Context(), in.RoomTypeID)
+			if err != nil && errors.Is(err, catalog.ErrVariantNotFound) {
+				httpErrorCode(c, http.StatusNotFound, "tipe kamar tidak ditemukan", "ROOM_NOT_FOUND")
+				return
+			}
+			if err == nil {
+				in.RoomTypeID = variant.ID
+				if in.NumGuests > variant.MaxCapacity*roomsCount {
+					httpErrorCode(c, http.StatusBadRequest, "jumlah tamu melebihi kapasitas maksimum varian kamar", "EXCEEDS_CAPACITY")
+					return
+				}
+			}
+		}
+
 		b, charge, err := d.BookingSvc.Create(c.Request.Context(), booking.CreateInput{
 			QuoteID:              in.QuoteID,
 			TermsAccepted:        in.TermsAccepted,
@@ -717,6 +847,10 @@ func createBooking(d Deps) gin.HandlerFunc {
 			EstimatedArrivalTime: in.EstimatedArrivalTime,
 			SpecialRequests:      in.SpecialRequests,
 		})
+		if errors.Is(err, booking.ErrExceedsCapacity) {
+			httpErrorCode(c, http.StatusBadRequest, err.Error(), "EXCEEDS_CAPACITY")
+			return
+		}
 		if errors.Is(err, booking.ErrConsentRequired) {
 			httpErrorCode(c, http.StatusBadRequest, err.Error(), "CONSENT_REQUIRED")
 			return

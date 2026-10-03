@@ -123,6 +123,8 @@ func main() {
 
 	bkSvc := booking.NewService(bkRunner, invStore, rateEngine, payGateway, notifierSvc, bkReader, cfg.HoldTimeout, log)
 	bkSvc.SetPaymentAttemptStore(booking.NewPostgresPaymentAttemptStore(pool))
+	bkSvc.SetQuoteStore(rateEngine.QuoteStore())
+	bkSvc.SetCatalogStore(catalogStore)
 
 	// ---- asynq (job queue di Valkey — §5.4, §6) ----
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: cfg.ValkeyAddr})
