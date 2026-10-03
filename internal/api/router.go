@@ -61,6 +61,7 @@ type Deps struct {
 	StaySvc          stay.Service
 	AssistanceSvc    assistance.Service
 	FeatureFlag      featureflag.Manager
+	NotifierMode     string
 }
 
 // NewRouter merakit seluruh route menggunakan Gin engine.
@@ -226,7 +227,24 @@ func ready(d Deps) gin.HandlerFunc {
 				return
 			}
 		}
-		writeJSON(c, http.StatusOK, map[string]string{"status": "ready"})
+		env := "production"
+		if d.IsDevelopment {
+			env = "development"
+		}
+		payMode := "fake"
+		if d.XenditGateway != nil {
+			payMode = "xendit"
+		}
+		notifMode := d.NotifierMode
+		if notifMode == "" {
+			notifMode = "log"
+		}
+		writeJSON(c, http.StatusOK, map[string]string{
+			"status":          "ready",
+			"environment":     env,
+			"payment_gateway": payMode,
+			"notifier":        notifMode,
+		})
 	}
 }
 

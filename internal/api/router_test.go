@@ -301,6 +301,23 @@ func TestReady(t *testing.T) {
 		t.Errorf("ready status = %d, want 200", w.Code)
 	}
 
+	var res map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode ready JSON: %v", err)
+	}
+	if res["status"] != "ready" {
+		t.Errorf("expected status=ready, got %s", res["status"])
+	}
+	if res["environment"] == "" {
+		t.Error("expected environment in ready response, got empty")
+	}
+	if res["payment_gateway"] == "" {
+		t.Error("expected payment_gateway in ready response, got empty")
+	}
+	if res["notifier"] == "" {
+		t.Error("expected notifier in ready response, got empty")
+	}
+
 	// Case 2: Unhealthy
 	hUnhealthy := NewRouter(Deps{
 		StaffAuth:  TestStaffVerifier(),

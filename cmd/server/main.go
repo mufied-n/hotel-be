@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -89,21 +90,31 @@ func main() {
 		payGateway = xenditGw
 		log.Info("payment.gateway.xendit.active", "base_url", cfg.XenditBaseURL)
 	} else {
+		if cfg.IsProduction() {
+			log.Error("payment.gateway.forbidden_in_production", "reason", "fake gateway not allowed in production")
+			os.Exit(1)
+		}
 		payGateway = payment.NewFake()
 		log.Info("payment.gateway.fake.active", "mode", "dev_fallback")
 	}
 
 	var notifierSvc booking.Notifier
 	var otpNotifier guest.OTPNotifier
+	notifierMode := "resend"
 	if cfg.ResendAPIKey != "" {
 		resendNotifier := notifier.NewResend(cfg.ResendBaseURL, cfg.ResendAPIKey, cfg.ResendFromEmail, log)
 		notifierSvc = resendNotifier
 		otpNotifier = resendNotifier
 		log.Info("notifier.resend.active", "from", cfg.ResendFromEmail)
 	} else {
+		if cfg.IsProduction() {
+			log.Error("notifier.forbidden_in_production", "reason", "log notifier not allowed in production")
+			os.Exit(1)
+		}
 		logNotifier := notifier.NewLog(log)
 		notifierSvc = logNotifier
 		otpNotifier = logNotifier
+		notifierMode = "log"
 		log.Info("notifier.log.active", "mode", "dev_fallback")
 	}
 
@@ -288,6 +299,7 @@ func main() {
 		StaySvc:          staySvc,
 		AssistanceSvc:    assistanceSvc,
 		FeatureFlag:      ffManager,
+		NotifierMode:     notifierMode,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)
@@ -298,27 +310,78 @@ func main() {
 			return nil
 		},
 		FakePay: func(c *gin.Context) {
-			// Dev-only: langsung panggil use case Confirm yang sama dengan webhook (BE-G10).
+			// Dev-only: simulasi pembayaran sukses (BE-G10, BE-R16).
 			bookingID := c.Query("booking_id")
 			if bookingID == "" {
 				bookingID = c.Param("ref")
 			}
 			if bookingID == "" {
-				c.String(http.StatusBadRequest, "booking_id or ref required")
+				c.Header("Content-Type", "application/json")
+				c.JSON(http.StatusBadRequest, gin.H{
+					"status": 400,
+					"code":   "INVALID_INPUT",
+					"error":  "booking_id or ref required",
+					"title":  "Bad Request",
+					"detail": "booking_id or ref required",
+				})
+				return
+			}
+			if _, err := uuid.Parse(bookingID); err != nil {
+				c.Header("Content-Type", "application/json")
+				c.JSON(http.StatusBadRequest, gin.H{
+					"status": 400,
+					"code":   "INVALID_BOOKING_ID",
+					"error":  "booking_id must be a valid UUID",
+					"title":  "Bad Request",
+					"detail": "booking_id must be a valid UUID",
+				})
 				return
 			}
 			if err := bkSvc.Confirm(c.Request.Context(), bookingID); err != nil {
 				if errors.Is(err, booking.ErrHoldExpired) {
 					c.Header("Content-Type", "application/json")
-					c.Status(http.StatusConflict)
-					_, _ = c.Writer.Write([]byte(`{"error":"hold has expired, room availability was released","code":"HOLD_EXPIRED"}`))
+					c.JSON(http.StatusConflict, gin.H{
+						"status": 409,
+						"code":   "HOLD_EXPIRED",
+						"error":  "hold has expired, room availability was released",
+						"title":  "Conflict",
+						"detail": "hold has expired, room availability was released",
+					})
 					return
 				}
-				c.String(http.StatusInternalServerError, err.Error())
+				if errors.Is(err, booking.ErrNotFound) {
+					c.Header("Content-Type", "application/json")
+					c.JSON(http.StatusNotFound, gin.H{
+						"status": 404,
+						"code":   "BOOKING_NOT_FOUND",
+						"error":  "booking tidak ditemukan",
+						"title":  "Not Found",
+						"detail": "booking tidak ditemukan",
+					})
+					return
+				}
+				if errors.Is(err, booking.ErrIllegalTransition) {
+					c.Header("Content-Type", "application/json")
+					c.JSON(http.StatusConflict, gin.H{
+						"status": 409,
+						"code":   "ILLEGAL_TRANSITION",
+						"error":  err.Error(),
+						"title":  "Conflict",
+						"detail": err.Error(),
+					})
+					return
+				}
+				c.Header("Content-Type", "application/json")
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status": 500,
+					"code":   "CONFIRMATION_FAILED",
+					"error":  "gagal mengonfirmasi booking",
+					"title":  "Internal Server Error",
+					"detail": "gagal mengonfirmasi booking",
+				})
 				return
 			}
-			c.Status(http.StatusOK)
-			_, _ = c.Writer.Write([]byte(`{"status":"confirmed"}`))
+			c.JSON(http.StatusOK, gin.H{"status": "confirmed"})
 		},
 	})
 

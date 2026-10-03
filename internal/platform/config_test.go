@@ -118,12 +118,15 @@ func TestNewValkeyAndLogger(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	validCfg := Config{
-		Environment:    "production",
-		Port:           "8080",
-		DatabaseDSN:    "postgres://localhost:5432/booking",
-		ValkeyAddr:     "localhost:6379",
-		HoldTimeout:    15 * time.Minute,
-		OutboxInterval: 1 * time.Second,
+		Environment:        "production",
+		Port:               "8080",
+		DatabaseDSN:        "postgres://localhost:5432/booking",
+		ValkeyAddr:         "localhost:6379",
+		HoldTimeout:        15 * time.Minute,
+		OutboxInterval:     1 * time.Second,
+		XenditSecretKey:    "xnd_sec_live_123",
+		XenditWebhookToken: "xnd_wh_live_123",
+		ResendAPIKey:       "re_sec_live_123",
 	}
 
 	tests := []struct {
@@ -132,8 +135,18 @@ func TestConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid config",
+			name:    "valid production config with all provider keys",
 			modify:  func(c *Config) {},
+			wantErr: false,
+		},
+		{
+			name: "valid development config without third-party keys",
+			modify: func(c *Config) {
+				c.Environment = "development"
+				c.XenditSecretKey = ""
+				c.XenditWebhookToken = ""
+				c.ResendAPIKey = ""
+			},
 			wantErr: false,
 		},
 		{
@@ -169,6 +182,21 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name:    "negative outbox interval",
 			modify:  func(c *Config) { c.OutboxInterval = -1 * time.Second },
+			wantErr: true,
+		},
+		{
+			name:    "production missing XenditSecretKey",
+			modify:  func(c *Config) { c.XenditSecretKey = "" },
+			wantErr: true,
+		},
+		{
+			name:    "production missing XenditWebhookToken",
+			modify:  func(c *Config) { c.XenditWebhookToken = "" },
+			wantErr: true,
+		},
+		{
+			name:    "production missing ResendAPIKey",
+			modify:  func(c *Config) { c.ResendAPIKey = "" },
 			wantErr: true,
 		},
 	}

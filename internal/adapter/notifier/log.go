@@ -11,9 +11,15 @@ import (
 )
 
 // LogNotifier mengirim "email" ke structured log.
-type LogNotifier struct{ Log *slog.Logger }
+type LogNotifier struct {
+	Log     *slog.Logger
+	MaskOTP bool
+}
 
 func NewLog(l *slog.Logger) *LogNotifier { return &LogNotifier{Log: l} }
+
+// NewLogMasked membuat LogNotifier dengan redaksi kode OTP (BE-R16).
+func NewLogMasked(l *slog.Logger) *LogNotifier { return &LogNotifier{Log: l, MaskOTP: true} }
 
 func (n *LogNotifier) SendBookingConfirmed(ctx context.Context, b booking.Booking) error {
 	n.Log.InfoContext(ctx, "email.booking_confirmed",
@@ -30,10 +36,15 @@ func (n *LogNotifier) SendBookingConfirmed(ctx context.Context, b booking.Bookin
 }
 
 // SendGuestOTP mencatat kode OTP tamu ke log untuk keperluan dev/testing.
+// Jika MaskOTP aktif, kode OTP disensor menjadi [REDACTED] demi keamanan (BE-R16).
 func (n *LogNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+	otpVal := otpCode
+	if n.MaskOTP {
+		otpVal = "[REDACTED]"
+	}
 	n.Log.InfoContext(ctx, "email.guest_otp",
 		"to", email,
-		"otp", otpCode,
+		"otp", otpVal,
 	)
 	return nil
 }

@@ -46,7 +46,7 @@ func (c Config) IsProduction() bool {
 	return c.Environment == "production"
 }
 
-// Validate memeriksa kelengkapan dan validitas konfigurasi runtime (BE-G21).
+// Validate memeriksa kelengkapan dan validitas konfigurasi runtime (BE-G21, BE-R16).
 func (c Config) Validate() error {
 	if c.Port == "" {
 		return fmt.Errorf("config: APP_PORT cannot be empty")
@@ -62,6 +62,17 @@ func (c Config) Validate() error {
 	}
 	if c.OutboxInterval <= 0 {
 		return fmt.Errorf("config: OUTBOX_INTERVAL must be positive duration")
+	}
+	if c.IsProduction() {
+		if c.XenditSecretKey == "" {
+			return fmt.Errorf("config: XENDIT_SECRET_KEY is required in production (fake payment gateway is forbidden)")
+		}
+		if c.XenditWebhookToken == "" {
+			return fmt.Errorf("config: XENDIT_WEBHOOK_TOKEN is required in production")
+		}
+		if c.ResendAPIKey == "" {
+			return fmt.Errorf("config: RESEND_API_KEY is required in production (log notifier is forbidden)")
+		}
 	}
 	return nil
 }
