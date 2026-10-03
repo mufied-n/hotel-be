@@ -38,7 +38,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R03 — Challenge OTP dan penghitung percobaan belum atomik
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** F02; perluasan BE-G13/14.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03, lihat [laporan](../../testing/e2e/report/2026-10-03-204500-atomic-otp-challenges-r03-e2e-report.md)). **Hubungan:** F02; perluasan BE-G13/14.
 
 **Bukti source.** [guest/service.go](../../internal/guest/service.go) (lihat fungsi terkait) melakukan cooldown read sebelum insert;  pada bagian terkait membaca challenge, membandingkan hash, memperbarui attempts/verified dan membuat sesi melalui operasi terpisah. Error update attempts dan mark verified diabaikan. [guest/postgres.go](../../internal/guest/postgres.go) (lihat fungsi terkait) tidak mengunci challenge atau memakai compare-and-set konsumsi.
 

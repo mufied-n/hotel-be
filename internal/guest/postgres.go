@@ -2,6 +2,7 @@ package guest
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -75,6 +76,147 @@ func (s *PostgresStore) MarkChallengeVerified(ctx context.Context, id string, ve
 		return fmt.Errorf("guest_store.mark_challenge_verified: %w", err)
 	}
 	return nil
+}
+
+// CreateChallengeWithCooldown membuat challenge OTP baru secara atomik dengan proteksi cooldown per-email (BE-R03).
+// Menggunakan pg_advisory_xact_lock untuk mencegah bypass cooldown pada request konkuren.
+func (s *PostgresStore) CreateChallengeWithCooldown(ctx context.Context, c *Challenge, cooldown time.Duration) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("guest_store.begin_tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock advisory transaction-level berbasis hash email
+	lockQuery := `SELECT pg_advisory_xact_lock(hashtext('guest_challenge:' || $1))`
+	if _, err := tx.Exec(ctx, lockQuery, c.Email); err != nil {
+		return fmt.Errorf("guest_store.advisory_lock: %w", err)
+	}
+
+	checkQuery := `
+		SELECT created_at
+		FROM guest_auth_challenges
+		WHERE email = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	var latestCreatedAt time.Time
+	err = tx.QueryRow(ctx, checkQuery, c.Email).Scan(&latestCreatedAt)
+	if err == nil {
+		if c.CreatedAt.Sub(latestCreatedAt) < cooldown {
+			return ErrRateLimited
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("guest_store.check_cooldown: %w", err)
+	}
+
+	insertQuery := `
+		INSERT INTO guest_auth_challenges (
+			email, code_hash, attempts, max_attempts, expires_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id
+	`
+	if err := tx.QueryRow(ctx, insertQuery,
+		c.Email, c.CodeHash, c.Attempts, c.MaxAttempts, c.ExpiresAt, c.CreatedAt,
+	).Scan(&c.ID); err != nil {
+		return fmt.Errorf("guest_store.create_challenge: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("guest_store.commit_tx: %w", err)
+	}
+	return nil
+}
+
+// VerifyAndConsumeChallenge mengeksekusi verifikasi kode, penambahan attempts, dan pembuatan sesi dalam satu transaksi atomik ber-row lock (BE-R03).
+func (s *PostgresStore) VerifyAndConsumeChallenge(ctx context.Context, email, inputHash string, now time.Time, newSession *GuestSession) (*GuestSession, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("guest_store.begin_tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		SELECT id, email, code_hash, attempts, max_attempts, expires_at, verified_at
+		FROM guest_auth_challenges
+		WHERE email = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+		FOR UPDATE
+	`
+	var c Challenge
+	err = tx.QueryRow(ctx, query, email).Scan(
+		&c.ID, &c.Email, &c.CodeHash, &c.Attempts, &c.MaxAttempts, &c.ExpiresAt, &c.VerifiedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvalidOrExpiredCode
+		}
+		return nil, fmt.Errorf("guest_store.lock_challenge: %w", err)
+	}
+
+	if c.VerifiedAt != nil || now.After(c.ExpiresAt) {
+		return nil, ErrInvalidOrExpiredCode
+	}
+
+	if c.Attempts >= c.MaxAttempts {
+		return nil, ErrMaxAttemptsExceeded
+	}
+
+	// Bandingkan kode constant-time
+	match := subtle.ConstantTimeCompare([]byte(c.CodeHash), []byte(inputHash)) == 1
+	if !match {
+		incQuery := `
+			UPDATE guest_auth_challenges
+			SET attempts = attempts + 1
+			WHERE id = $1
+			RETURNING attempts
+		`
+		var updatedAttempts int
+		if err := tx.QueryRow(ctx, incQuery, c.ID).Scan(&updatedAttempts); err != nil {
+			return nil, fmt.Errorf("guest_store.inc_attempts: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("guest_store.commit_inc: %w", err)
+		}
+		if updatedAttempts >= c.MaxAttempts {
+			return nil, ErrMaxAttemptsExceeded
+		}
+		return nil, ErrInvalidOrExpiredCode
+	}
+
+	// Tandai verified
+	updateVerifiedQuery := `
+		UPDATE guest_auth_challenges
+		SET verified_at = $2
+		WHERE id = $1 AND verified_at IS NULL
+	`
+	cmdTag, err := tx.Exec(ctx, updateVerifiedQuery, c.ID, now)
+	if err != nil {
+		return nil, fmt.Errorf("guest_store.mark_verified: %w", err)
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return nil, ErrInvalidOrExpiredCode
+	}
+
+	// Buat sesi dalam transaksi yang sama
+	insertSessQuery := `
+		INSERT INTO guest_sessions (
+			guest_email, token_hash, expires_at, last_active_at, created_at
+		) VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`
+	if err := tx.QueryRow(ctx, insertSessQuery,
+		newSession.GuestEmail, newSession.TokenHash, newSession.ExpiresAt, newSession.LastActiveAt, newSession.CreatedAt,
+	).Scan(&newSession.ID); err != nil {
+		return nil, fmt.Errorf("guest_store.create_session: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("guest_store.commit_verified: %w", err)
+	}
+
+	return newSession, nil
 }
 
 func (s *PostgresStore) CreateSession(ctx context.Context, sess *GuestSession) error {

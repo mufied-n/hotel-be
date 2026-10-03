@@ -2,7 +2,11 @@ package guest
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,12 +17,19 @@ func getTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://postgres:dev@172.24.0.3:5432/booking_test?sslmode=disable"
+		dsn = "postgres://postgres:postgres@localhost:25432/hotel_booking?sslmode=disable"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Skipf("skipping postgres store test: %v", err)
+		return nil
+	}
+	cfg.MaxConns = 25
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Skipf("skipping postgres store test: %v", err)
 		return nil
@@ -151,5 +162,254 @@ func TestPostgresStore_Lifecycle(t *testing.T) {
 	}
 	if deletedSess != nil {
 		t.Errorf("expected nil session after deletion, got %v", deletedSess)
+	}
+}
+
+func TestPostgresStore_AtomicCooldown(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	store := NewPostgresStore(pool)
+
+	testEmail := fmt.Sprintf("cooldown_%d@example.com", time.Now().UnixNano())
+	now := time.Now().UTC()
+
+	ch1 := &Challenge{
+		Email:       testEmail,
+		CodeHash:    HashString("111111"),
+		Attempts:    0,
+		MaxAttempts: 3,
+		ExpiresAt:   now.Add(10 * time.Minute),
+		CreatedAt:   now,
+	}
+
+	// 1. Initial creation succeeds
+	if err := store.CreateChallengeWithCooldown(ctx, ch1, 60*time.Second); err != nil {
+		t.Fatalf("first challenge creation failed: %v", err)
+	}
+
+	// 2. Second creation immediately within 60s cooldown fails with ErrRateLimited
+	ch2 := &Challenge{
+		Email:       testEmail,
+		CodeHash:    HashString("222222"),
+		Attempts:    0,
+		MaxAttempts: 3,
+		ExpiresAt:   now.Add(10 * time.Minute),
+		CreatedAt:   now.Add(5 * time.Second),
+	}
+	err := store.CreateChallengeWithCooldown(ctx, ch2, 60*time.Second)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited, got: %v", err)
+	}
+
+	// 3. Concurrent challenge creation for a different email: exactly 1 succeeds, others rate limited
+	concurrentEmail := fmt.Sprintf("concurrent_cd_%d@example.com", time.Now().UnixNano())
+	concurrency := 8
+	var wg sync.WaitGroup
+	var successCount int64
+	var rateLimitedCount int64
+
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			c := &Challenge{
+				Email:       concurrentEmail,
+				CodeHash:    HashString(fmt.Sprintf("%06d", idx)),
+				Attempts:    0,
+				MaxAttempts: 3,
+				ExpiresAt:   now.Add(10 * time.Minute),
+				CreatedAt:   time.Now().UTC(),
+			}
+			err := store.CreateChallengeWithCooldown(ctx, c, 60*time.Second)
+			if err == nil {
+				atomic.AddInt64(&successCount, 1)
+			} else if errors.Is(err, ErrRateLimited) {
+				atomic.AddInt64(&rateLimitedCount, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 successful challenge creation, got %d", successCount)
+	}
+	if rateLimitedCount != int64(concurrency-1) {
+		t.Errorf("expected %d rate-limited challenges, got %d", concurrency-1, rateLimitedCount)
+	}
+}
+
+func TestPostgresStore_AtomicVerifyAndConsume(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	store := NewPostgresStore(pool)
+
+	testEmail := fmt.Sprintf("verify_%d@example.com", time.Now().UnixNano())
+	now := time.Now().UTC()
+	validCode := "654321"
+	validHash := HashString(validCode)
+
+	ch := &Challenge{
+		Email:       testEmail,
+		CodeHash:    validHash,
+		Attempts:    0,
+		MaxAttempts: 3,
+		ExpiresAt:   now.Add(10 * time.Minute),
+		CreatedAt:   now,
+	}
+	if err := store.CreateChallenge(ctx, ch); err != nil {
+		t.Fatalf("CreateChallenge failed: %v", err)
+	}
+
+	// 1. Wrong code attempt 1 -> returns ErrInvalidOrExpiredCode
+	sess := &GuestSession{
+		GuestEmail: testEmail,
+		TokenHash:  HashString("token_dummy_1"),
+		ExpiresAt:  now.Add(24 * time.Hour),
+		CreatedAt:  now,
+	}
+	_, err := store.VerifyAndConsumeChallenge(ctx, testEmail, HashString("000001"), now, sess)
+	if !errors.Is(err, ErrInvalidOrExpiredCode) {
+		t.Fatalf("expected ErrInvalidOrExpiredCode on wrong attempt 1, got %v", err)
+	}
+
+	// 2. Wrong code attempt 2 -> returns ErrInvalidOrExpiredCode
+	_, err = store.VerifyAndConsumeChallenge(ctx, testEmail, HashString("000002"), now, sess)
+	if !errors.Is(err, ErrInvalidOrExpiredCode) {
+		t.Fatalf("expected ErrInvalidOrExpiredCode on wrong attempt 2, got %v", err)
+	}
+
+	// 3. Wrong code attempt 3 -> hits max attempts -> returns ErrMaxAttemptsExceeded
+	_, err = store.VerifyAndConsumeChallenge(ctx, testEmail, HashString("000003"), now, sess)
+	if !errors.Is(err, ErrMaxAttemptsExceeded) {
+		t.Fatalf("expected ErrMaxAttemptsExceeded on wrong attempt 3, got %v", err)
+	}
+
+	// 4. Correct code now still fails because max attempts was reached
+	_, err = store.VerifyAndConsumeChallenge(ctx, testEmail, validHash, now, sess)
+	if !errors.Is(err, ErrMaxAttemptsExceeded) {
+		t.Fatalf("expected ErrMaxAttemptsExceeded even with valid code after lockout, got %v", err)
+	}
+}
+
+func TestPostgresStore_AtomicVerify_ConcurrentSingleWinner(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	store := NewPostgresStore(pool)
+
+	testEmail := fmt.Sprintf("race_%d@example.com", time.Now().UnixNano())
+	now := time.Now().UTC()
+	validCode := "888999"
+	validHash := HashString(validCode)
+
+	ch := &Challenge{
+		Email:       testEmail,
+		CodeHash:    validHash,
+		Attempts:    0,
+		MaxAttempts: 5,
+		ExpiresAt:   now.Add(10 * time.Minute),
+		CreatedAt:   now,
+	}
+	if err := store.CreateChallenge(ctx, ch); err != nil {
+		t.Fatalf("CreateChallenge failed: %v", err)
+	}
+
+	concurrency := 10
+	var wg sync.WaitGroup
+	var successCount int64
+	var failCount int64
+
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			sess := &GuestSession{
+				GuestEmail: testEmail,
+				TokenHash:  HashString(fmt.Sprintf("race_token_%d_%d", time.Now().UnixNano(), idx)),
+				ExpiresAt:  now.Add(24 * time.Hour),
+				CreatedAt:  now,
+			}
+			created, err := store.VerifyAndConsumeChallenge(ctx, testEmail, validHash, now, sess)
+			if err == nil && created != nil {
+				atomic.AddInt64(&successCount, 1)
+			} else if errors.Is(err, ErrInvalidOrExpiredCode) {
+				atomic.AddInt64(&failCount, 1)
+			} else {
+				t.Logf("goroutine %d unexpected error: %v", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 winner in concurrent verification race, got %d", successCount)
+	}
+	if failCount != int64(concurrency-1) {
+		t.Errorf("expected %d verification attempts rejected as already consumed, got %d", concurrency-1, failCount)
+	}
+}
+
+func TestPostgresStore_GetBookingReceiptData(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	store := NewPostgresStore(pool)
+
+	testEmail := fmt.Sprintf("receipt_%d@example.com", time.Now().UnixNano())
+
+	// 1. Non-existent booking returns nil, nil
+	r, err := store.GetBookingReceiptData(ctx, testEmail, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatalf("unexpected error for non-existent booking: %v", err)
+	}
+	if r != nil {
+		t.Errorf("expected nil receipt, got %v", r)
+	}
+
+	// 2. Insert confirmed booking and fetch receipt
+	var bookingID string
+	query := `
+		INSERT INTO bookings (
+			room_type_id, check_in, check_out, num_rooms, num_guests,
+			status, total_price_minor, currency, guest_name, guest_email,
+			guest_token, rate_plan_code, cancellation_policy, cancellation_desc,
+			room_subtotal_minor, breakfast_charge_minor, discount_minor, tax_minor
+		) VALUES (
+			'01900000-0000-7000-8000-000000000001', '2026-11-01', '2026-11-03', 1, 2,
+			'confirmed', 150000000, 'IDR', 'Tamu Resit', $1,
+			'token_receipt_test', 'room_only', 'flexible_48h', 'Free cancellation up to 48h',
+			150000000, 0, 0, 0
+		) RETURNING id
+	`
+	err = pool.QueryRow(ctx, query, testEmail).Scan(&bookingID)
+	if err != nil {
+		t.Fatalf("insert test booking failed: %v", err)
+	}
+
+	r, err = store.GetBookingReceiptData(ctx, testEmail, bookingID)
+	if err != nil {
+		t.Fatalf("GetBookingReceiptData failed: %v", err)
+	}
+	if r == nil {
+		t.Fatalf("expected non-nil receipt")
+	}
+	if r.BookingID != bookingID {
+		t.Errorf("expected booking ID %s, got %s", bookingID, r.BookingID)
+	}
+	if r.GuestDetails.Email != testEmail {
+		t.Errorf("expected guest email %s, got %s", testEmail, r.GuestDetails.Email)
+	}
+	if r.StayDetails.TotalNights != 2 {
+		t.Errorf("expected 2 nights, got %d", r.StayDetails.TotalNights)
 	}
 }

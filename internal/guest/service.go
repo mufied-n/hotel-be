@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -64,15 +63,7 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 
 	now := s.nowFunc()
 
-	// 1. Cek rate limit / cooldown 60 detik
-	latest, err := s.store.GetLatestActiveChallenge(ctx, normEmail)
-	if err == nil && latest != nil {
-		if now.Sub(latest.CreatedAt) < 60*time.Second {
-			return 0, ErrRateLimited
-		}
-	}
-
-	// 2. Buat OTP 6 digit acak aman
+	// 1. Buat OTP 6 digit acak aman
 	otpCode, err := generateOTP()
 	if err != nil {
 		return 0, fmt.Errorf("guest: failed to generate OTP: %w", err)
@@ -88,7 +79,11 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 		CreatedAt:   now,
 	}
 
-	if err := s.store.CreateChallenge(ctx, challenge); err != nil {
+	// 2. Simpan secara atomik dengan proteksi cooldown 60 detik (BE-R03)
+	if err := s.store.CreateChallengeWithCooldown(ctx, challenge, 60*time.Second); err != nil {
+		if errors.Is(err, ErrRateLimited) {
+			return 0, ErrRateLimited
+		}
 		return 0, fmt.Errorf("guest: failed to store challenge: %w", err)
 	}
 
@@ -102,7 +97,7 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 	return 60, nil
 }
 
-// VerifyChallenge memvalidasi kode OTP dan menerbitkan token sesi baru.
+// VerifyChallenge memvalidasi kode OTP dan menerbitkan token sesi baru secara atomik (BE-R03).
 func (s *DefaultService) VerifyChallenge(ctx context.Context, email, code string) (string, *GuestSession, error) {
 	normEmail := strings.ToLower(strings.TrimSpace(email))
 	cleanCode := strings.TrimSpace(code)
@@ -111,35 +106,6 @@ func (s *DefaultService) VerifyChallenge(ctx context.Context, email, code string
 	}
 
 	now := s.nowFunc()
-
-	challenge, err := s.store.GetLatestActiveChallenge(ctx, normEmail)
-	if err != nil || challenge == nil {
-		return "", nil, ErrInvalidOrExpiredCode
-	}
-
-	if challenge.VerifiedAt != nil || now.After(challenge.ExpiresAt) {
-		return "", nil, ErrInvalidOrExpiredCode
-	}
-
-	if challenge.Attempts >= challenge.MaxAttempts {
-		return "", nil, ErrMaxAttemptsExceeded
-	}
-
-	// Komparasi waktu konstan (OWASP API Top 10)
-	inputHash := HashString(cleanCode)
-	match := subtle.ConstantTimeCompare([]byte(challenge.CodeHash), []byte(inputHash)) == 1
-
-	if !match {
-		newAttempts := challenge.Attempts + 1
-		_ = s.store.UpdateChallengeAttempts(ctx, challenge.ID, newAttempts)
-		if newAttempts >= challenge.MaxAttempts {
-			return "", nil, ErrMaxAttemptsExceeded
-		}
-		return "", nil, ErrInvalidOrExpiredCode
-	}
-
-	// Tandai challenge sudah terverifikasi
-	_ = s.store.MarkChallengeVerified(ctx, challenge.ID, now)
 
 	// Buat token sesi acak 32-byte
 	rawToken, tokenHash, err := generateSessionToken()
@@ -155,11 +121,13 @@ func (s *DefaultService) VerifyChallenge(ctx context.Context, email, code string
 		CreatedAt:    now,
 	}
 
-	if err := s.store.CreateSession(ctx, session); err != nil {
-		return "", nil, fmt.Errorf("guest: failed to create session: %w", err)
+	inputHash := HashString(cleanCode)
+	createdSession, err := s.store.VerifyAndConsumeChallenge(ctx, normEmail, inputHash, now, session)
+	if err != nil {
+		return "", nil, err
 	}
 
-	return rawToken, session, nil
+	return rawToken, createdSession, nil
 }
 
 // ValidateSession memeriksa validitas token sesi dan memperpanjang masa aktif.

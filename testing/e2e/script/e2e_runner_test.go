@@ -168,6 +168,49 @@ func (s *e2eGuestStore) MarkChallengeVerified(ctx context.Context, id string, ve
 	return nil
 }
 
+func (s *e2eGuestStore) CreateChallengeWithCooldown(ctx context.Context, c *guest.Challenge, cooldown time.Duration) error {
+	for _, ch := range s.challenges {
+		if ch.Email == c.Email {
+			diff := c.CreatedAt.Sub(ch.CreatedAt)
+			if diff < cooldown {
+				return guest.ErrRateLimited
+			}
+		}
+	}
+	c.ID = "ch-e2e-001"
+	s.challenges[c.Email] = c
+	return nil
+}
+
+func (s *e2eGuestStore) VerifyAndConsumeChallenge(ctx context.Context, email, inputHash string, now time.Time, newSession *guest.GuestSession) (*guest.GuestSession, error) {
+	ch, ok := s.challenges[email]
+	if !ok || ch == nil {
+		return nil, guest.ErrInvalidOrExpiredCode
+	}
+	if ch.VerifiedAt != nil {
+		return nil, guest.ErrInvalidOrExpiredCode
+	}
+	if now.After(ch.ExpiresAt) {
+		return nil, guest.ErrInvalidOrExpiredCode
+	}
+	if ch.Attempts >= ch.MaxAttempts {
+		return nil, guest.ErrMaxAttemptsExceeded
+	}
+
+	if ch.CodeHash != inputHash {
+		ch.Attempts++
+		if ch.Attempts >= ch.MaxAttempts {
+			return nil, guest.ErrMaxAttemptsExceeded
+		}
+		return nil, guest.ErrInvalidOrExpiredCode
+	}
+
+	ch.VerifiedAt = &now
+	newSession.ID = "sess-e2e-001"
+	s.sessions[newSession.TokenHash] = newSession
+	return newSession, nil
+}
+
 func (s *e2eGuestStore) CreateSession(ctx context.Context, sess *guest.GuestSession) error {
 	sess.ID = "sess-e2e-001"
 	s.sessions[sess.TokenHash] = sess

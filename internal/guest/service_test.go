@@ -2,24 +2,27 @@ package guest
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type mockStore struct {
-	challenges    map[string]*Challenge
-	sessions      map[string]*GuestSession
-	bookings      []BookingDetail
-	receipts      map[string]*ReceiptDTO
-	createErr     error
-	updateErr     error
-	sessionErr    error
-	listErr       error
-	detailErr     error
-	receiptErr    error
+	mu         sync.Mutex
+	challenges map[string]*Challenge
+	sessions   map[string]*GuestSession
+	bookings   []BookingDetail
+	receipts   map[string]*ReceiptDTO
+	createErr  error
+	updateErr  error
+	sessionErr error
+	listErr    error
+	detailErr  error
+	receiptErr error
 }
 
 func newMockStore() *mockStore {
@@ -31,6 +34,8 @@ func newMockStore() *mockStore {
 }
 
 func (m *mockStore) CreateChallenge(ctx context.Context, c *Challenge) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.createErr != nil {
 		return m.createErr
 	}
@@ -39,7 +44,28 @@ func (m *mockStore) CreateChallenge(ctx context.Context, c *Challenge) error {
 	return nil
 }
 
+func (m *mockStore) CreateChallengeWithCooldown(ctx context.Context, c *Challenge, cooldown time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErr != nil {
+		return m.createErr
+	}
+	for _, ch := range m.challenges {
+		if ch.Email == c.Email {
+			diff := c.CreatedAt.Sub(ch.CreatedAt)
+			if diff < cooldown {
+				return ErrRateLimited
+			}
+		}
+	}
+	c.ID = "ch_001"
+	m.challenges[c.Email] = c
+	return nil
+}
+
 func (m *mockStore) GetLatestActiveChallenge(ctx context.Context, email string) (*Challenge, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	c, ok := m.challenges[email]
 	if !ok {
 		return nil, nil
@@ -48,6 +74,8 @@ func (m *mockStore) GetLatestActiveChallenge(ctx context.Context, email string) 
 }
 
 func (m *mockStore) UpdateChallengeAttempts(ctx context.Context, id string, attempts int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.updateErr != nil {
 		return m.updateErr
 	}
@@ -60,12 +88,46 @@ func (m *mockStore) UpdateChallengeAttempts(ctx context.Context, id string, atte
 }
 
 func (m *mockStore) MarkChallengeVerified(ctx context.Context, id string, verifiedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, c := range m.challenges {
 		if c.ID == id {
 			c.VerifiedAt = &verifiedAt
 		}
 	}
 	return nil
+}
+
+func (m *mockStore) VerifyAndConsumeChallenge(ctx context.Context, email, inputHash string, now time.Time, newSession *GuestSession) (*GuestSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ch, ok := m.challenges[email]
+	if !ok || ch == nil {
+		return nil, ErrInvalidOrExpiredCode
+	}
+	if ch.VerifiedAt != nil {
+		return nil, ErrInvalidOrExpiredCode
+	}
+	if now.After(ch.ExpiresAt) {
+		return nil, ErrInvalidOrExpiredCode
+	}
+	if ch.Attempts >= ch.MaxAttempts {
+		return nil, ErrMaxAttemptsExceeded
+	}
+
+	if subtle.ConstantTimeCompare([]byte(ch.CodeHash), []byte(inputHash)) != 1 {
+		ch.Attempts++
+		if ch.Attempts >= ch.MaxAttempts {
+			return nil, ErrMaxAttemptsExceeded
+		}
+		return nil, ErrInvalidOrExpiredCode
+	}
+
+	ch.VerifiedAt = &now
+	newSession.ID = "sess_001"
+	m.sessions[newSession.TokenHash] = newSession
+	return newSession, nil
 }
 
 func (m *mockStore) CreateSession(ctx context.Context, s *GuestSession) error {
@@ -776,6 +838,152 @@ func TestGuestService_GenerateCalendarICS_TableTest(t *testing.T) {
 				tc.verify(t, data)
 			}
 		})
+	}
+}
+
+func TestGuestService_GetSessionProfile_TableTest(t *testing.T) {
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name        string
+		session     *GuestSession
+		setupStore  func(s *mockStore)
+		expectErr   error
+		verifyView  func(t *testing.T, pv *ProfileView)
+	}{
+		{
+			name:      "Nil session returns ErrSessionNotFound",
+			session:   nil,
+			setupStore: func(s *mockStore) {},
+			expectErr: ErrSessionNotFound,
+		},
+		{
+			name: "Valid session returns active bookings count and profile",
+			session: &GuestSession{
+				GuestEmail:   "tamu@example.com",
+				TokenHash:    "dummy_hash",
+				ExpiresAt:    now.Add(24 * time.Hour),
+				LastActiveAt: now,
+			},
+			setupStore: func(s *mockStore) {
+				s.bookings = []BookingDetail{
+					{GuestEmail: "tamu@example.com", Status: "confirmed"},
+					{GuestEmail: "tamu@example.com", Status: "pending"},
+					{GuestEmail: "tamu@example.com", Status: "cancelled"},
+				}
+			},
+			expectErr: nil,
+			verifyView: func(t *testing.T, pv *ProfileView) {
+				if pv.Email != "tamu@example.com" {
+					t.Errorf("expected email tamu@example.com, got %s", pv.Email)
+				}
+				if pv.ActiveBookingsCount != 2 {
+					t.Errorf("expected 2 active bookings, got %d", pv.ActiveBookingsCount)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			tc.setupStore(store)
+			svc := NewService(store, nil, slog.Default())
+
+			pv, err := svc.GetSessionProfile(context.Background(), tc.session)
+			if tc.expectErr != nil {
+				if !errors.Is(err, tc.expectErr) {
+					t.Fatalf("expected error %v, got %v", tc.expectErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.verifyView != nil {
+				tc.verifyView(t, pv)
+			}
+		})
+	}
+}
+
+func TestGuestService_ComputeAllowedActions_TableTest(t *testing.T) {
+	tests := []struct {
+		status   string
+		expected AllowedActions
+	}{
+		{
+			status: "pending",
+			expected: AllowedActions{
+				CanPay:               true,
+				CanCancel:            true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			status: "confirmed",
+			expected: AllowedActions{
+				CanCancel:            true,
+				CanDownloadReceipt:   true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			status: "checked_in",
+			expected: AllowedActions{
+				CanDownloadReceipt:   true,
+				CanRequestAssistance: true,
+			},
+		},
+		{
+			status: "checked_out",
+			expected: AllowedActions{
+				CanDownloadReceipt: true,
+			},
+		},
+		{
+			status:   "cancelled",
+			expected: AllowedActions{},
+		},
+		{
+			status:   "unknown",
+			expected: AllowedActions{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			actions := computeAllowedActions(tc.status)
+			if actions != tc.expected {
+				t.Errorf("for status %s, expected %+v, got %+v", tc.status, tc.expected, actions)
+			}
+		})
+	}
+}
+
+func TestGuestService_ListBookings_Pagination(t *testing.T) {
+	store := newMockStore()
+	store.bookings = []BookingDetail{
+		{GuestEmail: "tamu@example.com", Status: "confirmed"},
+	}
+	svc := NewService(store, nil, slog.Default())
+
+	// Limit <= 0 should default to 20
+	res1, err := svc.ListBookings(context.Background(), "tamu@example.com", "all", -1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res1) != 1 {
+		t.Errorf("expected 1 result, got %d", len(res1))
+	}
+
+	// Limit > 100 should default to 20
+	res2, err := svc.ListBookings(context.Background(), "tamu@example.com", "all", 200)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res2) != 1 {
+		t.Errorf("expected 1 result, got %d", len(res2))
 	}
 }
 

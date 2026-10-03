@@ -24,6 +24,10 @@ type Store interface {
 	UpdateChallengeAttempts(ctx context.Context, id string, attempts int) error
 	MarkChallengeVerified(ctx context.Context, id string, verifiedAt time.Time) error
 
+	// Operasi atomik untuk mitigasi race condition verifikasi dan pembuatan challenge OTP (BE-R03)
+	CreateChallengeWithCooldown(ctx context.Context, c *Challenge, cooldown time.Duration) error
+	VerifyAndConsumeChallenge(ctx context.Context, email, inputHash string, now time.Time, newSession *GuestSession) (*GuestSession, error)
+
 	CreateSession(ctx context.Context, s *GuestSession) error
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (*GuestSession, error)
 	TouchSession(ctx context.Context, id string, lastActiveAt, expiresAt time.Time) error
