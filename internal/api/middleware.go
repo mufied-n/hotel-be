@@ -158,14 +158,61 @@ func Authorize(enforcer *casbin.SyncedEnforcer) gin.HandlerFunc {
 	}
 }
 
-// ProblemDetails merepresentasikan format error standar RFC 7807 dengan kode error yang ramah mesin (BE-G15).
+// DefaultMaxBodyBytes adalah batas ukuran maksimal payload request (1 MB = 1,048,576 byte) (BE-R18).
+const DefaultMaxBodyBytes int64 = 1 << 20
+
+// BodySizeLimit membatasi konsumsi stream request body menggunakan http.MaxBytesReader (BE-R18).
+func BodySizeLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+
+func isMaxBytesError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "request body too large")
+}
+
+// decodeJSON membaca JSON dari c.Request.Body dengan perlindungan payload limit dan error formatting (BE-R18).
+func decodeJSON(c *gin.Context, v any, invalidJSONCode, invalidJSONMsg string) bool {
+	err := json.UnmarshalRead(c.Request.Body, v)
+	if err == nil {
+		return true
+	}
+	if isMaxBytesError(err) {
+		httpErrorCode(c, http.StatusRequestEntityTooLarge, "request body melebihi batas 1MB", "PAYLOAD_TOO_LARGE")
+		return false
+	}
+	code := invalidJSONCode
+	if code == "" {
+		code = "INVALID_JSON"
+	}
+	msg := invalidJSONMsg
+	if msg == "" {
+		msg = "body JSON tidak valid"
+	}
+	httpErrorCode(c, http.StatusBadRequest, msg, code)
+	return false
+}
+
+// ProblemDetails merepresentasikan format error standar RFC 7807 dengan kode error yang ramah mesin (BE-G15, BE-R18).
 // Field "error" tetap disertakan untuk kompatibilitas ke belakang dengan client yang sudah ada.
 type ProblemDetails struct {
+	Code     string `json:"code"`
 	Error    string `json:"error"`
+	Message  string `json:"message"`
+	Detail   string `json:"detail"`
 	Title    string `json:"title"`
 	Status   int    `json:"status"`
-	Detail   string `json:"detail"`
-	Code     string `json:"code"`
 	Instance string `json:"instance,omitempty"`
 }
 
@@ -173,11 +220,12 @@ func writeProblemDetails(c *gin.Context, status int, title, detail, code string)
 	c.Header("Content-Type", "application/problem+json")
 	c.Status(status)
 	_ = json.MarshalWrite(c.Writer, ProblemDetails{
-		Error:  detail,
-		Title:  title,
-		Status: status,
-		Detail: detail,
-		Code:   code,
+		Code:    code,
+		Error:   detail,
+		Message: detail,
+		Detail:  detail,
+		Title:   title,
+		Status:  status,
 	})
 }
 

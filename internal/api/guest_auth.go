@@ -50,34 +50,38 @@ func extractGuestSessionToken(r *http.Request) string {
 	return ""
 }
 
+// writeGuestError menulis respons error terstandarisasi dual-shape untuk portal tamu (BE-R18).
+// Menyediakan error & code (machine), message & detail (human), title, dan status.
+func writeGuestError(c *gin.Context, status int, code, message string) {
+	writeJSON(c, status, map[string]any{
+		"error":   code,
+		"code":    code,
+		"message": message,
+		"detail":  message,
+		"title":   http.StatusText(status),
+		"status":  status,
+	})
+}
+
 // requireGuestSession adalah middleware yang memvalidasi token sesi tamu (OWASP ASVS V3).
 func requireGuestSession(guestSvc guest.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if guestSvc == nil {
-			writeJSON(c, http.StatusNotImplemented, map[string]string{
-				"error":   "GUEST_AUTH_NOT_CONFIGURED",
-				"message": "Layanan autentikasi tamu belum dikonfigurasi.",
-			})
+			writeGuestError(c, http.StatusNotImplemented, "GUEST_AUTH_NOT_CONFIGURED", "Layanan autentikasi tamu belum dikonfigurasi.")
 			c.Abort()
 			return
 		}
 
 		token := extractGuestSessionToken(c.Request)
 		if token == "" {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tamu tidak ditemukan. Silakan masuk terlebih dahulu.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tamu tidak ditemukan. Silakan masuk terlebih dahulu.")
 			c.Abort()
 			return
 		}
 
 		sess, err := guestSvc.ValidateSession(c.Request.Context(), token)
 		if err != nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tamu tidak valid atau telah berakhir.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tamu tidak valid atau telah berakhir.")
 			c.Abort()
 			return
 		}
@@ -101,42 +105,31 @@ type guestVerifyRequest struct {
 func handleGuestChallenge(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if d.GuestSvc == nil {
-			writeJSON(c, http.StatusNotImplemented, map[string]string{
-				"error":   "NOT_IMPLEMENTED",
-				"message": "Layanan tamu tidak aktif.",
-			})
+			writeGuestError(c, http.StatusNotImplemented, "NOT_IMPLEMENTED", "Layanan tamu tidak aktif.")
 			return
 		}
 
 		var req guestChallengeRequest
 		if err := json.UnmarshalRead(c.Request.Body, &req); err != nil {
-			writeJSON(c, http.StatusBadRequest, map[string]string{
-				"error":   "INVALID_JSON",
-				"message": "Format request tidak valid.",
-			})
+			if isMaxBytesError(err) {
+				writeGuestError(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "Ukuran payload melebihi batas maksimal 1MB.")
+				return
+			}
+			writeGuestError(c, http.StatusBadRequest, "INVALID_JSON", "Format request tidak valid.")
 			return
 		}
 
 		cd, err := d.GuestSvc.RequestChallenge(c.Request.Context(), req.Email)
 		if err != nil {
 			if errors.Is(err, guest.ErrInvalidEmail) {
-				writeJSON(c, http.StatusBadRequest, map[string]string{
-					"error":   "INVALID_EMAIL",
-					"message": "Format alamat email tidak valid.",
-				})
+				writeGuestError(c, http.StatusBadRequest, "INVALID_EMAIL", "Format alamat email tidak valid.")
 				return
 			}
 			if errors.Is(err, guest.ErrRateLimited) {
-				writeJSON(c, http.StatusTooManyRequests, map[string]string{
-					"error":   "RATE_LIMIT_EXCEEDED",
-					"message": "Harap tunggu 60 detik sebelum meminta kode verifikasi baru.",
-				})
+				writeGuestError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "Harap tunggu 60 detik sebelum meminta kode verifikasi baru.")
 				return
 			}
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memproses permintaan OTP.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memproses permintaan OTP.")
 			return
 		}
 
@@ -152,42 +145,31 @@ func handleGuestChallenge(d Deps) gin.HandlerFunc {
 func handleGuestVerify(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if d.GuestSvc == nil {
-			writeJSON(c, http.StatusNotImplemented, map[string]string{
-				"error":   "NOT_IMPLEMENTED",
-				"message": "Layanan tamu tidak aktif.",
-			})
+			writeGuestError(c, http.StatusNotImplemented, "NOT_IMPLEMENTED", "Layanan tamu tidak aktif.")
 			return
 		}
 
 		var req guestVerifyRequest
 		if err := json.UnmarshalRead(c.Request.Body, &req); err != nil {
-			writeJSON(c, http.StatusBadRequest, map[string]string{
-				"error":   "INVALID_JSON",
-				"message": "Format request tidak valid.",
-			})
+			if isMaxBytesError(err) {
+				writeGuestError(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "Ukuran payload melebihi batas maksimal 1MB.")
+				return
+			}
+			writeGuestError(c, http.StatusBadRequest, "INVALID_JSON", "Format request tidak valid.")
 			return
 		}
 
 		token, sess, err := d.GuestSvc.VerifyChallenge(c.Request.Context(), req.Email, req.Code)
 		if err != nil {
 			if errors.Is(err, guest.ErrMaxAttemptsExceeded) {
-				writeJSON(c, http.StatusForbidden, map[string]string{
-					"error":   "MAX_ATTEMPTS_EXCEEDED",
-					"message": "Batas percobaan terlampaui. Silakan minta kode verifikasi baru.",
-				})
+				writeGuestError(c, http.StatusForbidden, "MAX_ATTEMPTS_EXCEEDED", "Batas percobaan terlampaui. Silakan minta kode verifikasi baru.")
 				return
 			}
 			if errors.Is(err, guest.ErrInvalidOrExpiredCode) {
-				writeJSON(c, http.StatusUnauthorized, map[string]string{
-					"error":   "INVALID_OR_EXPIRED_CODE",
-					"message": "Kode verifikasi salah atau telah kedaluwarsa.",
-				})
+				writeGuestError(c, http.StatusUnauthorized, "INVALID_OR_EXPIRED_CODE", "Kode verifikasi salah atau telah kedaluwarsa.")
 				return
 			}
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memvalidasi kode verifikasi.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memvalidasi kode verifikasi.")
 			return
 		}
 
@@ -240,10 +222,7 @@ func handleGuestMe(d Deps) gin.HandlerFunc {
 
 		profile, err := d.GuestSvc.GetSessionProfile(c.Request.Context(), sess)
 		if err != nil {
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal mengambil profil tamu.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal mengambil profil tamu.")
 			return
 		}
 
@@ -259,10 +238,7 @@ func handleGuestLogout(d Deps) gin.HandlerFunc {
 		token := extractGuestSessionToken(c.Request)
 		if token != "" && d.GuestSvc != nil {
 			if err := d.GuestSvc.RevokeSession(c.Request.Context(), token); err != nil {
-				writeJSON(c, http.StatusServiceUnavailable, map[string]string{
-					"error":   "LOGOUT_FAILED",
-					"message": "Gagal mencabut sesi pada server. Silakan coba lagi.",
-				})
+				writeGuestError(c, http.StatusServiceUnavailable, "LOGOUT_FAILED", "Gagal mencabut sesi pada server. Silakan coba lagi.")
 				return
 			}
 		}
@@ -290,10 +266,7 @@ func handleGuestBookings(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tidak ditemukan.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tidak ditemukan.")
 			return
 		}
 
@@ -307,10 +280,7 @@ func handleGuestBookings(d Deps) gin.HandlerFunc {
 
 		bookings, err := d.GuestSvc.ListBookings(c.Request.Context(), sess.GuestEmail, status, limit)
 		if err != nil {
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memuat daftar pemesanan.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memuat daftar pemesanan.")
 			return
 		}
 
@@ -325,10 +295,7 @@ func handleGuestBookingDetail(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tidak ditemukan.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tidak ditemukan.")
 			return
 		}
 
@@ -337,16 +304,10 @@ func handleGuestBookingDetail(d Deps) gin.HandlerFunc {
 		if err != nil {
 			if errors.Is(err, guest.ErrBookingNotFound) {
 				// IDOR defense: Mengembalikan 404 generik
-				writeJSON(c, http.StatusNotFound, map[string]string{
-					"error":   "BOOKING_NOT_FOUND",
-					"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
-				})
+				writeGuestError(c, http.StatusNotFound, "BOOKING_NOT_FOUND", "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.")
 				return
 			}
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memuat detail pemesanan.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memuat detail pemesanan.")
 			return
 		}
 
@@ -362,65 +323,41 @@ func handleGuestBookingPayment(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tidak ditemukan.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tidak ditemukan.")
 			return
 		}
 
 		if d.BookingSvc == nil {
-			writeJSON(c, http.StatusNotImplemented, map[string]string{
-				"error":   "NOT_IMPLEMENTED",
-				"message": "Layanan pemesanan belum dikonfigurasi.",
-			})
+			writeGuestError(c, http.StatusNotImplemented, "NOT_IMPLEMENTED", "Layanan pemesanan belum dikonfigurasi.")
 			return
 		}
 
 		id := c.Param("id")
 		b, err := d.BookingSvc.Get(c.Request.Context(), id)
 		if err != nil || !strings.EqualFold(strings.TrimSpace(sess.GuestEmail), strings.TrimSpace(b.GuestEmail)) {
-			writeJSON(c, http.StatusNotFound, map[string]string{
-				"error":   "BOOKING_NOT_FOUND",
-				"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
-			})
+			writeGuestError(c, http.StatusNotFound, "BOOKING_NOT_FOUND", "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.")
 			return
 		}
 
 		recovery, err := d.BookingSvc.GetPaymentRecovery(c.Request.Context(), id)
 		if errors.Is(err, booking.ErrHoldExpired) {
-			writeJSON(c, http.StatusGone, map[string]string{
-				"error":   "HOLD_EXPIRED",
-				"message": "Batas waktu pembayaran reservasi telah kedaluwarsa, kamar telah dilepas ke publik.",
-			})
+			writeGuestError(c, http.StatusGone, "HOLD_EXPIRED", "Batas waktu pembayaran reservasi telah kedaluwarsa, kamar telah dilepas ke publik.")
 			return
 		}
 		if errors.Is(err, booking.ErrPaymentRecoveryNotPending) {
-			writeJSON(c, http.StatusConflict, map[string]string{
-				"error":   "BOOKING_NOT_PENDING",
-				"message": "Pembayaran tidak dapat dilanjutkan karena reservasi tidak berstatus pending.",
-			})
+			writeGuestError(c, http.StatusConflict, "BOOKING_NOT_PENDING", "Pembayaran tidak dapat dilanjutkan karena reservasi tidak berstatus pending.")
 			return
 		}
 		if errors.Is(err, booking.ErrPaymentGatewayTimeout) {
-			writeJSON(c, http.StatusGatewayTimeout, map[string]string{
-				"error":   "GATEWAY_TIMEOUT",
-				"message": "Koneksi gateway pembayaran terputus, silakan coba beberapa saat lagi.",
-			})
+			writeGuestError(c, http.StatusGatewayTimeout, "GATEWAY_TIMEOUT", "Koneksi gateway pembayaran terputus, silakan coba beberapa saat lagi.")
 			return
 		}
 		if errors.Is(err, booking.ErrPaymentDefinitiveFailure) {
-			writeJSON(c, http.StatusBadGateway, map[string]string{
-				"error":   "PAYMENT_FAILED",
-				"message": "Gateway pembayaran menolak pembuatan tagihan.",
-			})
+			writeGuestError(c, http.StatusBadGateway, "PAYMENT_FAILED", "Gateway pembayaran menolak pembuatan tagihan.")
 			return
 		}
 		if err != nil {
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memulihkan tautan pembayaran.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memulihkan tautan pembayaran.")
 			return
 		}
 
@@ -432,10 +369,7 @@ func handleGuestBookingReceipt(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tidak ditemukan.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tidak ditemukan.")
 			return
 		}
 
@@ -443,23 +377,14 @@ func handleGuestBookingReceipt(d Deps) gin.HandlerFunc {
 		receipt, err := d.GuestSvc.GetBookingReceipt(c.Request.Context(), sess.GuestEmail, id)
 		if err != nil {
 			if errors.Is(err, guest.ErrBookingNotFound) {
-				writeJSON(c, http.StatusNotFound, map[string]string{
-					"error":   "BOOKING_NOT_FOUND",
-					"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
-				})
+				writeGuestError(c, http.StatusNotFound, "BOOKING_NOT_FOUND", "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.")
 				return
 			}
 			if errors.Is(err, guest.ErrReceiptNotAvailable) {
-				writeJSON(c, http.StatusBadRequest, map[string]string{
-					"error":   "RECEIPT_NOT_AVAILABLE",
-					"message": "Invoice resmi dan bukti reservasi hanya tersedia setelah pembayaran dikonfirmasi.",
-				})
+				writeGuestError(c, http.StatusBadRequest, "RECEIPT_NOT_AVAILABLE", "Invoice resmi dan bukti reservasi hanya tersedia setelah pembayaran dikonfirmasi.")
 				return
 			}
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memuat invoice bukti pemesanan.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memuat invoice bukti pemesanan.")
 			return
 		}
 
@@ -472,10 +397,7 @@ func handleGuestBookingCalendar(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := GuestSessionFromContext(c.Request.Context())
 		if sess == nil {
-			writeJSON(c, http.StatusUnauthorized, map[string]string{
-				"error":   "UNAUTHORIZED",
-				"message": "Sesi tidak ditemukan.",
-			})
+			writeGuestError(c, http.StatusUnauthorized, "UNAUTHORIZED", "Sesi tidak ditemukan.")
 			return
 		}
 
@@ -483,32 +405,20 @@ func handleGuestBookingCalendar(d Deps) gin.HandlerFunc {
 		receipt, err := d.GuestSvc.GetBookingReceipt(c.Request.Context(), sess.GuestEmail, id)
 		if err != nil {
 			if errors.Is(err, guest.ErrBookingNotFound) {
-				writeJSON(c, http.StatusNotFound, map[string]string{
-					"error":   "BOOKING_NOT_FOUND",
-					"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
-				})
+				writeGuestError(c, http.StatusNotFound, "BOOKING_NOT_FOUND", "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.")
 				return
 			}
 			if errors.Is(err, guest.ErrReceiptNotAvailable) {
-				writeJSON(c, http.StatusBadRequest, map[string]string{
-					"error":   "RECEIPT_NOT_AVAILABLE",
-					"message": "File kalender hanya tersedia setelah pembayaran dikonfirmasi.",
-				})
+				writeGuestError(c, http.StatusBadRequest, "RECEIPT_NOT_AVAILABLE", "File kalender hanya tersedia setelah pembayaran dikonfirmasi.")
 				return
 			}
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal memproses file kalender.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal memproses file kalender.")
 			return
 		}
 
 		icsBytes, err := d.GuestSvc.GenerateCalendarICS(receipt)
 		if err != nil {
-			writeJSON(c, http.StatusInternalServerError, map[string]string{
-				"error":   "INTERNAL_SERVER_ERROR",
-				"message": "Gagal menghasilkan file kalender.",
-			})
+			writeGuestError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "Gagal menghasilkan file kalender.")
 			return
 		}
 

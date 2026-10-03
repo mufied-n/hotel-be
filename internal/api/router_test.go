@@ -15,8 +15,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
 	"github.com/example/hotel-booking/internal/rates"
@@ -260,6 +262,16 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 	catalogStore := catalog.NewMemoryStore(catalog.DefaultVariants())
 	bkSvc.SetCatalogStore(catalogStore)
 
+	mockGuest := &mockGuestService{
+		requestChallengeFunc: func(_ context.Context, email string) (int, error) {
+			if email == "not-an-email" {
+				return 0, guest.ErrInvalidEmail
+			}
+			return 60, nil
+		},
+	}
+	mockXendit := payment.NewXendit("https://api.xendit.co", "test_sec", "valid-token", "http://localhost:3000", nil)
+
 	handler := NewRouter(Deps{
 		StaffAuth:        TestStaffVerifier(),
 		BookingSvc:       bkSvc,
@@ -269,6 +281,8 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 		RateEngine:       rateEngine,
 		QuoteStore:       quoteStore,
 		CatalogStore:     catalogStore,
+		GuestSvc:         mockGuest,
+		XenditGateway:    mockXendit,
 		Enqueuer:         &workers.Enqueuer{}, // won't panic if client is nil unless called, or mock client
 		Enforcer:         auth.DefaultTestEnforcer(),
 		IsDevelopment:    true,
@@ -2963,3 +2977,144 @@ func TestGetBookingPayment_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+func TestPayloadBoundaryAndUnifiedError_TableDriven(t *testing.T) {
+	router, _ := setupTestRouter()
+
+	oversizedPayload := strings.Repeat("A", int(DefaultMaxBodyBytes)+1024)
+
+	tests := []struct {
+		name           string
+		method         string
+		url            string
+		header         map[string]string
+		body           string
+		wantStatus     int
+		wantCode       string
+		isGuestAuth    bool
+		wantDualShape  bool
+	}{
+		{
+			name:          "create booking payload exceeds 1MB returns 413 PAYLOAD_TOO_LARGE",
+			method:        http.MethodPost,
+			url:           "/api/v1/bookings",
+			body:          `{"notes":"` + oversizedPayload + `"}`,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "PAYLOAD_TOO_LARGE",
+			wantDualShape: true,
+		},
+		{
+			name:          "quotes payload exceeds 1MB returns 413 PAYLOAD_TOO_LARGE",
+			method:        http.MethodPost,
+			url:           "/api/v1/quotes",
+			body:          `{"promo_code":"` + oversizedPayload + `"}`,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "PAYLOAD_TOO_LARGE",
+			wantDualShape: true,
+		},
+		{
+			name:          "guest challenge payload exceeds 1MB returns 413 PAYLOAD_TOO_LARGE",
+			method:        http.MethodPost,
+			url:           "/api/v1/auth/guest/challenge",
+			body:          `{"email":"` + oversizedPayload + `"}`,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "PAYLOAD_TOO_LARGE",
+			isGuestAuth:   true,
+			wantDualShape: true,
+		},
+		{
+			name:          "xendit webhook payload exceeds 1MB returns 413 PAYLOAD_TOO_LARGE",
+			method:        http.MethodPost,
+			url:           "/api/v1/webhooks/xendit",
+			header:        map[string]string{"x-callback-token": "valid-token"},
+			body:          `{"raw":"` + oversizedPayload + `"}`,
+			wantStatus:    http.StatusRequestEntityTooLarge,
+			wantCode:      "PAYLOAD_TOO_LARGE",
+			wantDualShape: true,
+		},
+		{
+			name:   "create booking idempotency key exceeds 64 chars returns 400 INVALID_IDEMPOTENCY_KEY",
+			method: http.MethodPost,
+			url:    "/api/v1/bookings",
+			header: map[string]string{
+				"Idempotency-Key": strings.Repeat("k", 65),
+			},
+			body:          `{"quote_id":"some-quote"}`,
+			wantStatus:    http.StatusBadRequest,
+			wantCode:      "INVALID_IDEMPOTENCY_KEY",
+			wantDualShape: true,
+		},
+		{
+			name:          "create booking malformed JSON returns 400 INVALID_JSON",
+			method:        http.MethodPost,
+			url:           "/api/v1/bookings",
+			body:          `{ not valid json `,
+			wantStatus:    http.StatusBadRequest,
+			wantCode:      "INVALID_JSON",
+			wantDualShape: true,
+		},
+		{
+			name:          "guest auth invalid email returns 400 INVALID_EMAIL with dual-shape error",
+			method:        http.MethodPost,
+			url:           "/api/v1/auth/guest/challenge",
+			body:          `{"email":"not-an-email"}`,
+			wantStatus:    http.StatusBadRequest,
+			wantCode:      "INVALID_EMAIL",
+			isGuestAuth:   true,
+			wantDualShape: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.url, bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tt.header {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			var bodyMap map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &bodyMap); err != nil {
+				t.Fatalf("failed to decode response JSON: %v, body: %s", err, rec.Body.String())
+			}
+
+			// Verifikasi kode error
+			if code, _ := bodyMap["code"].(string); code != tt.wantCode {
+				t.Errorf("code = %q, want %q", code, tt.wantCode)
+			}
+
+			if tt.wantDualShape {
+				// Seluruh response error wajib menyediakan code, message, detail, status
+				if bodyMap["code"] == nil || bodyMap["code"] == "" {
+					t.Errorf("missing or empty 'code' in error response")
+				}
+				if bodyMap["error"] == nil || bodyMap["error"] == "" {
+					t.Errorf("missing or empty 'error' in error response")
+				}
+				if bodyMap["message"] == nil || bodyMap["message"] == "" {
+					t.Errorf("missing or empty 'message' in error response")
+				}
+				if bodyMap["detail"] == nil || bodyMap["detail"] == "" {
+					t.Errorf("missing or empty 'detail' in error response")
+				}
+				if bodyMap["status"] == nil {
+					t.Errorf("missing 'status' in error response")
+				}
+
+				if tt.isGuestAuth {
+					// Pada guest auth, error == code untuk backward compatibility
+					if bodyMap["error"] != tt.wantCode {
+						t.Errorf("guest auth error = %v, want code %q", bodyMap["error"], tt.wantCode)
+					}
+				}
+			}
+		})
+	}
+}
+

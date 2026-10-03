@@ -124,7 +124,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R18 — Boundary payload dan error API belum seragam
 
-**Prioritas:** P2. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G09/15; F01/F02.
+**Prioritas:** P2. **Status:** RESOLVED (2026-10-04). **Hubungan:** BE-G09/15; F01/F02.
 
 **Bukti source.** `createBooking` dan `xenditWebhook` memakai io.ReadAll tanpa MaxBytesReader; guest handlers memakai decoder tanpa batas body eksplisit. Booking errors memakai ProblemDetails, guest endpoints memakai `{error,message}`. Header key checkout belum ditegakkan batasnya pada handler meskipun Batch D menyebut 1–64 karakter.
 
@@ -133,6 +133,12 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 **Dampak.** Beban memori dan error generic/500 dapat muncul; integrasi perlu normalisasi dua bentuk error. Rate limiter global tidak menggantikan body limit.
 
 **Rekomendasi.** Terapkan limit request body per endpoint dan batas panjang field/key sebelum domain/provider. Konsistenkan machine code dan HTTP status secara bertahap dengan compatibility terdokumentasi. Bedakan error DB/internal yang tidak boleh terpapar dan user-fixable validation.
+
+**Resolusi (2026-10-04).**
+1. **Body Size Limit Middleware (1 MB):** Middleware `BodySizeLimit(DefaultMaxBodyBytes)` (`http.MaxBytesReader`) diterapkan secara global pada router API serta eksplisit dibungkus pada `createBooking` dan `xenditWebhook`. Request body > 1 MB ditolak dengan HTTP 413 `PAYLOAD_TOO_LARGE`.
+2. **Validasi Header Idempotency-Key:** `createBooking` menegakkan batas panjang header `Idempotency-Key` maksimal 64 karakter. Header > 64 karakter ditolak dengan HTTP 400 `INVALID_IDEMPOTENCY_KEY`.
+3. **Unifikasi Format Error Dual-Shape:** Respons error API pada `writeProblemDetails` maupun `writeGuestError` menyajikan keseragaman field `code`, `error`, `message`, `detail`, `title`, dan `status`.
+4. **Dokumentasi Lengkap:** [PRD](../../docs/prd/payload-boundary-and-unified-error-r18-2026-10-04.md), [SRS](../../docs/srs/payload-boundary-and-unified-error-r18-2026-10-04.md), [Tech Architecture](../../docs/tech/payload-boundary-and-unified-error-architecture-2026-10-04.md), [Walkthrough](../../docs/walkthrough/payload-boundary-and-unified-error-r18-walkthrough-2026-10-04.md), [E2E Report](../../testing/e2e/report/2026-10-04-003000-payload-boundary-and-unified-error-r18-e2e-report.md).
 
 **Kriteria penerimaan dan verifikasi.** Oversized body mendapat 413 tanpa mutation, malformed JSON 400, key invalid ditolak sesuai kontrak. FE contract tests mencakup kedua bentuk error selama migrasi. Rate limit menggunakan 429 dengan retry metadata yang dapat dipakai client.
 

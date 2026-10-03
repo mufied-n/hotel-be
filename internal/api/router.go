@@ -128,6 +128,9 @@ func NewRouter(d Deps) *gin.Engine {
 		r.Use(d.RateLimiter.Limit())
 	}
 
+	// 5. Body Size Limit Middleware (1 MB) (BE-R18)
+	r.Use(BodySizeLimit(DefaultMaxBodyBytes))
+
 	r.Match([]string{http.MethodGet, http.MethodHead}, "/healthz", healthz)
 	r.Match([]string{http.MethodGet, http.MethodHead}, "/ready", ready(d))
 	r.POST("/api/v1/webhooks/xendit", RequireFeature(d.FeatureFlag, "ff_xendit_payment_gateway"), xenditWebhook(d))
@@ -289,8 +292,7 @@ func getCatalogRoom(d Deps) gin.HandlerFunc {
 func createCatalogRoom(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var v catalog.RoomVariant
-		if err := json.UnmarshalRead(c.Request.Body, &v); err != nil {
-			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_ROOM_PAYLOAD")
+		if !decodeJSON(c, &v, "INVALID_ROOM_PAYLOAD", "body JSON tidak valid") {
 			return
 		}
 		created, err := d.CatalogStore.CreateVariant(c.Request.Context(), v)
@@ -318,8 +320,7 @@ func updateCatalogRoom(d Deps) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		var v catalog.RoomVariant
-		if err := json.UnmarshalRead(c.Request.Body, &v); err != nil {
-			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_ROOM_PAYLOAD")
+		if !decodeJSON(c, &v, "INVALID_ROOM_PAYLOAD", "body JSON tidak valid") {
 			return
 		}
 		updated, err := d.CatalogStore.UpdateVariant(c.Request.Context(), id, v)
@@ -632,8 +633,7 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		var in req
-		if err := json.UnmarshalRead(c.Request.Body, &in); err != nil {
-			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
+		if !decodeJSON(c, &in, "INVALID_JSON", "body JSON tidak valid") {
 			return
 		}
 		if !validateDTO(c, &in) {
@@ -785,13 +785,23 @@ func createBooking(d Deps) gin.HandlerFunc {
 		SpecialRequests      string `json:"special_requests,omitempty"`
 	}
 	return func(c *gin.Context) {
+		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		if len(idempotencyKey) > 64 {
+			httpErrorCode(c, http.StatusBadRequest, "idempotency key must be between 1 and 64 characters", "INVALID_IDEMPOTENCY_KEY")
+			return
+		}
+
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, DefaultMaxBodyBytes)
 		bodyBytes, err := io.ReadAll(c.Request.Body)
 		if err != nil {
+			if isMaxBytesError(err) {
+				httpErrorCode(c, http.StatusRequestEntityTooLarge, "request body melebihi batas 1MB", "PAYLOAD_TOO_LARGE")
+				return
+			}
 			httpErrorCode(c, http.StatusBadRequest, "gagal membaca request body", "INVALID_BODY")
 			return
 		}
 
-		idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 		useIdem := idempotencyKey != "" && d.IdempotencyStore != nil &&
 			(d.FeatureFlag == nil || d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_checkout_idempotency"))
 		reqHash := hashBody(bodyBytes)
@@ -1245,8 +1255,13 @@ func xenditWebhook(d Deps) gin.HandlerFunc {
 		}
 
 		token := c.GetHeader("x-callback-token")
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, DefaultMaxBodyBytes)
 		bodyBytes, err := io.ReadAll(c.Request.Body)
 		if err != nil {
+			if isMaxBytesError(err) {
+				httpErrorCode(c, http.StatusRequestEntityTooLarge, "webhook payload melebihi batas 1MB", "PAYLOAD_TOO_LARGE")
+				return
+			}
 			httpErrorCode(c, http.StatusBadRequest, "failed to read webhook body", "BAD_REQUEST")
 			return
 		}
