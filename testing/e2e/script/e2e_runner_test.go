@@ -350,7 +350,7 @@ type e2eOTPNotifier struct {
 	lastOTP string
 }
 
-func (n *e2eOTPNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+func (n *e2eOTPNotifier) SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error {
 	n.lastOTP = otpCode
 	return nil
 }

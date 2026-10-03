@@ -19,7 +19,7 @@ import (
 
 // OTPNotifier mendefinisikan adapter untuk mengirim email OTP ke tamu.
 type OTPNotifier interface {
-	SendGuestOTP(ctx context.Context, email, otpCode string) error
+	SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error
 }
 
 // Service mendefinisikan use cases untuk autentikasi tamu dan "Booking Saya".
@@ -69,6 +69,11 @@ func (s *DefaultService) SetNowFunc(fn func() time.Time) {
 	s.nowFunc = fn
 }
 
+// OutboxStore mendefinisikan kapabilitas penyimpanan yang mendukung Transactional Outbox (BE-R17).
+type OutboxStore interface {
+	HasOutbox() bool
+}
+
 // RequestChallenge memproses permintaan OTP 6 digit baru dengan proteksi rate limit dan anti-enumeration.
 func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (int, error) {
 	normEmail := strings.ToLower(strings.TrimSpace(email))
@@ -88,6 +93,7 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 	challenge := &Challenge{
 		Email:       normEmail,
 		CodeHash:    codeHash,
+		PlainCode:   otpCode,
 		Attempts:    0,
 		MaxAttempts: 3,
 		ExpiresAt:   now.Add(10 * time.Minute),
@@ -95,6 +101,7 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 	}
 
 	// 2. Simpan secara atomik dengan proteksi cooldown 60 detik (BE-R03)
+	// Bila store mendukung outbox (seperti PostgresStore), outbox event disisipkan dalam transaksi atomik (BE-R17).
 	if err := s.store.CreateChallengeWithCooldown(ctx, challenge, 60*time.Second); err != nil {
 		if errors.Is(err, ErrRateLimited) {
 			return 0, ErrRateLimited
@@ -102,10 +109,13 @@ func (s *DefaultService) RequestChallenge(ctx context.Context, email string) (in
 		return 0, fmt.Errorf("guest: failed to store challenge: %w", err)
 	}
 
-	// 3. Kirim OTP via notifier
+	// 3. Jika store tidak mendukung transactional outbox (misal in-memory mock store pada unit test),
+	// panggil notifier secara langsung sebagai fallback pengujian.
 	if s.notifier != nil {
-		if err := s.notifier.SendGuestOTP(ctx, normEmail, otpCode); err != nil {
-			s.log.ErrorContext(ctx, "guest.otp_dispatch_failed", "email", normEmail, "err", err)
+		if obStore, ok := s.store.(OutboxStore); !ok || !obStore.HasOutbox() {
+			if err := s.notifier.SendGuestOTP(ctx, normEmail, otpCode); err != nil {
+				s.log.ErrorContext(ctx, "guest.otp_dispatch_failed", "email", normEmail, "err", err)
+			}
 		}
 	}
 

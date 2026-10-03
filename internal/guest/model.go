@@ -19,6 +19,7 @@ type Challenge struct {
 	ID          string     `json:"id"`
 	Email       string     `json:"email"`
 	CodeHash    string     `json:"-"`
+	PlainCode   string     `json:"-"`
 	Attempts    int        `json:"attempts"`
 	MaxAttempts int        `json:"max_attempts"`
 	ExpiresAt   time.Time  `json:"expires_at"`

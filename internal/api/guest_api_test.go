@@ -441,6 +441,12 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			if rec.Code != tc.expectedStatus {
 				t.Fatalf("expected status %d, got %d. Body: %s", tc.expectedStatus, rec.Code, rec.Body.String())
 			}
+
+			if tc.expectedStatus == http.StatusOK && tc.path == "/api/v1/auth/guest/challenge" {
+				if !strings.Contains(rec.Body.String(), `"delivery_status":"accepted"`) {
+					t.Errorf("expected delivery_status: accepted in response body, got %s", rec.Body.String())
+				}
+			}
 		})
 	}
 }

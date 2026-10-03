@@ -30,7 +30,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R14 | P1 (RESOLVED 2026-10-03, amount & ledger reconciliation) | [Webhook tidak mencocokkan nilai dan invoice dengan ledger](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/11; F05/F14 |
 | BE-R15 | P1 (RESOLVED 2026-10-03, cross-session payment recovery & zero duplicate charges) | [Link pembayaran tidak tersedia untuk recovery lintas sesi](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F03/F05 |
 | BE-R16 | P0 (RESOLVED 2026-10-03, fail-fast production startup & readiness) | [Deployment production masih dapat memilih fake gateway dan log notifier](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/16; F05/F11/F15 |
-| BE-R17 | P1 | [OTP delivery tidak memiliki retry durable dan tetap mengaku terkirim](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G16; F02/F11 |
+| BE-R17 | P1 (RESOLVED 2026-10-04, durable outbox OTP delivery & honest accepted status) | [OTP delivery tidak memiliki retry durable dan tetap mengaku terkirim](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G16; F02/F11 |
 | BE-R18 | P2 | [Boundary payload dan error API belum seragam](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G09/15; F01/F02 |
 
 ## Perbaikan nyata terhadap audit awal

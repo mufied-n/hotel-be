@@ -148,3 +148,77 @@ func ParsePayloadBookingID(payload []byte) (string, error) {
 	}
 	return p.BookingID, nil
 }
+
+// OTPPayload mendefinisikan struktur payload event topik 'guest.otp_dispatch' (BE-R17).
+type OTPPayload struct {
+	ChallengeID string    `json:"challenge_id"`
+	Email       string    `json:"email"`
+	OTPCode     string    `json:"otp_code"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// OTPNotifier mendefinisikan port pengiriman kode OTP untuk worker outbox (BE-R17).
+type OTPNotifier interface {
+	SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error
+}
+
+// NewGuestOTPDispatchHandler membuat handler outbox untuk pemrosesan topik 'guest.otp_dispatch' secara andal (BE-R17).
+func NewGuestOTPDispatchHandler(pool *pgxpool.Pool, notifier OTPNotifier, log *slog.Logger) func(ctx context.Context, payload []byte) error {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(ctx context.Context, payload []byte) error {
+		var p OTPPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			log.ErrorContext(ctx, "outbox.otp.unmarshal_failed", "err", err)
+			return nil // Payload rusak dibatalkan agar tidak menyumbat antrian outbox
+		}
+
+		now := time.Now().UTC()
+		// 1. Cek apakah OTP sudah kedaluwarsa (anti-stale delivery)
+		if !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt) {
+			log.WarnContext(ctx, "outbox.otp.discarded_expired",
+				"challenge_id", p.ChallengeID,
+				"recipient", p.Email,
+			)
+			return nil // Tandai event selesai tanpa mengirim email kedaluwarsa
+		}
+
+		// 2. Cek apakah tantangan sudah pernah diverifikasi
+		if pool != nil && p.ChallengeID != "" {
+			var verifiedAt *time.Time
+			err := pool.QueryRow(ctx,
+				`SELECT verified_at FROM guest_auth_challenges WHERE id = $1`,
+				p.ChallengeID,
+			).Scan(&verifiedAt)
+			if err == nil && verifiedAt != nil {
+				log.InfoContext(ctx, "outbox.otp.discarded_already_verified",
+					"challenge_id", p.ChallengeID,
+				)
+				return nil // Tamu sudah login, batalkan pengiriman ulang
+			}
+		}
+
+		if notifier == nil {
+			log.WarnContext(ctx, "outbox.otp.no_notifier", "challenge_id", p.ChallengeID)
+			return nil
+		}
+
+		// 3. Eksekusi pengiriman via notifier dengan menyertakan challengeID untuk Idempotency-Key
+		if err := notifier.SendGuestOTP(ctx, p.Email, p.OTPCode, p.ChallengeID); err != nil {
+			log.ErrorContext(ctx, "outbox.otp.send_failed",
+				"challenge_id", p.ChallengeID,
+				"recipient", p.Email,
+				"err", err,
+			)
+			return err // Return error agar OutboxRelay menjadwalkan retry dengan exponential backoff
+		}
+
+		log.InfoContext(ctx, "outbox.otp.dispatched",
+			"challenge_id", p.ChallengeID,
+			"recipient", p.Email,
+		)
+		return nil
+	}
+}
+

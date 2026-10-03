@@ -136,8 +136,9 @@ func (n *ResendNotifier) SendBookingConfirmed(ctx context.Context, b booking.Boo
 	return nil
 }
 
-// SendGuestOTP menyusun template email OTP login dan mengirimkannya via Resend API.
-func (n *ResendNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+// SendGuestOTP menyusun template email OTP login dan mengirimkannya via Resend API (BE-R17).
+// Menggunakan Idempotency-Key berbasis challenge ID bila tersedia untuk deduplikasi retry.
+func (n *ResendNotifier) SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error {
 	if n.FeatureFlag != nil && !n.FeatureFlag.IsEnabled(ctx, "ff_resend_email_notifier") {
 		n.Log.InfoContext(ctx, "resend.otp_skipped", "reason", "feature flag ff_resend_email_notifier disabled", "email", email)
 		return nil
@@ -169,8 +170,12 @@ func (n *ResendNotifier) SendGuestOTP(ctx context.Context, email, otpCode string
 
 	httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", n.APIKey))
 	httpReq.Header.Set("Content-Type", "application/json")
-	// Idempotency-Key per kode OTP agar pengiriman aman
-	httpReq.Header.Set("Idempotency-Key", fmt.Sprintf("otp-%s-%d", email, time.Now().Unix()/60))
+	// Idempotency-Key per challenge ID untuk menjamin deduplikasi retry (BE-R17)
+	idempotencyKey := fmt.Sprintf("otp-%s-%d", email, time.Now().Unix()/60)
+	if len(challengeID) > 0 && challengeID[0] != "" {
+		idempotencyKey = fmt.Sprintf("otp-challenge-%s", challengeID[0])
+	}
+	httpReq.Header.Set("Idempotency-Key", idempotencyKey)
 
 	resp, err := n.Client.Do(httpReq)
 	if err != nil {

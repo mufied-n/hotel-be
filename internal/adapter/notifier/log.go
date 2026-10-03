@@ -35,9 +35,9 @@ func (n *LogNotifier) SendBookingConfirmed(ctx context.Context, b booking.Bookin
 	return nil
 }
 
-// SendGuestOTP mencatat kode OTP tamu ke log untuk keperluan dev/testing.
+// SendGuestOTP mencatat kode OTP tamu ke log untuk keperluan dev/testing (BE-R17).
 // Jika MaskOTP aktif, kode OTP disensor menjadi [REDACTED] demi keamanan (BE-R16).
-func (n *LogNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+func (n *LogNotifier) SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error {
 	otpVal := otpCode
 	if n.MaskOTP {
 		otpVal = "[REDACTED]"

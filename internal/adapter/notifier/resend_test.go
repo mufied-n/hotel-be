@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,4 +201,52 @@ func TestResendNotifier_FeatureFlagDisabled(t *testing.T) {
 		t.Errorf("expected nil error for SendGuestOTP when flag is disabled, got %v", err)
 	}
 }
+
+func TestResendNotifier_IdempotencyKey_TableDriven(t *testing.T) {
+	tests := []struct {
+		name          string
+		email         string
+		otp           string
+		challengeID   []string
+		wantHeaderKey string
+	}{
+		{
+			name:          "With challenge ID produces per-challenge idempotency key",
+			email:         "guest@example.com",
+			otp:           "123456",
+			challengeID:   []string{"ch-abc-789"},
+			wantHeaderKey: "otp-challenge-ch-abc-789",
+		},
+		{
+			name:          "Without challenge ID falls back to email-time based idempotency key",
+			email:         "guest@example.com",
+			otp:           "123456",
+			challengeID:   nil,
+			wantHeaderKey: "otp-guest@example.com-",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedKey string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedKey = r.Header.Get("Idempotency-Key")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "re_ok"})
+			}))
+			defer server.Close()
+
+			resend := NewResend(server.URL, "key123", "from@hotel.com", slog.Default())
+			err := resend.SendGuestOTP(context.Background(), tc.email, tc.otp, tc.challengeID...)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !strings.HasPrefix(capturedKey, tc.wantHeaderKey) {
+				t.Errorf("capturedKey = %q, want prefix %q", capturedKey, tc.wantHeaderKey)
+			}
+		})
+	}
+}
+
 

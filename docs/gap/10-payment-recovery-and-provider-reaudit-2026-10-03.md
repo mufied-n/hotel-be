@@ -70,7 +70,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R17 — OTP delivery tidak memiliki retry durable dan tetap mengaku terkirim
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G16; F02/F11.
+**Prioritas:** P1. **Status:** RESOLVED 2026-10-04 (durable outbox OTP delivery & honest accepted status). **Hubungan:** BE-G16; F02/F11.
 
 **Bukti source.** [guest/service.go](../../internal/guest/service.go) (lihat fungsi terkait) menyimpan challenge sebelum mengirim OTP, lalu hanya log error notifier dan mengembalikan cooldown sukses. [notifier/resend.go](../../internal/adapter/notifier/resend.go) (lihat fungsi terkait) membuat idempotency key dari email dan menit wall clock, bukan challenge ID. Handler challenge mengatakan kode telah dikirim.
 

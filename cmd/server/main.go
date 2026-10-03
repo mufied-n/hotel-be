@@ -202,6 +202,7 @@ func main() {
 				log.InfoContext(ctx, "event.booking.no_show", "booking_id", id)
 				return nil
 			},
+			"guest.otp_dispatch": workers.NewGuestOTPDispatchHandler(pool, otpNotifier, log),
 		},
 	}
 	go relay.Run(ctx, cfg.OutboxInterval)

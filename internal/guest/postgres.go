@@ -123,10 +123,35 @@ func (s *PostgresStore) CreateChallengeWithCooldown(ctx context.Context, c *Chal
 		return fmt.Errorf("guest_store.create_challenge: %w", err)
 	}
 
+	// BE-R17: Masukkan event ke tabel outbox dalam transaksi atomik yang sama
+	if c.PlainCode != "" {
+		payloadBytes, mErr := json.Marshal(map[string]any{
+			"challenge_id": c.ID,
+			"email":        c.Email,
+			"otp_code":     c.PlainCode,
+			"expires_at":   c.ExpiresAt,
+		})
+		if mErr != nil {
+			return fmt.Errorf("guest_store.marshal_outbox: %w", mErr)
+		}
+		outboxQuery := `
+			INSERT INTO outbox (topic, payload, status, attempts, next_retry_at, created_at)
+			VALUES ('guest.otp_dispatch', $1, 'pending', 0, now(), now())
+		`
+		if _, err := tx.Exec(ctx, outboxQuery, payloadBytes); err != nil {
+			return fmt.Errorf("guest_store.insert_outbox: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("guest_store.commit_tx: %w", err)
 	}
 	return nil
+}
+
+// HasOutbox menandakan bahwa store mengeksekusi outbox queuing secara atomik (BE-R17).
+func (s *PostgresStore) HasOutbox() bool {
+	return true
 }
 
 // VerifyAndConsumeChallenge mengeksekusi verifikasi kode, penambahan attempts, dan pembuatan sesi dalam satu transaksi atomik ber-row lock (BE-R03).

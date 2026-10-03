@@ -142,7 +142,8 @@ func handleGuestChallenge(d Deps) gin.HandlerFunc {
 
 		writeJSON(c, http.StatusOK, map[string]any{
 			"status":           "ok",
-			"message":          "Jika email terdaftar atau valid, kode verifikasi 6 digit telah dikirimkan ke email Anda.",
+			"delivery_status":  "accepted",
+			"message":          "Permintaan kode verifikasi telah diterima. Jika alamat email valid, kode verifikasi 6 digit akan dikirimkan ke email Anda.",
 			"cooldown_seconds": cd,
 		})
 	}

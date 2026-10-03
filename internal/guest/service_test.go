@@ -250,7 +250,7 @@ type mockNotifier struct {
 	err       error
 }
 
-func (n *mockNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+func (n *mockNotifier) SendGuestOTP(ctx context.Context, email, otpCode string, challengeID ...string) error {
 	n.sentEmail = email
 	n.sentCode = otpCode
 	return n.err
@@ -328,6 +328,67 @@ func TestGuestService_RequestChallenge_TableTest(t *testing.T) {
 			}
 			if cd != tc.expectCdSec {
 				t.Errorf("expected cooldown %d, got %d", tc.expectCdSec, cd)
+			}
+		})
+	}
+}
+
+type mockOutboxStore struct {
+	*mockStore
+	hasOutbox bool
+}
+
+func (m *mockOutboxStore) HasOutbox() bool {
+	return m.hasOutbox
+}
+
+func TestGuestService_RequestChallenge_OutboxDelegation_TableTest(t *testing.T) {
+	now := time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name                 string
+		storeHasOutbox       bool
+		expectInlineNotifier bool
+	}{
+		{
+			name:                 "When store supports outbox, inline notifier is skipped in favor of worker relay",
+			storeHasOutbox:       true,
+			expectInlineNotifier: false,
+		},
+		{
+			name:                 "When store does not support outbox, inline notifier is invoked as fallback",
+			storeHasOutbox:       false,
+			expectInlineNotifier: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseStore := newMockStore()
+			outboxStore := &mockOutboxStore{
+				mockStore: baseStore,
+				hasOutbox: tt.storeHasOutbox,
+			}
+			notifier := &mockNotifier{}
+			svc := NewService(outboxStore, notifier, slog.Default())
+			svc.nowFunc = func() time.Time { return now }
+
+			cd, err := svc.RequestChallenge(context.Background(), "guest@example.com")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cd != 60 {
+				t.Errorf("cd = %d, want 60", cd)
+			}
+
+			if tt.expectInlineNotifier {
+				if notifier.sentEmail != "guest@example.com" {
+					t.Errorf("expected inline notifier to be called, got sentEmail = %q", notifier.sentEmail)
+				}
+			} else {
+				if notifier.sentEmail != "" {
+					t.Errorf("expected inline notifier to be skipped, but sentEmail was %q", notifier.sentEmail)
+				}
 			}
 		})
 	}
@@ -1207,4 +1268,12 @@ func TestGuestService_ListBookings_Pagination(t *testing.T) {
 		t.Errorf("expected 1 result, got %d", len(res2))
 	}
 }
+
+func TestPostgresStore_HasOutbox(t *testing.T) {
+	store := NewPostgresStore(nil)
+	if !store.HasOutbox() {
+		t.Errorf("expected HasOutbox to return true")
+	}
+}
+
 
