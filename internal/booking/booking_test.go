@@ -1,6 +1,7 @@
 package booking
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -69,17 +70,18 @@ func TestBooking_ToPublicDTO(t *testing.T) {
 		{
 			name: "masks guest PII and token",
 			booking: Booking{
-				ID:              "bk-001",
-				Status:          StatusConfirmed,
-				RoomTypeID:      "deluxe",
-				CheckIn:         now,
-				CheckOut:        now.Add(48 * time.Hour),
-				NumRooms:        2,
-				NumGuests:       4,
-				TotalPriceMinor: 2_500_000,
-				Currency:        "IDR",
-				GuestName:       "Rahasia Tamu",
+				ID:                   "bk-001",
+				Status:               StatusConfirmed,
+				RoomTypeID:           "deluxe",
+				CheckIn:              now,
+				CheckOut:             now.Add(48 * time.Hour),
+				NumRooms:             2,
+				NumGuests:            4,
+				TotalPriceMinor:      2_500_000,
+				Currency:             "IDR",
+				GuestName:            "Rahasia Tamu",
 				GuestEmail:           "rahasia@example.com",
+				GuestPhone:           "+628123456789",
 				GuestToken:           "gst_super_secret_token",
 				EstimatedArrivalTime: "14:00",
 				SpecialRequests:      "Alergi kacang dan setup honeymoon",
@@ -103,11 +105,26 @@ func TestBooking_ToPublicDTO(t *testing.T) {
 			if dto.NumRooms != tt.booking.NumRooms {
 				t.Errorf("NumRooms = %d, want %d", dto.NumRooms, tt.booking.NumRooms)
 			}
-			if dto.SpecialRequests != "" {
-				t.Errorf("SpecialRequests = %s, want empty (BE-R02 masked)", dto.SpecialRequests)
+
+			// Verifikasi bahwa serialisasi JSON dari PublicDTO tidak mengandung data sensitif (BE-R02, UU PDP)
+			rawJSON, err := json.Marshal(dto)
+			if err != nil {
+				t.Fatalf("failed to marshal PublicDTO: %v", err)
 			}
-			if dto.EstimatedArrivalTime != "" {
-				t.Errorf("EstimatedArrivalTime = %s, want empty (BE-R02 masked)", dto.EstimatedArrivalTime)
+			var jsonMap map[string]any
+			if err := json.Unmarshal(rawJSON, &jsonMap); err != nil {
+				t.Fatalf("failed to unmarshal PublicDTO: %v", err)
+			}
+
+			sensitiveFields := []string{
+				"guest_name", "guest_email", "guest_phone", "guest_token",
+				"special_requests", "estimated_arrival_time",
+				"total_price_minor", "room_subtotal_minor", "quote_id",
+			}
+			for _, field := range sensitiveFields {
+				if val, exists := jsonMap[field]; exists {
+					t.Errorf("field %s MUST NOT exist in PublicDTO JSON, found: %v", field, val)
+				}
 			}
 		})
 	}

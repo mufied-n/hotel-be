@@ -839,11 +839,12 @@ func getBooking(d Deps) gin.HandlerFunc {
 		authCtx := GetAuthContext(c.Request.Context())
 		guestToken := GetGuestToken(c.Request.Context())
 
-		// BE-G13: Privasi data tamu (PII).
-		// Jika caller adalah staff (bukan guest) ATAU memiliki guest_token yang valid ATAU pii masking guard dinonaktifkan,
-		// kembalikan data booking lengkap.
-		// Jika guest tanpa token yang cocok, kembalikan PublicDTO yang dimasking.
+		// BE-G13, BE-R02: Privasi data tamu (PII) dan perlindungan token sesi.
+		// Jika caller adalah staff (bukan guest) ATAU memiliki guest_token yang valid ATAU pii masking guard dinonaktifkan:
+		// kembalikan data booking lengkap. Pastikan b.GuestToken di-nolkan agar token kredensial
+		// tidak pernah bocor pada operasi read ke staf maupun ke client (BE-R02).
 		if (d.FeatureFlag != nil && !d.FeatureFlag.IsEnabled(c.Request.Context(), "ff_pii_masking_guard")) || authCtx.Role != "guest" || (b.GuestToken != "" && guestToken == b.GuestToken) {
+			b.GuestToken = ""
 			writeJSON(c, http.StatusOK, b)
 			return
 		}

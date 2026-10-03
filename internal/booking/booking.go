@@ -91,35 +91,32 @@ type Booking struct {
 	CreatedAt            time.Time  `json:"created_at"`
 }
 
-// PublicDTO adalah representasi publik minimal tanpa kebocoran PII (BE-G13).
-// guest_phone dan guest_email disembunyikan untuk memenuhi UU PDP No. 27/2022.
+// PublicDTO adalah representasi publik minimal tanpa kebocoran PII (BE-G13, BE-R02).
+// Data sensitif (nama, email, telepon, token, arrival time, special requests) ditiadakan
+// untuk memenuhi UU PDP No. 27/2022.
 type PublicDTO struct {
-	ID                   string     `json:"id"`
-	RoomTypeID           string     `json:"room_type_id"`
-	CheckIn              time.Time  `json:"check_in"`
-	CheckOut             time.Time  `json:"check_out"`
-	NumRooms             int        `json:"num_rooms"`
-	Status               Status     `json:"status"`
-	EstimatedArrivalTime string     `json:"estimated_arrival_time,omitempty"`
-	SpecialRequests      string     `json:"special_requests,omitempty"`
-	ExpiresAt            *time.Time `json:"expires_at,omitempty"`
-	CreatedAt            time.Time  `json:"created_at"`
+	ID         string     `json:"id"`
+	RoomTypeID string     `json:"room_type_id"`
+	CheckIn    time.Time  `json:"check_in"`
+	CheckOut   time.Time  `json:"check_out"`
+	NumRooms   int        `json:"num_rooms"`
+	Status     Status     `json:"status"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
-// ToPublicDTO menyaring field sensitif (nama, email, telepon, guest_token) untuk akses unauthenticated.
-// BE-R02: Menyaring juga SpecialRequests dan EstimatedArrivalTime agar data preferensi/kesehatan pribadi tamu tidak bocor ke publik.
+// ToPublicDTO menyaring field sensitif (nama, email, telepon, guest_token, special_requests,
+// estimated_arrival_time) untuk akses unauthenticated (BE-R02).
 func (b Booking) ToPublicDTO() PublicDTO {
 	return PublicDTO{
-		ID:                   b.ID,
-		RoomTypeID:           b.RoomTypeID,
-		CheckIn:              b.CheckIn,
-		CheckOut:             b.CheckOut,
-		NumRooms:             b.NumRooms,
-		Status:               b.Status,
-		EstimatedArrivalTime: "",
-		SpecialRequests:      "",
-		ExpiresAt:            b.ExpiresAt,
-		CreatedAt:            b.CreatedAt,
+		ID:         b.ID,
+		RoomTypeID: b.RoomTypeID,
+		CheckIn:    b.CheckIn,
+		CheckOut:   b.CheckOut,
+		NumRooms:   b.NumRooms,
+		Status:     b.Status,
+		ExpiresAt:  b.ExpiresAt,
+		CreatedAt:  b.CreatedAt,
 	}
 }
 

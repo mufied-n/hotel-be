@@ -15,7 +15,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | ID | Prioritas | Temuan dan dokumen pemilik | Hubungan audit/roadmap |
 |---|---|---|---|
 | BE-R01 | P0 (RESOLVED 2026-10-03, login staf + sesi) | [Identitas staf masih dapat dipalsukan](08-security-and-guest-session-reaudit-2026-10-03.md) | BE-G14; F12 |
-| BE-R02 | P1 | [DTO publik masih mengandung permintaan khusus tamu](08-security-and-guest-session-reaudit-2026-10-03.md) | BE-G13; F02/F03 |
+| BE-R02 | P1 (RESOLVED 2026-10-03, PublicDTO privacy & token protection) | [DTO publik masih mengandung permintaan khusus tamu](08-security-and-guest-session-reaudit-2026-10-03.md) | BE-G13; F02/F03 |
 | BE-R03 | P1 | [Challenge OTP dan penghitung percobaan belum atomik](08-security-and-guest-session-reaudit-2026-10-03.md) | F02; perluasan BE-G13/14 |
 | BE-R04 | P1 | [Logout mengaku berhasil walau pencabutan sesi gagal](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F12 |
 | BE-R05 | P1 | [Ownership email dan allowed_actions belum konsisten dengan booking](08-security-and-guest-session-reaudit-2026-10-03.md) | F02/F03/F05/F06 |

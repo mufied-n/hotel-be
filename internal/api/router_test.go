@@ -217,16 +217,19 @@ func setupTestRouter() (http.Handler, *mockTx) {
 func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 	txMock := &mockTx{
 		booking: booking.Booking{
-			ID:              "bk-123",
-			Status:          booking.StatusConfirmed,
-			RoomTypeID:      "std",
-			NumRooms:        1,
-			CheckIn:         time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
-			CheckOut:        time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
-			TotalPriceMinor: 1_000_000,
-			GuestName:       "Budi Santoso",
-			GuestEmail:      "budi@example.com",
-			GuestToken:      "gst_valid_token_123",
+			ID:                   "bk-123",
+			Status:               booking.StatusConfirmed,
+			RoomTypeID:           "std",
+			NumRooms:             1,
+			CheckIn:              time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
+			CheckOut:             time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
+			TotalPriceMinor:      1_000_000,
+			GuestName:            "Budi Santoso",
+			GuestEmail:           "budi@example.com",
+			GuestPhone:           "+628123456789",
+			GuestToken:           "gst_valid_token_123",
+			EstimatedArrivalTime: "14:00",
+			SpecialRequests:      "Bantal ekstra hypoallergenic",
 		},
 		rooms: []string{"101"},
 	}
@@ -409,15 +412,48 @@ func TestGetBooking(t *testing.T) {
 		if _, exists := resp["guest_email"]; exists {
 			t.Errorf("guest_email leaked in public DTO: %v", resp["guest_email"])
 		}
+		if _, exists := resp["guest_phone"]; exists {
+			t.Errorf("guest_phone leaked in public DTO: %v", resp["guest_phone"])
+		}
 		if _, exists := resp["guest_token"]; exists {
 			t.Errorf("guest_token leaked in public DTO: %v", resp["guest_token"])
+		}
+		if _, exists := resp["special_requests"]; exists {
+			t.Errorf("special_requests leaked in public DTO (BE-R02): %v", resp["special_requests"])
+		}
+		if _, exists := resp["estimated_arrival_time"]; exists {
+			t.Errorf("estimated_arrival_time leaked in public DTO (BE-R02): %v", resp["estimated_arrival_time"])
 		}
 		if resp["id"] != "bk-123" {
 			t.Errorf("expected id bk-123, got %v", resp["id"])
 		}
 	})
 
-	t.Run("guest with valid X-Guest-Token receives full booking with PII", func(t *testing.T) {
+	t.Run("guest with wrong token receives masked PublicDTO", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
+		req.Header.Set("X-Guest-Token", "wrong_token_xyz")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, exists := resp["special_requests"]; exists {
+			t.Errorf("special_requests leaked for wrong token: %v", resp["special_requests"])
+		}
+		if _, exists := resp["estimated_arrival_time"]; exists {
+			t.Errorf("estimated_arrival_time leaked for wrong token: %v", resp["estimated_arrival_time"])
+		}
+		if _, exists := resp["guest_token"]; exists {
+			t.Errorf("guest_token leaked for wrong token: %v", resp["guest_token"])
+		}
+	})
+
+	t.Run("guest with valid X-Guest-Token receives full booking with PII but without guest_token", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
 		req.Header.Set("X-Guest-Token", "gst_valid_token_123")
 		w := httptest.NewRecorder()
@@ -433,9 +469,18 @@ func TestGetBooking(t *testing.T) {
 		if b.GuestName != "Budi Santoso" || b.GuestEmail != "budi@example.com" {
 			t.Errorf("expected full PII, got name=%q email=%q", b.GuestName, b.GuestEmail)
 		}
+		if b.SpecialRequests != "Bantal ekstra hypoallergenic" {
+			t.Errorf("expected SpecialRequests = %q, got %q", "Bantal ekstra hypoallergenic", b.SpecialRequests)
+		}
+		if b.EstimatedArrivalTime != "14:00" {
+			t.Errorf("expected EstimatedArrivalTime = 14:00, got %q", b.EstimatedArrivalTime)
+		}
+		if b.GuestToken != "" {
+			t.Errorf("guest_token MUST NOT be returned on read: got %q (BE-R02)", b.GuestToken)
+		}
 	})
 
-	t.Run("staff role receives full booking with PII", func(t *testing.T) {
+	t.Run("staff role receives full booking with PII and special requests but without guest_token", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-123", nil)
 		req.Header.Set("Authorization", "Bearer receptionist")
 		w := httptest.NewRecorder()
@@ -450,6 +495,15 @@ func TestGetBooking(t *testing.T) {
 		}
 		if b.GuestName != "Budi Santoso" {
 			t.Errorf("expected full PII for staff, got name=%q", b.GuestName)
+		}
+		if b.SpecialRequests != "Bantal ekstra hypoallergenic" {
+			t.Errorf("expected SpecialRequests for staff = %q, got %q", "Bantal ekstra hypoallergenic", b.SpecialRequests)
+		}
+		if b.EstimatedArrivalTime != "14:00" {
+			t.Errorf("expected EstimatedArrivalTime for staff = 14:00, got %q", b.EstimatedArrivalTime)
+		}
+		if b.GuestToken != "" {
+			t.Errorf("guest_token MUST NOT be leaked to staff on read: got %q (BE-R02)", b.GuestToken)
 		}
 	})
 
@@ -1983,15 +2037,15 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		if _, exists := publicDTO["guest_token"]; exists {
 			t.Errorf("guest_token MUST NOT be returned in PublicDTO")
 		}
-		// BE-R02: Free-text dan detail kedatangan disamarkan pada PublicDTO
-		if val, exists := publicDTO["estimated_arrival_time"]; exists && val != "" {
-			t.Errorf("estimated_arrival_time MUST NOT be leaked in PublicDTO (BE-R02), got %v", val)
+		// BE-R02: Free-text dan detail kedatangan ditiadakan dari PublicDTO
+		if _, exists := publicDTO["estimated_arrival_time"]; exists {
+			t.Errorf("estimated_arrival_time MUST NOT exist in PublicDTO (BE-R02), got %v", publicDTO["estimated_arrival_time"])
 		}
-		if val, exists := publicDTO["special_requests"]; exists && val != "" {
-			t.Errorf("special_requests MUST NOT be leaked in PublicDTO (BE-R02), got %v", val)
+		if _, exists := publicDTO["special_requests"]; exists {
+			t.Errorf("special_requests MUST NOT exist in PublicDTO (BE-R02), got %v", publicDTO["special_requests"])
 		}
 
-		// 2. Guest with valid X-Guest-Token -> full Booking returned
+		// 2. Guest with valid X-Guest-Token -> full Booking returned without guest_token
 		req2 := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-privacy-test", nil)
 		req2.Header.Set("X-Guest-Token", "gst_siti_secure")
 		rec2 := httptest.NewRecorder()
@@ -2013,6 +2067,51 @@ func TestBatchD_IdempotencyAndGuestProfile(t *testing.T) {
 		}
 		if fullDTO["special_requests"] != "Quiet corner" {
 			t.Errorf("expected special_requests = Quiet corner for authenticated guest, got %v", fullDTO["special_requests"])
+		}
+		if _, exists := fullDTO["guest_token"]; exists {
+			t.Errorf("guest_token MUST NOT be leaked in authenticated GET response (BE-R02), got %v", fullDTO["guest_token"])
+		}
+
+		// 3. Staff -> full Booking returned for operations, but guest_token sanitized
+		req3 := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-privacy-test", nil)
+		req3.Header.Set("Authorization", "Bearer receptionist")
+		rec3 := httptest.NewRecorder()
+		router.ServeHTTP(rec3, req3)
+
+		if rec3.Code != http.StatusOK {
+			t.Fatalf("expected 200 for staff, got %d", rec3.Code)
+		}
+		var staffDTO map[string]any
+		_ = newTestDecoder(rec3.Body).Decode(&staffDTO)
+		if staffDTO["special_requests"] != "Quiet corner" {
+			t.Errorf("expected special_requests = Quiet corner for staff, got %v", staffDTO["special_requests"])
+		}
+		if staffDTO["estimated_arrival_time"] != "15:00" {
+			t.Errorf("expected estimated_arrival_time = 15:00 for staff, got %v", staffDTO["estimated_arrival_time"])
+		}
+		if _, exists := staffDTO["guest_token"]; exists {
+			t.Errorf("guest_token MUST NOT be leaked to staff (BE-R02), got %v", staffDTO["guest_token"])
+		}
+
+		// 4. Guest with wrong token -> PublicDTO returned
+		req4 := httptest.NewRequest(http.MethodGet, "/api/v1/bookings/bk-privacy-test", nil)
+		req4.Header.Set("X-Guest-Token", "gst_wrong_token")
+		rec4 := httptest.NewRecorder()
+		router.ServeHTTP(rec4, req4)
+
+		if rec4.Code != http.StatusOK {
+			t.Fatalf("expected 200 for wrong token, got %d", rec4.Code)
+		}
+		var wrongTokenDTO map[string]any
+		_ = newTestDecoder(rec4.Body).Decode(&wrongTokenDTO)
+		if _, exists := wrongTokenDTO["special_requests"]; exists {
+			t.Errorf("special_requests MUST NOT exist for wrong token: %v", wrongTokenDTO["special_requests"])
+		}
+		if _, exists := wrongTokenDTO["estimated_arrival_time"]; exists {
+			t.Errorf("estimated_arrival_time MUST NOT exist for wrong token: %v", wrongTokenDTO["estimated_arrival_time"])
+		}
+		if _, exists := wrongTokenDTO["guest_token"]; exists {
+			t.Errorf("guest_token MUST NOT exist for wrong token: %v", wrongTokenDTO["guest_token"])
 		}
 	})
 }
