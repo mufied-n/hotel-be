@@ -753,6 +753,10 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusBadRequest, "tarif dasar kamar belum dikonfigurasi", "RATE_UNAVAILABLE")
 			return
 		}
+		if errors.Is(err, rates.ErrSaveQuoteFailed) {
+			httpErrorCode(c, http.StatusInternalServerError, "gagal menyimpan kuotasi harga", "INTERNAL_ERROR")
+			return
+		}
 		if err != nil {
 			httpErrorCode(c, http.StatusBadRequest, err.Error(), "BAD_REQUEST")
 			return

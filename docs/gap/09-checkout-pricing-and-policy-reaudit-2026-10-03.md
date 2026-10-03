@@ -92,7 +92,7 @@ Dokumen ini memperbarui konteks audit lama, tanpa menganggap semua BE-G tetap OP
 
 ## BE-R11 — Quote hanya tersimpan pada memori satu instance
 
-**Prioritas:** P1. **Status:** OPEN pada snapshot review. **Hubungan:** BE-G06; F01/F05.
+**Prioritas:** P1. **Status:** RESOLVED (2026-10-03, lihat [laporan E2E](../../testing/e2e/report/2026-10-03-231500-durable-quote-store-r11-e2e-report.md)). **Hubungan:** BE-G06; F01/F05.
 
 **Bukti source.** [rates/engine.go](../../internal/rates/engine.go) (lihat fungsi terkait) menggunakan MemoryQuoteStore 15 menit;  pada bagian terkait mengabaikan error SaveQuote. Router menghubungkan engine quote store ke BookingSvc, jadi wiring quote telah ada dan bukan gap terpisah.
 

@@ -6,6 +6,7 @@ package rates
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -203,7 +204,18 @@ func (e *Engine) SetBaseRate(roomTypeID string, rateMinor int64) {
 
 // QuoteStore mengembalikan instance quote store yang aktif pada engine.
 func (e *Engine) QuoteStore() QuoteStore {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.quoteStore
+}
+
+// SetQuoteStore mengganti quote store aktif pada engine (BE-R11).
+func (e *Engine) SetQuoteStore(qs QuoteStore) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if qs != nil {
+		e.quoteStore = qs
+	}
 }
 
 // Quote menghitung harga per malam untuk rentang half-open [from, to).
@@ -384,7 +396,9 @@ func (e *Engine) CalculateLockedQuote(ctx context.Context, req QuoteRequest) (Lo
 	}
 
 	if e.quoteStore != nil {
-		_ = e.quoteStore.SaveQuote(ctx, lq)
+		if err := e.quoteStore.SaveQuote(ctx, lq); err != nil {
+			return LockedQuote{}, fmt.Errorf("%w: %v", ErrSaveQuoteFailed, err)
+		}
 	}
 
 	return lq, nil

@@ -81,7 +81,8 @@ func main() {
 		"01900000-0000-7000-8000-000000000006": 1_650_000, // Junior Suite
 		"01900000-0000-7000-8000-000000000007": 3_500_000, // Presidential Suite
 	}
-	rateEngine := rates.NewEngine(baseRates, 1.25) // weekend +25%
+	valkeyQuoteStore := rates.NewValkeyQuoteStore(redisClient, 15*time.Minute)
+	rateEngine := rates.NewEngineWithQuoteStore(baseRates, 1.25, valkeyQuoteStore)
 	rateEngine.SetBaseRateSource(catalogStore)
 
 	var payGateway booking.PaymentGateway
