@@ -101,6 +101,36 @@ type Service struct {
 	reader      Reader
 	holdTimeout time.Duration
 	log         *slog.Logger
+	nowFunc     func() time.Time
+}
+
+// LocationWIB adalah zona waktu resmi Pulang ke Uttara (Waktu Indonesia Barat, UTC+7)
+// yang digunakan untuk seluruh evaluasi batas waktu pembatalan hotel (BE-R12).
+var LocationWIB = time.FixedZone("WIB", 7*3600)
+
+// FreeCancellationDeadline menghitung batas waktu pembatalan gratis berdasarkan tanggal check-in
+// dan kebijakan tarif hotel (BE-R12, BE-G08).
+// Untuk flexible_48h: batas waktu adalah H-2 tepat pukul 14:00 WIB (07:00:00 UTC).
+// Mengembalikan (deadline, hasFreeCancellation).
+func FreeCancellationDeadline(checkIn time.Time, policy string) (time.Time, bool) {
+	if policy != rates.PolicyFlexible48h {
+		return time.Time{}, false
+	}
+	y, m, d := checkIn.Date()
+	checkInCutoffWIB := time.Date(y, m, d, 14, 0, 0, 0, LocationWIB)
+	return checkInCutoffWIB.Add(-48 * time.Hour), true
+}
+
+func (s *Service) now() time.Time {
+	if s.nowFunc != nil {
+		return s.nowFunc()
+	}
+	return time.Now()
+}
+
+// SetNowFunc menyetel provider waktu untuk clock-controlled testing (BE-R12).
+func (s *Service) SetNowFunc(fn func() time.Time) {
+	s.nowFunc = fn
 }
 
 // TxRunner menjalankan fn dalam satu transaksi Postgres.
@@ -360,16 +390,13 @@ func (s *Service) Cancel(ctx context.Context, bookingID string) error {
 			return nil // idempotent
 		}
 
-		// Penegakan kebijakan pembatalan untuk pesanan confirmed (BE-G08)
+		// Penegakan kebijakan pembatalan untuk pesanan confirmed (BE-G08, BE-R12)
 		if b.Status == StatusConfirmed {
 			if b.CancellationPolicy == rates.PolicyNonRefundable {
 				return ErrNonRefundable
 			}
-			if b.CancellationPolicy == rates.PolicyFlexible48h {
-				// Deadline 48 jam sebelum jam 14:00 WIB pada tanggal check-in
-				checkInTime := time.Date(b.CheckIn.Year(), b.CheckIn.Month(), b.CheckIn.Day(), 14, 0, 0, 0, time.UTC)
-				deadline := checkInTime.Add(-48 * time.Hour)
-				if time.Now().After(deadline) {
+			if deadline, ok := FreeCancellationDeadline(b.CheckIn, b.CancellationPolicy); ok {
+				if s.now().After(deadline) {
 					return ErrCancellationDeadlineExceeded
 				}
 			}

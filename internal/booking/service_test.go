@@ -184,6 +184,16 @@ func (n *fakeNotifier) SendBookingConfirmed(_ context.Context, _ Booking) error 
 	return nil
 }
 
+type mockAttemptStore struct {
+	attempts []PaymentAttempt
+}
+
+func (m *mockAttemptStore) RecordAttempt(_ context.Context, _ PaymentAttempt) error { return nil }
+func (m *mockAttemptStore) UpdateAttemptStatus(_ context.Context, _, _ string) error { return nil }
+func (m *mockAttemptStore) GetAttemptsByBookingID(_ context.Context, _ string) ([]PaymentAttempt, error) {
+	return m.attempts, nil
+}
+
 type fakeInvStore struct {
 	avail []inventory.Availability
 	err   error
@@ -956,6 +966,169 @@ func TestBatchC_QuoteLockingAndPolicies(t *testing.T) {
 		}
 		if b.Status != StatusCancelled {
 			t.Errorf("status = %s, want cancelled", b.Status)
+		}
+	})
+
+	t.Run("Cancel already cancelled booking is idempotent", func(t *testing.T) {
+		b := &Booking{
+			ID:     "b-already-cancelled",
+			Status: StatusCancelled,
+		}
+		tx := newFakeTx(map[string]*Booking{"b-already-cancelled": b}, nil)
+		svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-already-cancelled": b}})
+		if err := svc.Cancel(ctx, "b-already-cancelled"); err != nil {
+			t.Errorf("expected idempotent nil, got %v", err)
+		}
+	})
+
+	t.Run("Cancel checked_in booking returns ErrIllegalTransition", func(t *testing.T) {
+		b := &Booking{
+			ID:     "b-checked-in-cannot-cancel",
+			Status: StatusCheckedIn,
+		}
+		tx := newFakeTx(map[string]*Booking{"b-checked-in-cannot-cancel": b}, nil)
+		svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{"b-checked-in-cannot-cancel": b}})
+		if err := svc.Cancel(ctx, "b-checked-in-cannot-cancel"); !errors.Is(err, ErrIllegalTransition) {
+			t.Errorf("expected ErrIllegalTransition, got %v", err)
+		}
+	})
+
+	t.Run("PaymentAttemptStore getter and setter", func(t *testing.T) {
+		tx := newFakeTx(nil, nil)
+		svc := newTestService(tx, &fakeReader{})
+		// without store
+		attempts, err := svc.GetPaymentAttempts(ctx, "bk-none")
+		if err != nil || attempts != nil {
+			t.Errorf("expected nil without store, got %v, %v", attempts, err)
+		}
+		// with store
+		mockStore := &mockAttemptStore{attempts: []PaymentAttempt{{ID: "att-1", BookingID: "bk-1"}}}
+		svc.SetPaymentAttemptStore(mockStore)
+		res, err := svc.GetPaymentAttempts(ctx, "bk-1")
+		if err != nil || len(res) != 1 {
+			t.Errorf("expected 1 attempt, got %v, %v", res, err)
+		}
+	})
+
+	t.Run("FreeCancellationDeadline helper calculation", func(t *testing.T) {
+		checkIn := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+
+		// flexible_48h: H-2 14:00 WIB (07:00 UTC)
+		deadline, ok := FreeCancellationDeadline(checkIn, rates.PolicyFlexible48h)
+		if !ok {
+			t.Fatalf("expected ok=true for flexible_48h")
+		}
+		expectedUTC := time.Date(2026, 10, 8, 7, 0, 0, 0, time.UTC)
+		if !deadline.Equal(expectedUTC) {
+			t.Errorf("deadline in UTC = %v, want %v", deadline.UTC(), expectedUTC)
+		}
+		// Pastikan deadline ber-zona WIB
+		if deadline.Location().String() != "WIB" {
+			t.Errorf("deadline location = %s, want WIB", deadline.Location().String())
+		}
+		if deadline.Hour() != 14 || deadline.Day() != 8 {
+			t.Errorf("deadline local = %02d:%02d on day %d, want 14:00 on day 8", deadline.Hour(), deadline.Minute(), deadline.Day())
+		}
+
+		// non_refundable: no free cancellation
+		_, okNR := FreeCancellationDeadline(checkIn, rates.PolicyNonRefundable)
+		if okNR {
+			t.Errorf("expected ok=false for non_refundable")
+		}
+	})
+
+	t.Run("Clock-controlled cancellation deadline boundary table test (BE-R12)", func(t *testing.T) {
+		checkIn := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+		deadlineWIB := time.Date(2026, 10, 8, 14, 0, 0, 0, LocationWIB)
+
+		tests := []struct {
+			name        string
+			simulatedAt time.Time
+			policy      string
+			wantErr     error
+		}{
+			{
+				name:        "1 hour before deadline WIB (13:00 WIB / 06:00 UTC)",
+				simulatedAt: deadlineWIB.Add(-1 * time.Hour),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     nil,
+			},
+			{
+				name:        "1 second before deadline WIB (13:59:59 WIB / 06:59:59 UTC)",
+				simulatedAt: deadlineWIB.Add(-1 * time.Second),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     nil,
+			},
+			{
+				name:        "Exactly at deadline WIB (14:00:00 WIB / 07:00:00 UTC)",
+				simulatedAt: deadlineWIB,
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     nil, // Not strictly after deadline
+			},
+			{
+				name:        "1 second after deadline WIB (14:00:01 WIB / 07:00:01 UTC) - REJECTED",
+				simulatedAt: deadlineWIB.Add(1 * time.Second),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     ErrCancellationDeadlineExceeded,
+			},
+			{
+				name:        "1 hour after deadline WIB (15:00 WIB / 08:00 UTC) - REJECTED",
+				simulatedAt: deadlineWIB.Add(1 * time.Hour),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     ErrCancellationDeadlineExceeded,
+			},
+			{
+				name:        "The old UTC bug window: 14:00 UTC / 21:00 WIB (+7 hours late) - REJECTED",
+				simulatedAt: time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     ErrCancellationDeadlineExceeded,
+			},
+			{
+				name:        "Day before check-in (9 Oct 12:00 WIB) - REJECTED",
+				simulatedAt: time.Date(2026, 10, 9, 12, 0, 0, 0, LocationWIB),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     ErrCancellationDeadlineExceeded,
+			},
+			{
+				name:        "Day of check-in (10 Oct 10:00 WIB) - REJECTED",
+				simulatedAt: time.Date(2026, 10, 10, 10, 0, 0, 0, LocationWIB),
+				policy:      rates.PolicyFlexible48h,
+				wantErr:     ErrCancellationDeadlineExceeded,
+			},
+			{
+				name:        "Non-refundable policy rejected even well in advance",
+				simulatedAt: deadlineWIB.Add(-100 * time.Hour),
+				policy:      rates.PolicyNonRefundable,
+				wantErr:     ErrNonRefundable,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				bookingID := "b-clk-" + tc.name
+				b := &Booking{
+					ID:                 bookingID,
+					RoomTypeID:         "std",
+					CheckIn:            checkIn,
+					CheckOut:           checkIn.Add(48 * time.Hour),
+					NumRooms:           1,
+					Status:             StatusConfirmed,
+					CancellationPolicy: tc.policy,
+				}
+				tx := newFakeTx(map[string]*Booking{bookingID: b}, nil)
+				svc := newTestService(tx, &fakeReader{bookings: map[string]*Booking{bookingID: b}})
+				svc.SetNowFunc(func() time.Time {
+					return tc.simulatedAt
+				})
+
+				err := svc.Cancel(ctx, bookingID)
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("Cancel() error = %v, wantErr = %v", err, tc.wantErr)
+				}
+				if tc.wantErr == nil && b.Status != StatusCancelled {
+					t.Errorf("booking status = %s, want %s", b.Status, StatusCancelled)
+				}
+			})
 		}
 	})
 }

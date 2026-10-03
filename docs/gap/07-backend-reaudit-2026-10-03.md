@@ -25,7 +25,7 @@ P0 berarti blokir exposure/deployment live yang terkait; P1 correctness atau kel
 | BE-R09 | P1 | [Harga katalog CRUD tidak menjadi sumber rate engine](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G01/04/05; F08/F09 |
 | BE-R10 | P1 | [Makna num_guests menyebabkan biaya sarapan ambigu](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G04/05; F01/F09 |
 | BE-R11 | P1 | [Quote hanya tersimpan pada memori satu instance](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G06; F01/F05 |
-| BE-R12 | P1 | [Deadline pembatalan memakai UTC ketika kebijakan menyebut WIB](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G08/19; F06/F13 |
+| BE-R12 | P1 (RESOLVED 2026-10-03, WIB timezone alignment) | [Deadline pembatalan memakai UTC ketika kebijakan menyebut WIB](09-checkout-pricing-and-policy-reaudit-2026-10-03.md) | BE-G08/19; F06/F13 |
 | BE-R13 | P1 | [Gateway timeout dianggap gagal pasti dan ledger error diabaikan](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F05/F14 |
 | BE-R14 | P1 (RESOLVED 2026-10-03, amount & ledger reconciliation) | [Webhook tidak mencocokkan nilai dan invoice dengan ledger](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G10/11; F05/F14 |
 | BE-R15 | P1 | [Link pembayaran tidak tersedia untuk recovery lintas sesi](10-payment-recovery-and-provider-reaudit-2026-10-03.md) | BE-G11/12; F03/F05 |
