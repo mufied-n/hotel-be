@@ -92,7 +92,7 @@ func handleRoomMove(d Deps) gin.HandlerFunc {
 // Memperpanjang masa menginap tamu dan memvalidasi ketersediaan inventaris.
 func handleExtendStay(d Deps) gin.HandlerFunc {
 	type req struct {
-		AdditionalNights int    `json:"additional_nights"`
+		AdditionalNights int    `json:"additional_nights" validate:"gt=0"`
 		PaymentMethod    string `json:"payment_method"`
 	}
 
@@ -111,6 +111,10 @@ func handleExtendStay(d Deps) gin.HandlerFunc {
 		var in req
 		if err := json.UnmarshalRead(c.Request.Body, &in); err != nil {
 			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
+			return
+		}
+
+		if !validateDTO(c, &in) {
 			return
 		}
 

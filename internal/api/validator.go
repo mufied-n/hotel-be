@@ -69,7 +69,7 @@ func handleValidationError(c *gin.Context, err error) {
 	case "child_ages":
 		code = "INVALID_CHILD_AGE"
 		detail = "child age must be between 0 and 17"
-	case "check_in", "check_out":
+	case "room_type_id", "check_in", "check_out":
 		code = "INVALID_DATE_FORMAT"
 		detail = "check_in and check_out (YYYY-MM-DD) are required"
 	case "code", "name", "max_capacity", "base_price_minor":
@@ -90,6 +90,9 @@ func handleValidationError(c *gin.Context, err error) {
 	case "reason_category":
 		code = "INVALID_REASON_CATEGORY"
 		detail = "kategori alasan pemindahan kamar tidak valid"
+	case "additional_nights":
+		code = "INVALID_ADDITIONAL_NIGHTS"
+		detail = "additional_nights harus lebih dari 0"
 	case "shift":
 		code = "INVALID_SHIFT"
 		detail = "shift wajib diisi"

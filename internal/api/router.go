@@ -557,6 +557,9 @@ func calculateQuote(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
 			return
 		}
+		if !validateDTO(c, &in) {
+			return
+		}
 		from, err1 := parseDate(in.CheckIn)
 		to, err2 := parseDate(in.CheckOut)
 		if in.RoomTypeID == "" || err1 != nil || err2 != nil || !from.Before(to) {
@@ -651,6 +654,9 @@ func createBooking(d Deps) gin.HandlerFunc {
 		var in req
 		if err := json.Unmarshal(bodyBytes, &in); err != nil {
 			httpErrorCode(c, http.StatusBadRequest, "body JSON tidak valid", "INVALID_JSON")
+			return
+		}
+		if !validateDTO(c, &in) {
 			return
 		}
 		from, err1 := parseDate(in.CheckIn)
