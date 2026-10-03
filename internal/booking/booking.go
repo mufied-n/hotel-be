@@ -211,3 +211,19 @@ var ErrHoldExpired = errors.New("booking: hold has expired, room availability wa
 
 // ErrNoShowTooEarly dikembalikan saat no-show dipicu sebelum tanggal check-in tiba (BE-G22).
 var ErrNoShowTooEarly = errors.New("booking: cannot mark no-show before check-in date")
+
+type bypassRoomReadinessKey struct{}
+
+// WithBypassRoomReadiness mengizinkan check-in darurat tanpa syarat status kebersihan inspected.
+func WithBypassRoomReadiness(ctx context.Context) context.Context {
+	return context.WithValue(ctx, bypassRoomReadinessKey{}, true)
+}
+
+// IsBypassRoomReadiness memeriksa apakah check-in darurat diaktifkan.
+func IsBypassRoomReadiness(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx.Value(bypassRoomReadinessKey{}).(bool)
+	return ok && v
+}

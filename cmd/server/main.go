@@ -255,6 +255,10 @@ func main() {
 	}
 	defer func() { _ = ffManager.Close() }()
 
+	if resendNotifier, ok := notifierSvc.(*notifier.ResendNotifier); ok && ffManager != nil {
+		resendNotifier.SetFeatureFlag(ffManager)
+	}
+
 	// ---- HTTP ----
 	handler := api.NewRouter(api.Deps{
 		BookingSvc:       bkSvc,

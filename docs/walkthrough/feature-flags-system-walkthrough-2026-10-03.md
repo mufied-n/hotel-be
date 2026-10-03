@@ -24,13 +24,14 @@
 - [x] **Tahap 3: Walkthrough Tracking Document**
   - Dokumen pelacak eksekusi: [`docs/walkthrough/feature-flags-system-walkthrough-2026-10-03.md`](file:///mnt/code/projects/jobs/pulang/current-booking/docs/walkthrough/feature-flags-system-walkthrough-2026-10-03.md)
 - [x] **Tahap 4: Implementasi TDD (Target Coverage $\ge$ 80%)**
-  - [x] Migrasi database: [`migrations/00013_feature_flags.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00013_feature_flags.sql)
-  - [x] Core Engine: [`internal/platform/featureflag/featureflag.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/featureflag.go) & [`store.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/store.go)
-  - [x] Unit test: [`internal/platform/featureflag/featureflag_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/featureflag_test.go) (82.2% Coverage)
+  - [x] Migrasi database: [`migrations/00013_feature_flags.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00013_feature_flags.sql) & [`migrations/00014_frontdesk_and_stay_feature_flags.sql`](file:///mnt/code/projects/jobs/pulang/current-booking/migrations/00014_frontdesk_and_stay_feature_flags.sql)
+  - [x] Core Engine: [`internal/platform/featureflag/featureflag.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/featureflag.go) & [`store.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/store.go) (Generic Lock-free, zero hardcoded flags)
+  - [x] Unit test: [`internal/platform/featureflag/featureflag_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/platform/featureflag/featureflag_test.go) (83.1% Coverage)
   - [x] Chi Middleware: [`internal/api/featureflag_middleware.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/api/featureflag_middleware.go)
   - [x] Admin Handlers: [`internal/api/featureflag_handler.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/api/featureflag_handler.go)
   - [x] Integrasi Router & Wiring: [`internal/api/router.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/api/router.go) & [`cmd/server/main.go`](file:///mnt/code/projects/jobs/pulang/current-booking/cmd/server/main.go)
-  - [x] Table-driven tests: [`internal/api/featureflag_api_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/api/featureflag_api_test.go) (84.2% Coverage)
+  - [x] Gating guards: `ff_promotions_engine`, `ff_resend_email_notifier`, `ff_room_readiness_checkin_guard`, `ff_front_desk_operations`, `ff_stay_modification`
+  - [x] Table-driven tests: [`internal/api/featureflag_api_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/internal/api/featureflag_api_test.go) (85.1% Coverage)
 - [x] **Tahap 5: End-to-End (E2E) Testing**
   - [x] Script pengujian: [`testing/e2e/script/feature_flags_e2e.sh`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/script/feature_flags_e2e.sh)
   - [x] Go Suite E2E: [`testing/e2e/script/e2e_runner_test.go`](file:///mnt/code/projects/jobs/pulang/current-booking/testing/e2e/script/e2e_runner_test.go) (Test Case 61)
@@ -46,17 +47,21 @@
 | No | File Path | Aksi | Status |
 |---|---|:---:|:---:|
 | 1 | `migrations/00013_feature_flags.sql` | Buat | Selesai |
-| 2 | `internal/platform/featureflag/featureflag.go` | Buat | Selesai |
-| 3 | `internal/platform/featureflag/store.go` | Buat | Selesai |
-| 4 | `internal/platform/featureflag/featureflag_test.go` | Buat | Selesai (82.2% coverage) |
-| 5 | `internal/api/featureflag_middleware.go` | Buat | Selesai |
-| 6 | `internal/api/featureflag_handler.go` | Buat | Selesai |
-| 7 | `internal/api/featureflag_api_test.go` | Buat | Selesai (84.2% coverage) |
-| 8 | `internal/api/router.go` | Edit | Selesai |
-| 9 | `cmd/server/main.go` | Edit | Selesai |
-| 10 | `testing/e2e/script/feature_flags_e2e.sh` | Buat | Selesai |
-| 11 | `testing/e2e/script/e2e_runner_test.go` | Edit | Selesai |
-| 12 | `testing/e2e/report/2026-10-03-113700-feature-flags-system-e2e-report.md` | Buat | Selesai |
+| 2 | `migrations/00014_frontdesk_and_stay_feature_flags.sql` | Buat | Selesai |
+| 3 | `internal/platform/featureflag/featureflag.go` | Refactor | Selesai (Hapus DefaultFlags hardcoded) |
+| 4 | `internal/platform/featureflag/store.go` | Refactor | Selesai (SSOT PostgreSQL murni) |
+| 5 | `internal/platform/featureflag/featureflag_test.go` | Edit | Selesai (83.1% coverage) |
+| 6 | `internal/api/featureflag_middleware.go` | Buat | Selesai |
+| 7 | `internal/api/featureflag_handler.go` | Buat | Selesai |
+| 8 | `internal/api/featureflag_api_test.go` | Edit | Selesai (85.1% coverage) |
+| 9 | `internal/api/router.go` | Edit | Selesai (Wire 19 flags & guards) |
+| 10 | `internal/booking/booking.go` | Edit | Selesai (Room readiness bypass context) |
+| 11 | `internal/booking/postgres.go` | Edit | Selesai (Readiness bypass query) |
+| 12 | `internal/adapter/notifier/resend.go` | Edit | Selesai (Outbox email skip on flag disabled) |
+| 13 | `cmd/server/main.go` | Edit | Selesai |
+| 14 | `testing/e2e/script/e2e_runner_test.go` | Edit | Selesai (E2E-61 test) |
+| 15 | `testing/e2e/script/feature_flags_e2e.sh` | Buat | Selesai |
+| 16 | `testing/e2e/report/2026-10-03-113700-feature-flags-system-e2e-report.md` | Buat | Selesai |
 
 ---
 

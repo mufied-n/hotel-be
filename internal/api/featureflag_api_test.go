@@ -18,6 +18,7 @@ func newTestEnforcerForFF(t *testing.T) *casbin.SyncedEnforcer {
 	policies := [][]string{
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"p", "guest", "/api/v1/search", "GET"},
+		{"p", "guest", "/api/v1/quotes", "POST"},
 		{"p", "receptionist", "/api/v1/bookings/*", "*"},
 	}
 	e, err := auth.NewInMemoryEnforcer(policies)
@@ -121,7 +122,20 @@ func TestRequireFeature_Middleware(t *testing.T) {
 }
 
 func TestAdminFeatureFlags_API(t *testing.T) {
-	ffMgr := featureflag.NewMemoryManager(nil) // default 17 flags
+	testFlags := map[string]featureflag.Flag{
+		"ff_multi_variant_search": {
+			Key:     "ff_multi_variant_search",
+			Name:    "Multi-Variant Search",
+			Enabled: true,
+		},
+		"ff_catalog_write": {
+			Key:          "ff_catalog_write",
+			Name:         "Catalog Mutation",
+			Enabled:      true,
+			AllowedRoles: []string{"revenue_mgr", "gm_admin"},
+		},
+	}
+	ffMgr := featureflag.NewMemoryManager(testFlags)
 	enforcer := newTestEnforcerForFF(t)
 
 	deps := Deps{
@@ -143,14 +157,14 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 		}
 
 		var resp struct {
-			Total int                  `json:"total"`
-			Flags []featureflag.Flag   `json:"flags"`
+			Total int                `json:"total"`
+			Flags []featureflag.Flag `json:"flags"`
 		}
 		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
-		if resp.Total != 17 {
-			t.Errorf("expected total 17 flags, got %d", resp.Total)
+		if resp.Total != 2 {
+			t.Errorf("expected total 2 flags, got %d", resp.Total)
 		}
 	})
 
@@ -234,6 +248,94 @@ func TestAdminFeatureFlags_API(t *testing.T) {
 
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected status 400, got %d", rec.Code)
+		}
+	})
+}
+
+func TestFeatureFlags_WiredGuards_TableDriven(t *testing.T) {
+	// 1. Promotions Engine Test
+	t.Run("ff_promotions_engine blocks promo code when disabled", func(t *testing.T) {
+		ffMgr := featureflag.NewMemoryManager(map[string]featureflag.Flag{
+			"ff_quote_locking_engine": {
+				Key:     "ff_quote_locking_engine",
+				Enabled: true,
+			},
+			"ff_promotions_engine": {
+				Key:     "ff_promotions_engine",
+				Enabled: false,
+			},
+		})
+		router := NewRouter(Deps{
+			FeatureFlag: ffMgr,
+			Enforcer:    newTestEnforcerForFF(t),
+		})
+
+		body := `{"room_type_id":"01900000-0000-7000-8000-000000000001","check_in":"2026-10-10","check_out":"2026-10-12","promo_code":"OCTOBREAK"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/quotes", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 Bad Request, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("PROMOTIONS_DISABLED")) {
+			t.Errorf("expected PROMOTIONS_DISABLED in error body, got %s", rec.Body.String())
+		}
+	})
+
+	// 2. Front Desk Operations Flag Test
+	t.Run("ff_front_desk_operations blocks roster when disabled", func(t *testing.T) {
+		ffMgr := featureflag.NewMemoryManager(map[string]featureflag.Flag{
+			"ff_front_desk_operations": {
+				Key:     "ff_front_desk_operations",
+				Enabled: false,
+			},
+		})
+		router := NewRouter(Deps{
+			FeatureFlag: ffMgr,
+			Enforcer:    newTestEnforcerForFF(t),
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/front-desk/daily-roster", nil)
+		req.Header.Set("Authorization", "Bearer gm_admin")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("FEATURE_DISABLED")) {
+			t.Errorf("expected FEATURE_DISABLED in body, got %s", rec.Body.String())
+		}
+	})
+
+	// 3. Stay Modification Flag Test
+	t.Run("ff_stay_modification blocks room move when disabled", func(t *testing.T) {
+		ffMgr := featureflag.NewMemoryManager(map[string]featureflag.Flag{
+			"ff_stay_modification": {
+				Key:     "ff_stay_modification",
+				Enabled: false,
+			},
+		})
+		router := NewRouter(Deps{
+			FeatureFlag: ffMgr,
+			Enforcer:    newTestEnforcerForFF(t),
+		})
+
+		body := `{"target_room_number":"202","reason_category":"maintenance_defect","notes":"AC bocor"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings/bk-test-1/room-move", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer gm_admin")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected status 503, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("FEATURE_DISABLED")) {
+			t.Errorf("expected FEATURE_DISABLED in body, got %s", rec.Body.String())
 		}
 	})
 }

@@ -131,14 +131,28 @@ func TestMemoryManager_Evaluation(t *testing.T) {
 }
 
 func TestMemoryManager_CRUD(t *testing.T) {
-	mgr := NewMemoryManager(nil) // default flags
+	initialFlags := map[string]Flag{
+		"ff_xendit_payment_gateway": {
+			Key:          "ff_xendit_payment_gateway",
+			Name:         "Xendit Gateway",
+			Enabled:      true,
+			AllowedRoles: []string{},
+		},
+		"ff_catalog_write": {
+			Key:          "ff_catalog_write",
+			Name:         "Catalog Write",
+			Enabled:      true,
+			AllowedRoles: []string{"gm_admin"},
+		},
+	}
+	mgr := NewMemoryManager(initialFlags)
 
 	ctx := context.Background()
 
 	// List
 	list := mgr.List(ctx)
-	if len(list) != 17 {
-		t.Fatalf("expected 17 default flags, got %d", len(list))
+	if len(list) != 2 {
+		t.Fatalf("expected 2 initial flags, got %d", len(list))
 	}
 
 	// Get
@@ -183,7 +197,21 @@ func TestMemoryManager_CRUD(t *testing.T) {
 }
 
 func TestMemoryManager_ConcurrentAccess(t *testing.T) {
-	mgr := NewMemoryManager(nil)
+	initialFlags := map[string]Flag{
+		"ff_catalog_write": {
+			Key:          "ff_catalog_write",
+			Name:         "Catalog Write",
+			Enabled:      true,
+			AllowedRoles: []string{"gm_admin"},
+		},
+		"ff_multi_variant_search": {
+			Key:          "ff_multi_variant_search",
+			Name:         "Search",
+			Enabled:      true,
+			AllowedRoles: []string{},
+		},
+	}
+	mgr := NewMemoryManager(initialFlags)
 	ctx := WithRole(context.Background(), "gm_admin")
 
 	var wg sync.WaitGroup

@@ -20,14 +20,25 @@ var (
 	ErrEmailDispatchFailed = errors.New("resend: email dispatch failed")
 )
 
+// FeatureChecker mendefinisikan interface evaluasi flag tanpa kopling ketat ke package platform.
+type FeatureChecker interface {
+	IsEnabled(ctx context.Context, key string) bool
+}
+
 // ResendNotifier mengimplementasikan booking.Notifier menggunakan Resend REST API (https://api.resend.com).
 // Menggunakan header Idempotency-Key untuk menjamin deduplikasi pengiriman email (UU PDP No. 27/2022).
 type ResendNotifier struct {
-	BaseURL   string
-	APIKey    string
-	FromEmail string
-	Client    *http.Client
-	Log       *slog.Logger
+	BaseURL     string
+	APIKey      string
+	FromEmail   string
+	Client      *http.Client
+	Log         *slog.Logger
+	FeatureFlag FeatureChecker
+}
+
+// SetFeatureFlag menyematkan instance evaluasi flag runtime.
+func (n *ResendNotifier) SetFeatureFlag(ff FeatureChecker) {
+	n.FeatureFlag = ff
 }
 
 // NewResend membuat instance baru ResendNotifier.
@@ -64,6 +75,11 @@ type sendEmailResponse struct {
 
 // SendBookingConfirmed menyusun template konfirmasi menginap dan mengirimkannya via Resend.
 func (n *ResendNotifier) SendBookingConfirmed(ctx context.Context, b booking.Booking) error {
+	if n.FeatureFlag != nil && !n.FeatureFlag.IsEnabled(ctx, "ff_resend_email_notifier") {
+		n.Log.InfoContext(ctx, "resend.skipped", "reason", "feature flag ff_resend_email_notifier disabled", "booking_id", b.ID)
+		return nil
+	}
+
 	if n.APIKey == "" {
 		return errors.New("resend: API key is not configured")
 	}
@@ -122,6 +138,11 @@ func (n *ResendNotifier) SendBookingConfirmed(ctx context.Context, b booking.Boo
 
 // SendGuestOTP menyusun template email OTP login dan mengirimkannya via Resend API.
 func (n *ResendNotifier) SendGuestOTP(ctx context.Context, email, otpCode string) error {
+	if n.FeatureFlag != nil && !n.FeatureFlag.IsEnabled(ctx, "ff_resend_email_notifier") {
+		n.Log.InfoContext(ctx, "resend.otp_skipped", "reason", "feature flag ff_resend_email_notifier disabled", "email", email)
+		return nil
+	}
+
 	if n.APIKey == "" {
 		return errors.New("resend: API key is not configured")
 	}

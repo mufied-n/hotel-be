@@ -177,3 +177,27 @@ func TestResendNotifier_SendGuestOTP_TableTest(t *testing.T) {
 	}
 }
 
+type mockFeatureChecker struct {
+	enabled bool
+}
+
+func (m *mockFeatureChecker) IsEnabled(_ context.Context, _ string) bool {
+	return m.enabled
+}
+
+func TestResendNotifier_FeatureFlagDisabled(t *testing.T) {
+	checker := &mockFeatureChecker{enabled: false}
+	resend := NewResend("http://localhost:9999", "resend_key", "from@hotel.com", slog.Default())
+	resend.SetFeatureFlag(checker)
+
+	// Harusnya skip dan return nil tanpa memanggil HTTP request
+	b := booking.Booking{ID: "bk-ff-test", GuestEmail: "guest@example.com"}
+	if err := resend.SendBookingConfirmed(context.Background(), b); err != nil {
+		t.Errorf("expected nil error when feature flag is disabled, got %v", err)
+	}
+
+	if err := resend.SendGuestOTP(context.Background(), "guest@example.com", "123456"); err != nil {
+		t.Errorf("expected nil error for SendGuestOTP when flag is disabled, got %v", err)
+	}
+}
+

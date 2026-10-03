@@ -22,6 +22,7 @@ import (
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
+	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
 )
@@ -722,6 +723,31 @@ func (s *e2eStayStore) ListRoomMoves(ctx context.Context, bookingID string) ([]s
 	return s.moves, nil
 }
 
+func newE2EFeatureFlagManager() featureflag.Manager {
+	flags := map[string]featureflag.Flag{
+		"ff_catalog_write":                {Key: "ff_catalog_write", Enabled: true, AllowedRoles: []string{"revenue_mgr", "gm_admin"}},
+		"ff_multi_variant_search":         {Key: "ff_multi_variant_search", Enabled: true},
+		"ff_quote_locking_engine":         {Key: "ff_quote_locking_engine", Enabled: true},
+		"ff_promotions_engine":            {Key: "ff_promotions_engine", Enabled: true},
+		"ff_checkout_idempotency":         {Key: "ff_checkout_idempotency", Enabled: true},
+		"ff_pii_masking_guard":            {Key: "ff_pii_masking_guard", Enabled: true},
+		"ff_strict_cancellation_policy":   {Key: "ff_strict_cancellation_policy", Enabled: true},
+		"ff_xendit_payment_gateway":       {Key: "ff_xendit_payment_gateway", Enabled: true},
+		"ff_resend_email_notifier":        {Key: "ff_resend_email_notifier", Enabled: true},
+		"ff_guest_portal_auth":            {Key: "ff_guest_portal_auth", Enabled: true},
+		"ff_guest_my_bookings":            {Key: "ff_guest_my_bookings", Enabled: true},
+		"ff_booking_artifacts_receipt":    {Key: "ff_booking_artifacts_receipt", Enabled: true},
+		"ff_booking_artifacts_icalendar":  {Key: "ff_booking_artifacts_icalendar", Enabled: true},
+		"ff_finance_reconciliation":       {Key: "ff_finance_reconciliation", Enabled: true, AllowedRoles: []string{"finance", "gm_admin"}},
+		"ff_gateway_automated_refund":     {Key: "ff_gateway_automated_refund", Enabled: true, AllowedRoles: []string{"finance", "gm_admin"}},
+		"ff_housekeeping_board":           {Key: "ff_housekeeping_board", Enabled: true, AllowedRoles: []string{"housekeeping", "receptionist", "gm_admin"}},
+		"ff_room_readiness_checkin_guard": {Key: "ff_room_readiness_checkin_guard", Enabled: true},
+		"ff_front_desk_operations":        {Key: "ff_front_desk_operations", Enabled: true},
+		"ff_stay_modification":            {Key: "ff_stay_modification", Enabled: true},
+	}
+	return featureflag.NewMemoryManager(flags)
+}
+
 func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	t.Helper()
 
@@ -855,6 +881,7 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		HousekeepingSvc: hkSvc,
 		FrontDeskSvc:    fdSvc,
 		StaySvc:         staySvc,
+		FeatureFlag:     newE2EFeatureFlagManager(),
 		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(w http.ResponseWriter, r *http.Request) {
 			bID := r.URL.Query().Get("booking_id")

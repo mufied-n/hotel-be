@@ -179,12 +179,17 @@ func (t *txCtx) UpdateStatus(ctx context.Context, id string, to Status) error {
 //     belum inspected (dirty/cleaning/out_of_service), kembalikan ErrRoomNotReady.
 //   - Saat assignment berhasil, status kebersihan kamar otomatis diubah menjadi 'occupied'.
 func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID string, checkIn, checkOut time.Time, count int) ([]string, error) {
-	rows, err := t.tx.Query(ctx, `
+	cleanlinessFilter := "AND r.cleanliness_status = 'inspected'"
+	if IsBypassRoomReadiness(ctx) {
+		cleanlinessFilter = "AND r.cleanliness_status != 'out_of_order'"
+	}
+
+	query := fmt.Sprintf(`
 		WITH free_inspected_rooms AS (
 			SELECT r.room_number
 			FROM rooms r
 			WHERE r.room_type_id = $1
-			  AND r.cleanliness_status = 'inspected'
+			  %s
 			  AND NOT EXISTS (
 				SELECT 1 FROM room_assignments ra
 				WHERE ra.room_number = r.room_number
@@ -197,7 +202,9 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 		INSERT INTO room_assignments (booking_id, room_number, stay_dates)
 		SELECT $5, room_number, daterange($2::date, $3::date, '[)')
 		FROM free_inspected_rooms
-		RETURNING room_number`,
+		RETURNING room_number`, cleanlinessFilter)
+
+	rows, err := t.tx.Query(ctx, query,
 		roomTypeID, checkIn, checkOut, count, bookingID)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -225,6 +232,9 @@ func (t *txCtx) PickAndAssignRooms(ctx context.Context, bookingID, roomTypeID st
 	}
 
 	if len(assigned) < count {
+		if IsBypassRoomReadiness(ctx) {
+			return nil, ErrNoRoomAvailable
+		}
 		// Evaluasi apakah kekurangan kamar disebabkan karena kamar memang habis atau belum diinspeksi (FR-HK-04)
 		var freeCount int
 		_ = t.tx.QueryRow(ctx, `

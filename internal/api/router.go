@@ -61,9 +61,6 @@ type Deps struct {
 
 // NewRouter merakit seluruh route.
 func NewRouter(d Deps) http.Handler {
-	if d.FeatureFlag == nil {
-		d.FeatureFlag = featureflag.NewMemoryManager(nil)
-	}
 	if d.CatalogStore == nil {
 		d.CatalogStore = catalog.NewMemoryStore(catalog.DefaultVariants())
 	}
@@ -138,14 +135,14 @@ func NewRouter(d Deps) http.Handler {
 		api.With(RequireFeature(d.FeatureFlag, "ff_housekeeping_board")).Post("/api/v1/housekeeping/rooms/{id}/out-of-order", handleHousekeepingOOO(d))
 
 		// Front Desk Daily Operations Roster & Shift Handover Board (Proposed 02)
-		api.Get("/api/v1/front-desk/daily-roster", handleFrontDeskDailyRoster(d))
-		api.Get("/api/v1/front-desk/handover-notes", handleFrontDeskListHandovers(d))
-		api.Post("/api/v1/front-desk/handover-notes", handleFrontDeskRecordHandover(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_front_desk_operations")).Get("/api/v1/front-desk/daily-roster", handleFrontDeskDailyRoster(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_front_desk_operations")).Get("/api/v1/front-desk/handover-notes", handleFrontDeskListHandovers(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_front_desk_operations")).Post("/api/v1/front-desk/handover-notes", handleFrontDeskRecordHandover(d))
 
 		// Stay Modification: Room Move & Stay Extension (Proposed 03)
-		api.Post("/api/v1/bookings/{id}/room-move", handleRoomMove(d))
-		api.Post("/api/v1/bookings/{id}/extend-stay", handleExtendStay(d))
-		api.Get("/api/v1/bookings/{id}/room-moves", handleListRoomMoves(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Post("/api/v1/bookings/{id}/room-move", handleRoomMove(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Post("/api/v1/bookings/{id}/extend-stay", handleExtendStay(d))
+		api.With(RequireFeature(d.FeatureFlag, "ff_stay_modification")).Get("/api/v1/bookings/{id}/room-moves", handleListRoomMoves(d))
 
 		// Feature Flags Administration (FR-FF-04)
 		api.Get("/api/v1/admin/feature-flags", handleAdminListFlags(d))
@@ -522,6 +519,10 @@ func calculateQuote(d Deps) http.HandlerFunc {
 			httpErrorCode(w, http.StatusBadRequest, "room_type_id, check_in, check_out (check_in < check_out) wajib valid", "INVALID_DATE_FORMAT")
 			return
 		}
+		if strings.TrimSpace(in.PromoCode) != "" && (d.FeatureFlag != nil && !d.FeatureFlag.IsEnabled(r.Context(), "ff_promotions_engine")) {
+			httpErrorCode(w, http.StatusBadRequest, "fitur kode promosi sedang dinonaktifkan sementara", "PROMOTIONS_DISABLED")
+			return
+		}
 		if d.RateEngine == nil {
 			httpErrorCode(w, http.StatusInternalServerError, "rate engine not configured", "INTERNAL_ERROR")
 			return
@@ -806,7 +807,11 @@ func cancelBooking(d Deps) http.HandlerFunc {
 // confirmed → checked_in + room assignment (dijamin GiST di database).
 func checkIn(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		res, err := d.BookingSvc.CheckIn(r.Context(), chi.URLParam(r, "id"))
+		ctx := r.Context()
+		if d.FeatureFlag != nil && !d.FeatureFlag.IsEnabled(ctx, "ff_room_readiness_checkin_guard") {
+			ctx = booking.WithBypassRoomReadiness(ctx)
+		}
+		res, err := d.BookingSvc.CheckIn(ctx, chi.URLParam(r, "id"))
 		switch {
 		case errors.Is(err, booking.ErrNotFound):
 			httpErrorCode(w, http.StatusNotFound, "booking tidak ditemukan", "BOOKING_NOT_FOUND")

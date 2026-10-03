@@ -42,10 +42,9 @@ func NewPostgresManager(ctx context.Context, pool *pgxpool.Pool, valkey *redis.C
 
 	// 1. Initial synchronous load
 	if err := pm.Reload(ctx); err != nil {
-		log.Warn("featureflag: initial db load failed, fallback to defaults", "err", err)
-		defaults := DefaultFlags()
-		snap := Snapshot(defaults)
-		pm.snapshot.Store(&snap)
+		log.Warn("featureflag: initial db load failed", "err", err)
+		emptySnap := make(Snapshot)
+		pm.snapshot.Store(&emptySnap)
 	}
 
 	// 2. Jalankan background sync polling jika syncInterval > 0
@@ -209,12 +208,6 @@ func (pm *PostgresManager) Reload(ctx context.Context) error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("feature_flags iteration error: %w", err)
-	}
-
-	// Jika tabel kosong, fallback ke defaults
-	if len(newSnap) == 0 {
-		defaults := DefaultFlags()
-		newSnap = Snapshot(defaults)
 	}
 
 	pm.snapshot.Store(&newSnap)
