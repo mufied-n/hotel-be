@@ -189,8 +189,24 @@ type mockAttemptStore struct {
 	attempts []PaymentAttempt
 }
 
-func (m *mockAttemptStore) RecordAttempt(_ context.Context, _ PaymentAttempt) error { return nil }
+func (m *mockAttemptStore) RecordAttempt(_ context.Context, a PaymentAttempt) error {
+	m.attempts = append(m.attempts, a)
+	return nil
+}
 func (m *mockAttemptStore) UpdateAttemptStatus(_ context.Context, _, _ string) error { return nil }
+func (m *mockAttemptStore) UpdateAttemptByID(_ context.Context, attemptID string, status string, ref string, payload map[string]any) error {
+	for i := range m.attempts {
+		if m.attempts[i].ID == attemptID {
+			m.attempts[i].Status = status
+			if ref != "" {
+				m.attempts[i].ProviderReference = ref
+			}
+			m.attempts[i].Payload = payload
+			return nil
+		}
+	}
+	return nil
+}
 func (m *mockAttemptStore) GetAttemptsByBookingID(_ context.Context, _ string) ([]PaymentAttempt, error) {
 	return m.attempts, nil
 }
@@ -1725,6 +1741,151 @@ func TestServiceCreate_CatalogCapacityInvariant(t *testing.T) {
 			_, _, err := svc.Create(context.Background(), input)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+type errorPaymentGateway struct {
+	err error
+}
+
+func (e *errorPaymentGateway) CreateCharge(_ context.Context, _ Booking, _ int64, _ string) (ChargeResult, error) {
+	return ChargeResult{}, e.err
+}
+
+func TestService_PaymentTimeoutAndDefinitiveFailure_TableDriven(t *testing.T) {
+	tests := []struct {
+		name                 string
+		gatewayErr           error
+		wantErrIs            error
+		wantBookingCancelled bool
+		wantAttemptStatus    string
+	}{
+		{
+			name:                 "Gateway context deadline exceeded preserves hold and marks unknown_timeout (BE-R13)",
+			gatewayErr:           context.DeadlineExceeded,
+			wantErrIs:            ErrPaymentGatewayTimeout,
+			wantBookingCancelled: false, // TIDAK dibatalkan, hold kamar tetap ada!
+			wantAttemptStatus:    "unknown_timeout",
+		},
+		{
+			name:                 "Gateway 504 gateway timeout preserves hold (BE-R13)",
+			gatewayErr:           errors.New("xendit: status 504: gateway timeout"),
+			wantErrIs:            ErrPaymentGatewayTimeout,
+			wantBookingCancelled: false,
+			wantAttemptStatus:    "unknown_timeout",
+		},
+		{
+			name:                 "Gateway network connection reset preserves hold (BE-R13)",
+			gatewayErr:           errors.New("read tcp: connection reset by peer"),
+			wantErrIs:            ErrPaymentGatewayTimeout,
+			wantBookingCancelled: false,
+			wantAttemptStatus:    "unknown_timeout",
+		},
+		{
+			name:                 "Gateway 400 bad request definitive failure cancels booking and restitutes room (BE-R13)",
+			gatewayErr:           errors.New("xendit: status 400: invalid payment method or expired card"),
+			wantErrIs:            ErrPaymentDefinitiveFailure,
+			wantBookingCancelled: true, // Dibatalkan, kamar dirilis
+			wantAttemptStatus:    "failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			tx := newFakeTx(nil, map[string][]string{"sup-king": {"101"}})
+			tx.inventory["sup-king|2026-10-10"] = 1
+			tx.inventory["sup-king|2026-10-11"] = 1
+			inv := &fakeInvStore{avail: []inventory.Availability{
+				{Date: date("2026-10-10"), TotalRooms: 1, AvailableRooms: 1},
+				{Date: date("2026-10-11"), TotalRooms: 1, AvailableRooms: 1},
+			}}
+			gw := &errorPaymentGateway{err: tt.gatewayErr}
+			attemptStore := &mockAttemptStore{}
+
+			svc := NewService(tx, inv, &fakeRates{}, gw, &fakeNotifier{}, &fakeReader{bookings: tx.bookings}, 30*time.Minute, slog.Default())
+			svc.SetPaymentAttemptStore(attemptStore)
+
+			input := CreateInput{
+				RoomTypeID:      "sup-king",
+				CheckIn:         date("2026-10-10"),
+				CheckOut:        date("2026-10-12"),
+				NumRooms:        1,
+				NumGuests:       2,
+				GuestName:       "Tamu Resilient",
+				GuestEmail:      "resilient@example.com",
+				TermsAccepted:   true,
+				PrivacyAccepted: true,
+			}
+			input = withQuote(svc, input)
+
+			_, _, err := svc.Create(ctx, input)
+			if !errors.Is(err, tt.wantErrIs) {
+				t.Fatalf("expected error %v, got %v", tt.wantErrIs, err)
+			}
+
+			// Verifikasi attempt dicatat
+			if len(attemptStore.attempts) == 0 {
+				t.Fatal("expected at least 1 payment attempt recorded, got 0")
+			}
+			latestAttempt := attemptStore.attempts[len(attemptStore.attempts)-1]
+			if latestAttempt.Status != tt.wantAttemptStatus {
+				t.Fatalf("attempt status = %s, want %s", latestAttempt.Status, tt.wantAttemptStatus)
+			}
+
+			// Verifikasi status booking di DB
+			var foundBooking *Booking
+			for _, b := range tx.bookings {
+				if b.GuestEmail == "resilient@example.com" {
+					foundBooking = b
+					break
+				}
+			}
+			if foundBooking == nil {
+				t.Fatal("expected booking to be present in database")
+			}
+
+			if tt.wantBookingCancelled {
+				if foundBooking.Status != StatusCancelled {
+					t.Fatalf("expected booking to be cancelled, got %s", foundBooking.Status)
+				}
+			} else {
+				if foundBooking.Status != StatusPending {
+					t.Fatalf("expected booking to remain pending (hold preserved), got %s", foundBooking.Status)
+				}
+			}
+		})
+	}
+}
+
+func TestIsGatewayTimeout_TableDriven(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantTimeout bool
+	}{
+		{name: "nil error", err: nil, wantTimeout: false},
+		{name: "context deadline exceeded", err: context.DeadlineExceeded, wantTimeout: true},
+		{name: "context canceled", err: context.Canceled, wantTimeout: true},
+		{name: "wrapped timeout message", err: errors.New("dial tcp: i/o timeout"), wantTimeout: true},
+		{name: "connection refused", err: errors.New("dial tcp: connection refused"), wantTimeout: true},
+		{name: "connection reset", err: errors.New("read tcp: connection reset by peer"), wantTimeout: true},
+		{name: "HTTP 502 Bad Gateway", err: errors.New("upstream returned 502 bad gateway"), wantTimeout: true},
+		{name: "HTTP 503 Service Unavailable", err: errors.New("xendit: 503 service unavailable"), wantTimeout: true},
+		{name: "HTTP 504 Gateway Timeout", err: errors.New("xendit: 504 gateway timeout"), wantTimeout: true},
+		{name: "EOF during read", err: errors.New("unexpected EOF"), wantTimeout: true},
+		{name: "HTTP 400 Bad Request", err: errors.New("xendit: status 400: invalid amount"), wantTimeout: false},
+		{name: "HTTP 401 Unauthorized", err: errors.New("xendit: status 401: invalid api key"), wantTimeout: false},
+		{name: "Generic business error", err: errors.New("user input validation error"), wantTimeout: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsGatewayTimeout(tt.err)
+			if got != tt.wantTimeout {
+				t.Fatalf("IsGatewayTimeout(%v) = %v, want %v", tt.err, got, tt.wantTimeout)
 			}
 		})
 	}

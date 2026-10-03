@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -230,4 +231,31 @@ func IsBypassRoomReadiness(ctx context.Context) bool {
 	}
 	v, ok := ctx.Value(bypassRoomReadinessKey{}).(bool)
 	return ok && v
+}
+
+// ErrPaymentGatewayTimeout dikembalikan saat pemanggilan gateway mengalami timeout / gangguan jaringan (BE-R13).
+// Pada kondisi ini, booking tidak dibatalkan dan ketersediaan kamar tetap tertahan.
+var ErrPaymentGatewayTimeout = errors.New("booking: payment gateway timeout or network error")
+
+// ErrPaymentDefinitiveFailure dikembalikan saat gateway menolak pembayaran secara definitif (BE-R13).
+// Pada kondisi ini, kompensasi pembatalan booking dan pelepasan inventori dieksekusi.
+var ErrPaymentDefinitiveFailure = errors.New("booking: payment gateway definitive rejection")
+
+// IsGatewayTimeout mendeteksi apakah error disebabkan oleh timeout, context deadline, atau gangguan jaringan sementara (BE-R13).
+func IsGatewayTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "502") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "504") ||
+		strings.Contains(msg, "eof")
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/example/hotel-booking/internal/catalog"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/rates"
+	"uuid"
 )
 
 var (
@@ -148,6 +149,9 @@ type TxRunner interface {
 func NewService(tx TxRunner, inv inventory.AvailabilityStore, r rates.RateProvider, p PaymentGateway, n Notifier, rd Reader, holdTimeout time.Duration, log *slog.Logger) *Service {
 	if holdTimeout <= 0 {
 		holdTimeout = 30 * time.Minute
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 	return &Service{
 		tx:          tx,
@@ -340,37 +344,68 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		return Booking{}, ChargeResult{}, txErr
 	}
 
-	// 3. Pemanggilan gateway eksternal di luar transaksi agar tidak menahan lock database.
-	charge, err := s.payment.CreateCharge(ctx, b, b.TotalPriceMinor, b.Currency)
-	if err != nil {
-		if s.attempts != nil {
-			_ = s.attempts.RecordAttempt(ctx, PaymentAttempt{
-				BookingID:         b.ID,
-				Provider:          "gateway",
-				ProviderReference: "",
-				AmountMinor:       b.TotalPriceMinor,
-				Currency:          b.Currency,
-				Status:            "failed",
-				CreatedAt:         time.Now().UTC(),
-				UpdatedAt:         time.Now().UTC(),
-			})
-		}
-		// Kompensasi: batalkan booking dan rilis inventory jika charge token gagal
-		_ = s.Cancel(ctx, b.ID)
-		return Booking{}, ChargeResult{}, fmt.Errorf("booking: payment charge: %w", err)
-	}
-
+	// 3. Catat intent percobaan pembayaran (pre-call) ke buku besar untuk rekonsiliasi finansial (BE-G11, BE-R13).
+	attemptID := uuid.NewV7().String()
 	if s.attempts != nil {
-		_ = s.attempts.RecordAttempt(ctx, PaymentAttempt{
+		if recErr := s.attempts.RecordAttempt(ctx, PaymentAttempt{
+			ID:                attemptID,
 			BookingID:         b.ID,
 			Provider:          "gateway",
-			ProviderReference: charge.Reference,
+			ProviderReference: "",
 			AmountMinor:       b.TotalPriceMinor,
 			Currency:          b.Currency,
 			Status:            "initiated",
 			CreatedAt:         time.Now().UTC(),
 			UpdatedAt:         time.Now().UTC(),
-		})
+		}); recErr != nil {
+			s.log.ErrorContext(ctx, "booking.payment_attempt.record_failed", "booking_id", b.ID, "attempt_id", attemptID, "err", recErr)
+		}
+	}
+
+	// 4. Pemanggilan gateway eksternal di luar transaksi agar tidak menahan lock database.
+	charge, err := s.payment.CreateCharge(ctx, b, b.TotalPriceMinor, b.Currency)
+	if err != nil {
+		// Evaluasi jenis error: Timeout/Network Error vs Definitive Failure (BE-R13)
+		if IsGatewayTimeout(err) {
+			s.log.WarnContext(ctx, "booking.payment.gateway_timeout", "booking_id", b.ID, "attempt_id", attemptID, "err", err)
+			if s.attempts != nil {
+				if updErr := s.attempts.UpdateAttemptByID(ctx, attemptID, "unknown_timeout", "", map[string]any{
+					"error": err.Error(),
+					"type":  "gateway_timeout",
+				}); updErr != nil {
+					s.log.ErrorContext(ctx, "booking.payment_attempt.update_timeout_failed", "attempt_id", attemptID, "err", updErr)
+				}
+			}
+			// JANGAN batalkan booking: invoice gateway mungkin sudah dibuat di provider.
+			// Kamar tetap di-hold selama durasi reservasi (BE-R13, BE-G12).
+			return Booking{}, ChargeResult{}, fmt.Errorf("%w: %v", ErrPaymentGatewayTimeout, err)
+		}
+
+		// Kegagalan Definitif (Definitive Failure: 4xx, parameter invalid, rejected)
+		s.log.ErrorContext(ctx, "booking.payment.definitive_failure", "booking_id", b.ID, "attempt_id", attemptID, "err", err)
+		if s.attempts != nil {
+			if updErr := s.attempts.UpdateAttemptByID(ctx, attemptID, "failed", "", map[string]any{
+				"error": err.Error(),
+				"type":  "definitive_failure",
+			}); updErr != nil {
+				s.log.ErrorContext(ctx, "booking.payment_attempt.update_failed_failed", "attempt_id", attemptID, "err", updErr)
+			}
+		}
+
+		// Kompensasi: batalkan booking dan rilis inventory jika pembayaran ditolak definitif
+		if cancelErr := s.Cancel(ctx, b.ID); cancelErr != nil {
+			s.log.ErrorContext(ctx, "booking.compensation.cancel_failed", "booking_id", b.ID, "err", cancelErr)
+		}
+		return Booking{}, ChargeResult{}, fmt.Errorf("%w: %v", ErrPaymentDefinitiveFailure, err)
+	}
+
+	// Perbarui percobaan pembayaran spesifik dengan reference dari provider
+	if s.attempts != nil {
+		if updErr := s.attempts.UpdateAttemptByID(ctx, attemptID, "initiated", charge.Reference, map[string]any{
+			"payment_url": charge.PaymentURL,
+		}); updErr != nil {
+			s.log.ErrorContext(ctx, "booking.payment_attempt.update_reference_failed", "attempt_id", attemptID, "err", updErr)
+		}
 	}
 
 	return b, charge, nil
@@ -389,7 +424,9 @@ func (s *Service) Confirm(ctx context.Context, bookingID string) error {
 		}
 		if b.Status == StatusPending && b.ExpiresAt != nil && time.Now().UTC().After(*b.ExpiresAt) {
 			if s.attempts != nil {
-				_ = s.attempts.UpdateAttemptStatus(ctx, bookingID, "received_after_expiry")
+				if updErr := s.attempts.UpdateAttemptStatus(ctx, bookingID, "received_after_expiry"); updErr != nil {
+					s.log.ErrorContext(ctx, "booking.confirm.update_attempt_failed", "booking_id", bookingID, "err", updErr)
+				}
 			}
 			return ErrHoldExpired
 		}
@@ -400,7 +437,9 @@ func (s *Service) Confirm(ctx context.Context, bookingID string) error {
 			return err
 		}
 		if s.attempts != nil {
-			_ = s.attempts.UpdateAttemptStatus(ctx, bookingID, "success")
+			if updErr := s.attempts.UpdateAttemptStatus(ctx, bookingID, "success"); updErr != nil {
+				s.log.ErrorContext(ctx, "booking.confirm.update_attempt_failed", "booking_id", bookingID, "err", updErr)
+			}
 		}
 		payload, _ := json.Marshal(map[string]any{"event": "booking.confirmed", "booking_id": bookingID})
 		return events.PublishTx(ctx, "booking.confirmed", payload)

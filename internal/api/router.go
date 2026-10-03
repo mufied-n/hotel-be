@@ -945,6 +945,14 @@ func createBooking(d Deps) gin.HandlerFunc {
 			httpErrorCode(c, http.StatusNotFound, "inventory tidak ditemukan", "INVENTORY_NOT_FOUND")
 			return
 		}
+		if errors.Is(err, booking.ErrPaymentGatewayTimeout) {
+			httpErrorCode(c, http.StatusGatewayTimeout, "koneksi gateway pembayaran terputus, reservasi tetap tersimpan dalam antrean pemulihan", "GATEWAY_TIMEOUT")
+			return
+		}
+		if errors.Is(err, booking.ErrPaymentDefinitiveFailure) {
+			httpErrorCode(c, http.StatusBadGateway, "gateway pembayaran menolak transaksi", "PAYMENT_FAILED")
+			return
+		}
 		if err != nil {
 			httpErrorCode(c, http.StatusInternalServerError, "gagal membuat booking", "INTERNAL_ERROR")
 			return

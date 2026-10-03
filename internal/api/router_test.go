@@ -2710,3 +2710,120 @@ func TestCalculateQuote_BreakfastMultiRoomAndChildTiers_R10(t *testing.T) {
 		}
 	})
 }
+
+type errorPaymentGw struct {
+	err error
+}
+
+func (g *errorPaymentGw) CreateCharge(_ context.Context, _ booking.Booking, _ int64, _ string) (booking.ChargeResult, error) {
+	return booking.ChargeResult{}, g.err
+}
+
+func TestCreateBooking_PaymentGatewayErrors_TableDriven(t *testing.T) {
+	tests := []struct {
+		name         string
+		gwErr        error
+		expectedCode int
+		expectedMsg  string
+	}{
+		{
+			name:         "Gateway timeout returns HTTP 504 GATEWAY_TIMEOUT (BE-R13)",
+			gwErr:        context.DeadlineExceeded,
+			expectedCode: http.StatusGatewayTimeout,
+			expectedMsg:  "GATEWAY_TIMEOUT",
+		},
+		{
+			name:         "Gateway 504 response returns HTTP 504 GATEWAY_TIMEOUT (BE-R13)",
+			gwErr:        errors.New("xendit: 504 gateway timeout"),
+			expectedCode: http.StatusGatewayTimeout,
+			expectedMsg:  "GATEWAY_TIMEOUT",
+		},
+		{
+			name:         "Gateway 400 bad request returns HTTP 502 PAYMENT_FAILED (BE-R13)",
+			gwErr:        errors.New("xendit: status 400: invalid payment method"),
+			expectedCode: http.StatusBadGateway,
+			expectedMsg:  "PAYMENT_FAILED",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			d10 := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+			d11 := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+			d12 := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+
+			avail := []inventory.Availability{
+				{Date: d10, TotalRooms: 5, AvailableRooms: 5},
+				{Date: d11, TotalRooms: 5, AvailableRooms: 5},
+			}
+			invStore := &mockInvStore{avail: avail}
+			txMock := &mockTx{
+				rooms: []string{"101"},
+			}
+			runner := &testRunner{tx: txMock}
+			reader := &mockReader{tx: txMock}
+			gw := &errorPaymentGw{err: tt.gwErr}
+			bkSvc := booking.NewService(runner, invStore, &mockRates{}, gw, &mockNotifier{}, reader, 30*time.Minute, nil)
+
+			rateEngine := rates.NewEngine(map[string]int64{
+				"01900000-0000-7000-8000-000000000001": 550_000,
+			}, 1.25)
+			quoteStore := rateEngine.QuoteStore()
+			bkSvc.SetQuoteStore(quoteStore)
+			catalogStore := catalog.NewMemoryStore(catalog.DefaultVariants())
+			bkSvc.SetCatalogStore(catalogStore)
+
+			validQuote := rates.LockedQuote{
+				ID:           "test-quote-gw-err",
+				RoomTypeID:   "01900000-0000-7000-8000-000000000001",
+				RatePlanCode: "room_only",
+				CheckIn:      d10,
+				CheckOut:     d12,
+				NumRooms:     1,
+				NumGuests:    2,
+				ExpiresAt:    now.Add(15 * time.Minute),
+				Pricing: rates.PricingBreakdown{
+					TotalPriceMinor: 1_100_000,
+					Currency:        "IDR",
+				},
+			}
+			_ = quoteStore.SaveQuote(context.Background(), validQuote)
+
+			r := NewRouter(Deps{
+				BookingSvc:   bkSvc,
+				RateEngine:   rateEngine,
+				QuoteStore:   quoteStore,
+				InvStore:     invStore,
+				CatalogStore: catalogStore,
+				StaffAuth:    TestStaffVerifier(),
+				Enforcer:     auth.DefaultTestEnforcer(),
+			})
+
+			body := `{
+				"quote_id": "test-quote-gw-err",
+				"room_type_id": "01900000-0000-7000-8000-000000000001",
+				"check_in": "2026-10-10",
+				"check_out": "2026-10-12",
+				"num_rooms": 1,
+				"num_guests": 2,
+				"guest_name": "Tamu Uji",
+				"guest_email": "tamu@example.com",
+				"terms_accepted": true,
+				"privacy_accepted": true
+			}`
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/bookings", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.expectedCode {
+				t.Fatalf("expected HTTP status %d, got %d. Body: %s", tt.expectedCode, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tt.expectedMsg) {
+				t.Fatalf("expected body to contain %s, got: %s", tt.expectedMsg, w.Body.String())
+			}
+		})
+	}
+}

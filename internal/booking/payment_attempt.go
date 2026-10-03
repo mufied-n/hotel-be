@@ -13,7 +13,7 @@ type PaymentAttempt struct {
 	ProviderReference string         `json:"provider_reference"`
 	AmountMinor       int64          `json:"amount_minor"`
 	Currency          string         `json:"currency"`
-	Status            string         `json:"status"` // initiated, success, failed, received_after_expiry
+	Status            string         `json:"status"` // initiated, success, failed, unknown_timeout, received_after_expiry
 	Payload           map[string]any `json:"payload,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
@@ -23,5 +23,6 @@ type PaymentAttempt struct {
 type PaymentAttemptStore interface {
 	RecordAttempt(ctx context.Context, attempt PaymentAttempt) error
 	UpdateAttemptStatus(ctx context.Context, bookingID string, status string) error
+	UpdateAttemptByID(ctx context.Context, attemptID string, status string, providerReference string, payload map[string]any) error
 	GetAttemptsByBookingID(ctx context.Context, bookingID string) ([]PaymentAttempt, error)
 }

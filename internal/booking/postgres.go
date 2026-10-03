@@ -374,9 +374,9 @@ func (s *PostgresPaymentAttemptStore) RecordAttempt(ctx context.Context, attempt
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO payment_attempts
-			(booking_id, provider, provider_reference, amount_minor, currency, status, payload, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		attempt.BookingID, attempt.Provider, attempt.ProviderReference,
+			(id, booking_id, provider, provider_reference, amount_minor, currency, status, payload, created_at, updated_at)
+		VALUES (COALESCE(NULLIF($1, '')::uuid, uuidv7()), $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		attempt.ID, attempt.BookingID, attempt.Provider, attempt.ProviderReference,
 		attempt.AmountMinor, attempt.Currency, attempt.Status, payloadBytes,
 		attempt.CreatedAt, attempt.UpdatedAt,
 	)
@@ -392,6 +392,26 @@ func (s *PostgresPaymentAttemptStore) UpdateAttemptStatus(ctx context.Context, b
 		SET status = $1, updated_at = $2
 		WHERE booking_id = $3`,
 		status, time.Now().UTC(), bookingID,
+	)
+	return err
+}
+
+func (s *PostgresPaymentAttemptStore) UpdateAttemptByID(ctx context.Context, attemptID string, status string, providerReference string, payload map[string]any) error {
+	if s.pool == nil {
+		return nil
+	}
+	var payloadBytes []byte
+	if payload != nil {
+		payloadBytes, _ = json.Marshal(payload)
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE payment_attempts
+		SET status = $1,
+		    provider_reference = CASE WHEN $2 <> '' THEN $2 ELSE provider_reference END,
+		    payload = CASE WHEN $3::jsonb IS NOT NULL THEN $3::jsonb ELSE payload END,
+		    updated_at = $4
+		WHERE id = $5`,
+		status, providerReference, payloadBytes, time.Now().UTC(), attemptID,
 	)
 	return err
 }

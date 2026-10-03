@@ -344,6 +344,9 @@ func (s *webhookMockAttemptStore) RecordAttempt(_ context.Context, _ booking.Pay
 func (s *webhookMockAttemptStore) UpdateAttemptStatus(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (s *webhookMockAttemptStore) UpdateAttemptByID(_ context.Context, _ string, _ string, _ string, _ map[string]any) error {
+	return nil
+}
 func (s *webhookMockAttemptStore) GetAttemptsByBookingID(_ context.Context, bookingID string) ([]booking.PaymentAttempt, error) {
 	return s.attempts[bookingID], nil
 }
