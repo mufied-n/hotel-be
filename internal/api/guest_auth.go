@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -321,3 +322,96 @@ func handleGuestBookingDetail(d Deps) http.HandlerFunc {
 		})
 	}
 }
+
+func handleGuestBookingReceipt(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess := GuestSessionFromContext(r.Context())
+		if sess == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error":   "UNAUTHORIZED",
+				"message": "Sesi tidak ditemukan.",
+			})
+			return
+		}
+
+		id := chi.URLParam(r, "id")
+		receipt, err := d.GuestSvc.GetBookingReceipt(r.Context(), sess.GuestEmail, id)
+		if err != nil {
+			if errors.Is(err, guest.ErrBookingNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{
+					"error":   "BOOKING_NOT_FOUND",
+					"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
+				})
+				return
+			}
+			if errors.Is(err, guest.ErrReceiptNotAvailable) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":   "RECEIPT_NOT_AVAILABLE",
+					"message": "Invoice resmi dan bukti reservasi hanya tersedia setelah pembayaran dikonfirmasi.",
+				})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":   "INTERNAL_SERVER_ERROR",
+				"message": "Gagal memuat invoice bukti pemesanan.",
+			})
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store, private")
+		writeJSON(w, http.StatusOK, receipt)
+	}
+}
+
+func handleGuestBookingCalendar(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess := GuestSessionFromContext(r.Context())
+		if sess == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error":   "UNAUTHORIZED",
+				"message": "Sesi tidak ditemukan.",
+			})
+			return
+		}
+
+		id := chi.URLParam(r, "id")
+		receipt, err := d.GuestSvc.GetBookingReceipt(r.Context(), sess.GuestEmail, id)
+		if err != nil {
+			if errors.Is(err, guest.ErrBookingNotFound) {
+				writeJSON(w, http.StatusNotFound, map[string]string{
+					"error":   "BOOKING_NOT_FOUND",
+					"message": "Pemesanan tidak ditemukan atau Anda tidak memiliki akses ke pemesanan ini.",
+				})
+				return
+			}
+			if errors.Is(err, guest.ErrReceiptNotAvailable) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error":   "RECEIPT_NOT_AVAILABLE",
+					"message": "File kalender hanya tersedia setelah pembayaran dikonfirmasi.",
+				})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":   "INTERNAL_SERVER_ERROR",
+				"message": "Gagal memproses file kalender.",
+			})
+			return
+		}
+
+		icsBytes, err := d.GuestSvc.GenerateCalendarICS(receipt)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":   "INTERNAL_SERVER_ERROR",
+				"message": "Gagal menghasilkan file kalender.",
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"pulang-booking-%s.ics\"", id))
+		w.Header().Set("Cache-Control", "no-store, private")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(icsBytes)
+	}
+}
+

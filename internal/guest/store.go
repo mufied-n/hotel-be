@@ -14,6 +14,7 @@ var (
 	ErrSessionNotFound       = errors.New("guest: session not found or revoked")
 	ErrSessionExpired        = errors.New("guest: session has expired")
 	ErrBookingNotFound       = errors.New("guest: booking not found or unauthorized")
+	ErrReceiptNotAvailable   = errors.New("guest: receipt not available for non-confirmed booking")
 )
 
 // Store mendefinisikan interface persistensi database untuk modul guest.
@@ -31,4 +32,6 @@ type Store interface {
 	CountActiveBookingsByEmail(ctx context.Context, email string) (int, error)
 	ListBookingsByEmail(ctx context.Context, email, status string, limit int) ([]BookingSummary, error)
 	GetBookingDetailByEmail(ctx context.Context, email, bookingID string) (*BookingDetail, error)
+	GetBookingReceiptData(ctx context.Context, email, bookingID string) (*ReceiptDTO, error)
 }
+

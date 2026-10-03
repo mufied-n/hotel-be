@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -226,4 +227,184 @@ func (s *PostgresStore) GetBookingDetailByEmail(ctx context.Context, email, book
 	return &d, nil
 }
 
+func (s *PostgresStore) GetBookingReceiptData(ctx context.Context, email, bookingID string) (*ReceiptDTO, error) {
+	query := `
+		SELECT b.id, b.room_type_id, COALESCE(r.name, 'Room'),
+		       to_char(b.check_in, 'YYYY-MM-DD'), to_char(b.check_out, 'YYYY-MM-DD'),
+		       (b.check_out - b.check_in) AS total_nights,
+		       b.num_rooms, b.num_guests, b.status,
+		       b.room_subtotal_minor, b.breakfast_charge_minor, b.discount_minor, b.tax_minor, b.total_price_minor,
+		       b.currency, b.guest_name, b.guest_email, COALESCE(b.guest_phone, ''),
+		       COALESCE(b.special_requests, ''),
+		       b.rate_plan_code, b.cancellation_policy, b.cancellation_desc,
+		       b.created_at
+		FROM bookings b
+		LEFT JOIN room_types r ON r.id = b.room_type_id
+		WHERE b.id = $1 AND b.guest_email = $2
+	`
+	var (
+		id                   string
+		roomTypeID           string
+		roomTypeName         string
+		checkInDate          string
+		checkOutDate         string
+		totalNights          int
+		numRooms             int
+		numGuests            int
+		status               string
+		roomSubtotalMinor    int64
+		breakfastChargeMinor int64
+		discountMinor        int64
+		taxMinor             int64
+		totalPriceMinor      int64
+		currency             string
+		guestName            string
+		guestEmail           string
+		guestPhone           string
+		specialRequests      string
+		ratePlanCode         string
+		cancellationPolicy   string
+		cancellationDesc     string
+		createdAt            time.Time
+	)
+
+	err := s.pool.QueryRow(ctx, query, bookingID, email).Scan(
+		&id, &roomTypeID, &roomTypeName,
+		&checkInDate, &checkOutDate,
+		&totalNights,
+		&numRooms, &numGuests, &status,
+		&roomSubtotalMinor, &breakfastChargeMinor, &discountMinor, &taxMinor, &totalPriceMinor,
+		&currency, &guestName, &guestEmail, &guestPhone,
+		&specialRequests,
+		&ratePlanCode, &cancellationPolicy, &cancellationDesc,
+		&createdAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // IDOR safe: nil -> ErrBookingNotFound
+		}
+		return nil, fmt.Errorf("guest_store.get_receipt: %w", err)
+	}
+
+	// 2. Baca informasi pelunasan dari payment_attempts (jika ada)
+	var (
+		provider          = "Xendit"
+		providerReference = ""
+		paymentStatus     = "PAID"
+		paidAt            = createdAt.UTC().Format(time.RFC3339)
+	)
+
+	pQuery := `
+		SELECT provider, provider_reference, status, created_at
+		FROM payment_attempts
+		WHERE booking_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+	var (
+		pProv string
+		pRef  string
+		pStat string
+		pTime time.Time
+	)
+	if pErr := s.pool.QueryRow(ctx, pQuery, bookingID).Scan(&pProv, &pRef, &pStat, &pTime); pErr == nil {
+		if pProv != "" {
+			provider = pProv
+		}
+		providerReference = pRef
+		if pStat == "success" || pStat == "paid" {
+			paymentStatus = "PAID"
+		} else {
+			paymentStatus = strings.ToUpper(pStat)
+		}
+		paidAt = pTime.UTC().Format(time.RFC3339)
+	}
+
+	mealPlan := "Room Only"
+	if strings.Contains(strings.ToLower(ratePlanCode), "breakfast") || ratePlanCode == "BB" || breakfastChargeMinor > 0 {
+		mealPlan = "Sarapan Termasuk (Breakfast Included)"
+	}
+
+	nightlyRateMinor := int64(0)
+	if totalNights > 0 && numRooms > 0 {
+		nightlyRateMinor = roomSubtotalMinor / int64(totalNights*numRooms)
+	}
+
+	cleanRef := strings.ToUpper(strings.ReplaceAll(id, "-", ""))
+	if len(cleanRef) > 8 {
+		cleanRef = cleanRef[:8]
+	}
+	bookingRef := fmt.Sprintf("PKU-%s-%s", createdAt.Format("20060102"), cleanRef)
+	invoiceNumber := fmt.Sprintf("INV/PKU/%s/%s", createdAt.Format("200601"), cleanRef)
+
+	cancelPolicyText := cancellationDesc
+	if cancelPolicyText == "" {
+		cancelPolicyText = "Pembatalan fleksibel sebelum H-1 pukul 14:00 WIB. Pembatalan setelah cutoff dikenakan biaya penuh."
+	}
+
+	dto := &ReceiptDTO{
+		InvoiceNumber:    invoiceNumber,
+		InvoiceDate:      createdAt.UTC().Format(time.RFC3339),
+		BookingID:        id,
+		BookingReference: bookingRef,
+		Status:           status,
+		HotelInfo: HotelInfo{
+			Name:    "Pulang ke Uttara",
+			Tagline: "Urban Boutique Hotel & Residence",
+			Address: "Jl. Kaliurang Km 5.6 No. 1, Caturtunggal, Depok, Sleman, D.I. Yogyakarta 55281",
+			Phone:   "+62 274 5022888",
+			Email:   "stay@pulangkeuttara.id",
+			Website: "https://pulangkeuttara.id",
+		},
+		StayDetails: StayDetails{
+			CheckInDate:  checkInDate,
+			CheckInTime:  "14:00 WIB",
+			CheckOutDate: checkOutDate,
+			CheckOutTime: "12:00 WIB",
+			TotalNights:  totalNights,
+			Timezone:     "Asia/Jakarta",
+		},
+		GuestDetails: GuestDetails{
+			Name:            guestName,
+			Email:           guestEmail,
+			Phone:           guestPhone,
+			NumRooms:        numRooms,
+			NumGuests:       numGuests,
+			SpecialRequests: specialRequests,
+		},
+		RoomItem: RoomItemReceipt{
+			RoomTypeID:       roomTypeID,
+			RoomTypeName:     roomTypeName,
+			RatePlanCode:     ratePlanCode,
+			MealPlan:         mealPlan,
+			NumRooms:         numRooms,
+			TotalNights:      totalNights,
+			NightlyRateMinor: nightlyRateMinor,
+			SubtotalMinor:    roomSubtotalMinor,
+		},
+		PricingBreakdown: PricingBreakdown{
+			Currency:             currency,
+			RoomSubtotalMinor:    roomSubtotalMinor,
+			BreakfastChargeMinor: breakfastChargeMinor,
+			DiscountMinor:        discountMinor,
+			TaxMinor:             taxMinor,
+			TotalPriceMinor:      totalPriceMinor,
+		},
+		PaymentSummary: PaymentSummary{
+			Status:            paymentStatus,
+			Provider:          provider,
+			ProviderReference: providerReference,
+			PaidAt:            paidAt,
+		},
+		Policies: PoliciesReceipt{
+			CheckInPolicy:      "Wajib menunjukkan identitas diri yang berlaku (KTP/Paspor) saat check-in. Waktu check-in mulai 14:00 WIB.",
+			CancellationPolicy: cancelPolicyText,
+		},
+		QRPayload: fmt.Sprintf("https://pulangkeuttara.id/verify/booking/%s", id),
+	}
+
+	return dto, nil
+}
+
 var _ Store = (*PostgresStore)(nil)
+

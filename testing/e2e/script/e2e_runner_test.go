@@ -212,6 +212,63 @@ func (s *e2eGuestStore) GetBookingDetailByEmail(ctx context.Context, email, book
 	return nil, nil
 }
 
+func (s *e2eGuestStore) GetBookingReceiptData(ctx context.Context, email, bookingID string) (*guest.ReceiptDTO, error) {
+	if s.tx.booking.GuestEmail == email && s.tx.booking.ID == bookingID {
+		return &guest.ReceiptDTO{
+			InvoiceNumber:    "INV/PKU/202610/BKE2E001",
+			InvoiceDate:      s.tx.booking.CreatedAt.Format(time.RFC3339),
+			BookingID:        s.tx.booking.ID,
+			BookingReference: "PKU-20261003-BKE2E001",
+			Status:           string(s.tx.booking.Status),
+			HotelInfo: guest.HotelInfo{
+				Name:    "Pulang ke Uttara",
+				Address: "Jl. Kaliurang Km 5.6 No. 1, Yogyakarta",
+				Phone:   "+62 274 5022888",
+			},
+			StayDetails: guest.StayDetails{
+				CheckInDate:  s.tx.booking.CheckIn.Format("2006-01-02"),
+				CheckInTime:  "14:00 WIB",
+				CheckOutDate: s.tx.booking.CheckOut.Format("2006-01-02"),
+				CheckOutTime: "12:00 WIB",
+				TotalNights:  2,
+				Timezone:     "Asia/Jakarta",
+			},
+			GuestDetails: guest.GuestDetails{
+				Name:      s.tx.booking.GuestName,
+				Email:     s.tx.booking.GuestEmail,
+				Phone:     s.tx.booking.GuestPhone,
+				NumRooms:  s.tx.booking.NumRooms,
+				NumGuests: s.tx.booking.NumGuests,
+			},
+			RoomItem: guest.RoomItemReceipt{
+				RoomTypeID:       s.tx.booking.RoomTypeID,
+				RoomTypeName:     "Deluxe Premier",
+				RatePlanCode:     "BB",
+				MealPlan:         "Sarapan Termasuk (Breakfast Included)",
+				NumRooms:         s.tx.booking.NumRooms,
+				TotalNights:      2,
+				SubtotalMinor:    s.tx.booking.TotalPriceMinor,
+				NightlyRateMinor: s.tx.booking.TotalPriceMinor / 2,
+			},
+			PricingBreakdown: guest.PricingBreakdown{
+				Currency:        s.tx.booking.Currency,
+				TotalPriceMinor: s.tx.booking.TotalPriceMinor,
+			},
+			PaymentSummary: guest.PaymentSummary{
+				Status:   "PAID",
+				Provider: "Xendit",
+			},
+			Policies: guest.PoliciesReceipt{
+				CheckInPolicy:      "Wajib KTP/Paspor saat check-in.",
+				CancellationPolicy: "Fleksibel sebelum H-1 14:00 WIB.",
+			},
+			QRPayload: "https://pulangkeuttara.id/verify/booking/" + s.tx.booking.ID,
+		}, nil
+	}
+	return nil, nil
+}
+
+
 type e2eOTPNotifier struct {
 	lastOTP string
 }
@@ -1455,8 +1512,158 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 	})
 
-	// 35. Guest Logout and Revocation
-	t.Run("E2E-35: Guest logout revokes session (200 OK)", func(t *testing.T) {
+	// 35. Guest Downloads Printable Invoice / Receipt DTO (F04)
+	t.Run("E2E-35: Guest downloads Printable Invoice Receipt DTO (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/receipt", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("receipt request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("receipt status = %d, want 200 OK", res.StatusCode)
+		}
+		if cc := res.Header.Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+			t.Errorf("expected Cache-Control to contain no-store, got %s", cc)
+		}
+
+		var receipt map[string]any
+		_ = json.NewDecoder(res.Body).Decode(&receipt)
+
+		invNum, _ := receipt["invoice_number"].(string)
+		if !strings.HasPrefix(invNum, "INV/PKU/") {
+			t.Errorf("invoice_number = %v, want prefix INV/PKU/", invNum)
+		}
+		if receipt["status"] != "confirmed" {
+			t.Errorf("status = %v, want confirmed", receipt["status"])
+		}
+
+		hotelInfo, ok := receipt["hotel_info"].(map[string]any)
+		if !ok || hotelInfo["name"] != "Pulang ke Uttara" {
+			t.Errorf("hotel_info name = %v, want Pulang ke Uttara", hotelInfo["name"])
+		}
+
+		stayDetails, ok := receipt["stay_details"].(map[string]any)
+		if !ok || stayDetails["check_in_time"] != "14:00 WIB" {
+			t.Errorf("check_in_time = %v, want 14:00 WIB", stayDetails["check_in_time"])
+		}
+
+		pricing, ok := receipt["pricing_breakdown"].(map[string]any)
+		if !ok || pricing["total_price_minor"] == nil {
+			t.Errorf("expected pricing_breakdown with total_price_minor")
+		}
+
+		qrPayload, _ := receipt["qr_payload"].(string)
+		if !strings.Contains(qrPayload, "bk-e2e-001") {
+			t.Errorf("qr_payload = %v, want to contain bk-e2e-001", qrPayload)
+		}
+	})
+
+	// 36. Guest Downloads RFC 5545 iCalendar stream (F04)
+	t.Run("E2E-36: Guest downloads RFC 5545 iCalendar stream (200 OK)", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/calendar.ics", nil)
+		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("calendar request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("calendar status = %d, want 200 OK", res.StatusCode)
+		}
+		if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "text/calendar") {
+			t.Errorf("Content-Type = %v, want text/calendar", ct)
+		}
+		if cd := res.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, "pulang-booking-bk-e2e-001.ics") {
+			t.Errorf("Content-Disposition = %v, want attachment with filename", cd)
+		}
+
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(res.Body)
+		icsContent := buf.String()
+
+		expectedTokens := []string{
+			"BEGIN:VCALENDAR",
+			"VERSION:2.0",
+			"PRODID:-//Pulang ke Uttara",
+			"TZID:Asia/Jakarta",
+			"BEGIN:VEVENT",
+			"UID:booking-bk-e2e-001@pulangkeuttara.id",
+			"SUMMARY:Menginap di Pulang ke Uttara",
+			"STATUS:CONFIRMED",
+			"BEGIN:VALARM",
+			"TRIGGER:-P1D",
+			"END:VALARM",
+			"END:VEVENT",
+			"END:VCALENDAR",
+		}
+		for _, tok := range expectedTokens {
+			if !strings.Contains(icsContent, tok) {
+				t.Errorf("iCalendar output missing token: %q", tok)
+			}
+		}
+	})
+
+	// 37. Receipt status guard: Non-confirmed booking rejected with 400 Bad Request
+	t.Run("E2E-37: Receipt and calendar rejected for non-confirmed booking (400 RECEIPT_NOT_AVAILABLE)", func(t *testing.T) {
+		originalStatus := tx.booking.Status
+		tx.booking.Status = booking.StatusPending
+		defer func() { tx.booking.Status = originalStatus }()
+
+		// 1. Receipt attempt on pending booking
+		reqR, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/receipt", nil)
+		reqR.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		resR, err := client.Do(reqR)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resR.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400 Bad Request", resR.StatusCode)
+		}
+		var errBody map[string]any
+		_ = json.NewDecoder(resR.Body).Decode(&errBody)
+		if errBody["error"] != "RECEIPT_NOT_AVAILABLE" {
+			t.Errorf("error = %v, want RECEIPT_NOT_AVAILABLE", errBody["error"])
+		}
+
+		// 2. Calendar attempt on pending booking
+		reqC, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/calendar.ics", nil)
+		reqC.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		resC, err := client.Do(reqC)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resC.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400 Bad Request", resC.StatusCode)
+		}
+	})
+
+	// 38. IDOR Defense: Receipt and calendar rejected for other guest's booking
+	t.Run("E2E-38: IDOR defense returns 404 for receipt and calendar of another guest", func(t *testing.T) {
+		// 1. Receipt on foreign booking
+		reqR, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-other-user/receipt", nil)
+		reqR.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		resR, err := client.Do(reqR)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resR.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 Not Found", resR.StatusCode)
+		}
+
+		// 2. Calendar on foreign booking
+		reqC, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-other-user/calendar.ics", nil)
+		reqC.Header.Set("Authorization", "Bearer "+guestSessionToken)
+		resC, err := client.Do(reqC)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if resC.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d, want 404 Not Found", resC.StatusCode)
+		}
+	})
+
+	// 39. Guest Logout and Revocation
+	t.Run("E2E-39: Guest logout revokes session (200 OK)", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/auth/guest/logout", nil)
 		req.Header.Set("Authorization", "Bearer "+guestSessionToken)
 		res, err := client.Do(req)
@@ -1477,10 +1684,17 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if resMe.StatusCode != http.StatusUnauthorized {
 			t.Errorf("me status after logout = %d, want 401 Unauthorized", resMe.StatusCode)
 		}
+
+		// Permintaan ke receipt tanpa sesi wajib gagal 401 Unauthorized
+		reqRc, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/receipt", nil)
+		resRc, _ := client.Do(reqRc)
+		if resRc.StatusCode != http.StatusUnauthorized {
+			t.Errorf("receipt without session = %d, want 401 Unauthorized", resRc.StatusCode)
+		}
 	})
 
-	// 36. Resend Notifier: Guest OTP email dispatch
-	t.Run("E2E-36: Resend dispatch guest OTP email", func(t *testing.T) {
+	// 40. Resend Notifier: Guest OTP email dispatch
+	t.Run("E2E-40: Resend dispatch guest OTP email", func(t *testing.T) {
 		var receivedSubject string
 		var receivedTo []string
 		var receivedIdemp string
@@ -1518,6 +1732,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		}
 	})
 }
+
 
 
 

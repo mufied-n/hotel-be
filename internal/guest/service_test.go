@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -12,17 +13,20 @@ type mockStore struct {
 	challenges    map[string]*Challenge
 	sessions      map[string]*GuestSession
 	bookings      []BookingDetail
+	receipts      map[string]*ReceiptDTO
 	createErr     error
 	updateErr     error
 	sessionErr    error
 	listErr       error
 	detailErr     error
+	receiptErr    error
 }
 
 func newMockStore() *mockStore {
 	return &mockStore{
 		challenges: make(map[string]*Challenge),
 		sessions:   make(map[string]*GuestSession),
+		receipts:   make(map[string]*ReceiptDTO),
 	}
 }
 
@@ -155,6 +159,20 @@ func (m *mockStore) GetBookingDetailByEmail(ctx context.Context, email, bookingI
 	}
 	return nil, nil
 }
+
+func (m *mockStore) GetBookingReceiptData(ctx context.Context, email, bookingID string) (*ReceiptDTO, error) {
+	if m.receiptErr != nil {
+		return nil, m.receiptErr
+	}
+	for key, r := range m.receipts {
+		if (r.BookingID == bookingID || key == bookingID) && r.GuestDetails.Email == email {
+			rCopy := *r
+			return &rCopy, nil
+		}
+	}
+	return nil, nil
+}
+
 
 type mockNotifier struct {
 	sentEmail string
@@ -496,3 +514,268 @@ func TestGuestService_BookingsAndIDOR_TableTest(t *testing.T) {
 		t.Fatalf("IDOR security breach: expected ErrBookingNotFound, got %v", err)
 	}
 }
+
+func TestGuestService_GetBookingReceipt_TableTest(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		email      string
+		bookingID  string
+		setupStore func(s *mockStore)
+		expectErr  error
+		verifyRes  func(t *testing.T, res *ReceiptDTO)
+	}{
+		{
+			name:      "Confirmed booking returns complete receipt DTO",
+			email:     "rian@example.com",
+			bookingID: "bk_conf_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_conf_01"] = &ReceiptDTO{
+					InvoiceNumber:    "INV/PKU/202610/BKCONF01",
+					BookingID:        "bk_conf_01",
+					BookingReference: "PKU-20261003-BKCONF01",
+					Status:           "confirmed",
+					HotelInfo: HotelInfo{
+						Name:    "Pulang ke Uttara",
+						Address: "Jl. Kaliurang Km 5.6",
+					},
+					StayDetails: StayDetails{
+						CheckInDate:  "2026-10-10",
+						CheckOutDate: "2026-10-12",
+						TotalNights:  2,
+					},
+					GuestDetails: GuestDetails{
+						Name:  "Rian Ardianto",
+						Email: "rian@example.com",
+					},
+					RoomItem: RoomItemReceipt{
+						RoomTypeName: "Superior Room",
+						NumRooms:     1,
+					},
+					PricingBreakdown: PricingBreakdown{
+						TotalPriceMinor: 158950000,
+					},
+				}
+			},
+			expectErr: nil,
+			verifyRes: func(t *testing.T, res *ReceiptDTO) {
+				if res == nil {
+					t.Fatalf("expected non-nil receipt")
+				}
+				if res.InvoiceNumber != "INV/PKU/202610/BKCONF01" {
+					t.Errorf("expected invoice number INV/PKU/202610/BKCONF01, got %s", res.InvoiceNumber)
+				}
+				if res.Status != "confirmed" {
+					t.Errorf("expected status confirmed, got %s", res.Status)
+				}
+			},
+		},
+		{
+			name:      "Checked-in booking returns valid receipt",
+			email:     "rian@example.com",
+			bookingID: "bk_in_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_in_01"] = &ReceiptDTO{
+					BookingID: "bk_in_01",
+					Status:    "checked_in",
+					GuestDetails: GuestDetails{
+						Email: "rian@example.com",
+					},
+				}
+			},
+			expectErr: nil,
+			verifyRes: func(t *testing.T, res *ReceiptDTO) {
+				if res == nil || res.Status != "checked_in" {
+					t.Fatalf("expected valid checked_in receipt")
+				}
+			},
+		},
+		{
+			name:      "Checked-out booking returns valid receipt",
+			email:     "rian@example.com",
+			bookingID: "bk_out_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_out_01"] = &ReceiptDTO{
+					BookingID: "bk_out_01",
+					Status:    "checked_out",
+					GuestDetails: GuestDetails{
+						Email: "rian@example.com",
+					},
+				}
+			},
+			expectErr: nil,
+			verifyRes: func(t *testing.T, res *ReceiptDTO) {
+				if res == nil || res.Status != "checked_out" {
+					t.Fatalf("expected valid checked_out receipt")
+				}
+			},
+		},
+		{
+			name:      "Pending booking returns ErrReceiptNotAvailable",
+			email:     "rian@example.com",
+			bookingID: "bk_pending_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_pending_01"] = &ReceiptDTO{
+					BookingID: "bk_pending_01",
+					Status:    "pending",
+					GuestDetails: GuestDetails{
+						Email: "rian@example.com",
+					},
+				}
+			},
+			expectErr: ErrReceiptNotAvailable,
+			verifyRes: nil,
+		},
+		{
+			name:      "Cancelled booking returns ErrReceiptNotAvailable",
+			email:     "rian@example.com",
+			bookingID: "bk_cancel_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_cancel_01"] = &ReceiptDTO{
+					BookingID: "bk_cancel_01",
+					Status:    "cancelled",
+					GuestDetails: GuestDetails{
+						Email: "rian@example.com",
+					},
+				}
+			},
+			expectErr: ErrReceiptNotAvailable,
+			verifyRes: nil,
+		},
+		{
+			name:      "IDOR attempt accessing other guest booking returns ErrBookingNotFound",
+			email:     "hacker@example.com",
+			bookingID: "bk_conf_01",
+			setupStore: func(s *mockStore) {
+				s.receipts["bk_conf_01"] = &ReceiptDTO{
+					BookingID: "bk_conf_01",
+					Status:    "confirmed",
+					GuestDetails: GuestDetails{
+						Email: "victim@example.com",
+					},
+				}
+			},
+			expectErr: ErrBookingNotFound,
+			verifyRes: nil,
+		},
+		{
+			name:       "Non-existent booking returns ErrBookingNotFound",
+			email:      "rian@example.com",
+			bookingID:  "bk_ghost",
+			setupStore: func(s *mockStore) {},
+			expectErr:  ErrBookingNotFound,
+			verifyRes:  nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			tc.setupStore(store)
+			svc := NewService(store, nil, slog.Default())
+
+			res, err := svc.GetBookingReceipt(ctx, tc.email, tc.bookingID)
+			if tc.expectErr != nil {
+				if !errors.Is(err, tc.expectErr) {
+					t.Fatalf("expected error %v, got %v", tc.expectErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.verifyRes != nil {
+				tc.verifyRes(t, res)
+			}
+		})
+	}
+}
+
+func TestGuestService_GenerateCalendarICS_TableTest(t *testing.T) {
+	tests := []struct {
+		name      string
+		receipt   *ReceiptDTO
+		expectErr bool
+		verify    func(t *testing.T, data []byte)
+	}{
+		{
+			name: "Valid confirmed receipt generates valid RFC 5545 iCalendar stream",
+			receipt: &ReceiptDTO{
+				BookingID:        "bk-ics-123",
+				BookingReference: "PKU-20261003-8F2A",
+				Status:           "confirmed",
+				HotelInfo: HotelInfo{
+					Name: "Pulang ke Uttara",
+				},
+				StayDetails: StayDetails{
+					CheckInDate:  "2026-10-10",
+					CheckOutDate: "2026-10-12",
+					TotalNights:  2,
+				},
+				GuestDetails: GuestDetails{
+					Name:  "Rian Ardianto",
+					Email: "rian@example.com",
+				},
+				RoomItem: RoomItemReceipt{
+					RoomTypeName: "Executive King Suite",
+					NumRooms:     1,
+				},
+			},
+			expectErr: false,
+			verify: func(t *testing.T, data []byte) {
+				ics := string(data)
+				expectedSubstrings := []string{
+					"BEGIN:VCALENDAR\r\n",
+					"VERSION:2.0\r\n",
+					"PRODID:-//Pulang ke Uttara//Hotel Booking Engine v1.0//ID\r\n",
+					"TZID:Asia/Jakarta\r\n",
+					"BEGIN:VEVENT\r\n",
+					"UID:booking-bk-ics-123@pulangkeuttara.id\r\n",
+					"DTSTART;TZID=Asia/Jakarta:20261010T140000\r\n",
+					"DTEND;TZID=Asia/Jakarta:20261012T120000\r\n",
+					"SUMMARY:Menginap di Pulang ke Uttara (Executive King Suite)\r\n",
+					"STATUS:CONFIRMED\r\n",
+					"BEGIN:VALARM\r\n",
+					"TRIGGER:-P1D\r\n",
+					"END:VALARM\r\n",
+					"END:VEVENT\r\n",
+					"END:VCALENDAR\r\n",
+				}
+				for _, sub := range expectedSubstrings {
+					if !strings.Contains(ics, sub) {
+						t.Errorf("iCalendar stream missing expected element: %q", sub)
+					}
+				}
+			},
+		},
+		{
+			name:      "Nil receipt returns error",
+			receipt:   nil,
+			expectErr: true,
+			verify:    nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockStore()
+			svc := NewService(store, nil, slog.Default())
+
+			data, err := svc.GenerateCalendarICS(tc.receipt)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error for nil receipt, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.verify != nil {
+				tc.verify(t, data)
+			}
+		})
+	}
+}
+

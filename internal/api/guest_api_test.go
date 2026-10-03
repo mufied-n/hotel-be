@@ -12,13 +12,15 @@ import (
 )
 
 type mockGuestService struct {
-	requestChallengeFunc func(ctx context.Context, email string) (int, error)
-	verifyChallengeFunc  func(ctx context.Context, email, code string) (string, *guest.GuestSession, error)
-	validateSessionFunc  func(ctx context.Context, rawToken string) (*guest.GuestSession, error)
-	revokeSessionFunc    func(ctx context.Context, rawToken string) error
-	getProfileFunc       func(ctx context.Context, session *guest.GuestSession) (*guest.ProfileView, error)
-	listBookingsFunc     func(ctx context.Context, email, status string, limit int) ([]guest.BookingSummary, error)
-	getBookingDetailFunc func(ctx context.Context, email, bookingID string) (*guest.BookingDetail, error)
+	requestChallengeFunc    func(ctx context.Context, email string) (int, error)
+	verifyChallengeFunc     func(ctx context.Context, email, code string) (string, *guest.GuestSession, error)
+	validateSessionFunc     func(ctx context.Context, rawToken string) (*guest.GuestSession, error)
+	revokeSessionFunc       func(ctx context.Context, rawToken string) error
+	getProfileFunc          func(ctx context.Context, session *guest.GuestSession) (*guest.ProfileView, error)
+	listBookingsFunc        func(ctx context.Context, email, status string, limit int) ([]guest.BookingSummary, error)
+	getBookingDetailFunc    func(ctx context.Context, email, bookingID string) (*guest.BookingDetail, error)
+	getBookingReceiptFunc   func(ctx context.Context, email, bookingID string) (*guest.ReceiptDTO, error)
+	generateCalendarICSFunc func(receipt *guest.ReceiptDTO) ([]byte, error)
 }
 
 func (m *mockGuestService) RequestChallenge(ctx context.Context, email string) (int, error) {
@@ -108,6 +110,48 @@ func (m *mockGuestService) GetBookingDetail(ctx context.Context, email, bookingI
 	}
 	return nil, guest.ErrBookingNotFound
 }
+
+func (m *mockGuestService) GetBookingReceipt(ctx context.Context, email, bookingID string) (*guest.ReceiptDTO, error) {
+	if m.getBookingReceiptFunc != nil {
+		return m.getBookingReceiptFunc(ctx, email, bookingID)
+	}
+	if bookingID == "bk_001" && email == "tamu@example.com" {
+		return &guest.ReceiptDTO{
+			InvoiceNumber:    "INV/PKU/202610/BK001",
+			BookingID:        "bk_001",
+			BookingReference: "PKU-20261003-BK001",
+			Status:           "confirmed",
+			HotelInfo: guest.HotelInfo{
+				Name: "Pulang ke Uttara",
+			},
+			StayDetails: guest.StayDetails{
+				CheckInDate:  "2026-10-10",
+				CheckOutDate: "2026-10-12",
+				TotalNights:  2,
+			},
+			GuestDetails: guest.GuestDetails{
+				Name:  "Budi Santoso",
+				Email: email,
+			},
+			RoomItem: guest.RoomItemReceipt{
+				RoomTypeName: "Deluxe Premier",
+				NumRooms:     1,
+			},
+		}, nil
+	}
+	if bookingID == "bk_pending" {
+		return nil, guest.ErrReceiptNotAvailable
+	}
+	return nil, guest.ErrBookingNotFound
+}
+
+func (m *mockGuestService) GenerateCalendarICS(receipt *guest.ReceiptDTO) ([]byte, error) {
+	if m.generateCalendarICSFunc != nil {
+		return m.generateCalendarICSFunc(receipt)
+	}
+	return []byte("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nSUMMARY:Pulang ke Uttara\r\nEND:VCALENDAR\r\n"), nil
+}
+
 
 func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 	tests := []struct {
@@ -263,7 +307,72 @@ func TestGuestAuth_HTTP_TableTest(t *testing.T) {
 			withGuestSvc:   true,
 			expectedStatus: http.StatusNotFound,
 		},
+		{
+			name:   "Get booking receipt with valid session returns 200 OK",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_001/receipt",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Get booking receipt without session returns 401 Unauthorized",
+			method:         http.MethodGet,
+			path:           "/api/v1/guest/bookings/bk_001/receipt",
+			withGuestSvc:   true,
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:   "Get booking receipt for pending booking returns 400 Bad Request",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_pending/receipt",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:   "IDOR Defense: Accessing other guest receipt returns 404 Not Found",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_other_receipt/receipt",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:   "Get booking calendar.ics with valid session returns 200 OK",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_001/calendar.ics",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Get booking calendar.ics without session returns 401 Unauthorized",
+			method:         http.MethodGet,
+			path:           "/api/v1/guest/bookings/bk_001/calendar.ics",
+			withGuestSvc:   true,
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:   "Get booking calendar.ics for pending booking returns 400 Bad Request",
+			method: http.MethodGet,
+			path:   "/api/v1/guest/bookings/bk_pending/calendar.ics",
+			headers: map[string]string{
+				"Authorization": "Bearer gst_sess_valid",
+			},
+			withGuestSvc:   true,
+			expectedStatus: http.StatusBadRequest,
+		},
 	}
+
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

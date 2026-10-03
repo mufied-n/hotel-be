@@ -88,7 +88,10 @@ func NewRouter(d Deps) http.Handler {
 		guestRouter.Post("/api/v1/auth/guest/logout", handleGuestLogout(d))
 		guestRouter.Get("/api/v1/guest/bookings", handleGuestBookings(d))
 		guestRouter.Get("/api/v1/guest/bookings/{id}", handleGuestBookingDetail(d))
+		guestRouter.Get("/api/v1/guest/bookings/{id}/receipt", handleGuestBookingReceipt(d))
+		guestRouter.Get("/api/v1/guest/bookings/{id}/calendar.ics", handleGuestBookingCalendar(d))
 	})
+
 
 
 	// API routes dengan identifikasi subjek dan proteksi RBAC Casbin (fail-closed: BE-G14)

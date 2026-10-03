@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/mail"
@@ -28,7 +29,10 @@ type Service interface {
 	GetSessionProfile(ctx context.Context, session *GuestSession) (*ProfileView, error)
 	ListBookings(ctx context.Context, email, status string, limit int) ([]BookingSummary, error)
 	GetBookingDetail(ctx context.Context, email, bookingID string) (*BookingDetail, error)
+	GetBookingReceipt(ctx context.Context, email, bookingID string) (*ReceiptDTO, error)
+	GenerateCalendarICS(receipt *ReceiptDTO) ([]byte, error)
 }
+
 
 // DefaultService mengimplementasikan Service interface.
 type DefaultService struct {
@@ -239,6 +243,90 @@ func (s *DefaultService) GetBookingDetail(ctx context.Context, email, bookingID 
 	detail.AllowedActions = computeAllowedActions(detail.Status)
 	return detail, nil
 }
+
+// GetBookingReceipt mengambil faktur resmi / tanda terima pemesanan yang valid dan telah lunas.
+func (s *DefaultService) GetBookingReceipt(ctx context.Context, email, bookingID string) (*ReceiptDTO, error) {
+	normEmail := strings.ToLower(strings.TrimSpace(email))
+	cleanBookingID := strings.TrimSpace(bookingID)
+
+	receipt, err := s.store.GetBookingReceiptData(ctx, normEmail, cleanBookingID)
+	if err != nil || receipt == nil {
+		return nil, ErrBookingNotFound
+	}
+
+	// Status guard (BR-F04-01 & FR-03): Hanya booking yang lunas / confirmed / checked-in / checked-out yang memiliki receipt resmi
+	if receipt.Status != "confirmed" && receipt.Status != "checked_in" && receipt.Status != "checked_out" {
+		return nil, ErrReceiptNotAvailable
+	}
+
+	return receipt, nil
+}
+
+// GenerateCalendarICS membangun dokumen iCalendar RFC 5545 standar (Ponytail: Go standard library murni).
+func (s *DefaultService) GenerateCalendarICS(receipt *ReceiptDTO) ([]byte, error) {
+	if receipt == nil {
+		return nil, errors.New("guest: receipt cannot be nil for ics generation")
+	}
+
+	checkInClean := strings.ReplaceAll(receipt.StayDetails.CheckInDate, "-", "")
+	checkOutClean := strings.ReplaceAll(receipt.StayDetails.CheckOutDate, "-", "")
+
+	summary := fmt.Sprintf("Menginap di Pulang ke Uttara (%s)", receipt.RoomItem.RoomTypeName)
+	description := fmt.Sprintf("Kode Reservasi: %s\nTamu: %s\nKamar: %s (%d kamar)\nCheck-in: %s 14:00 WIB\nCheck-out: %s 12:00 WIB\nAlamat: Jl. Kaliurang Km 5.6 No. 1, Sleman, Yogyakarta\nTelepon: +62 274 5022888",
+		receipt.BookingReference,
+		receipt.GuestDetails.Name,
+		receipt.RoomItem.RoomTypeName,
+		receipt.RoomItem.NumRooms,
+		receipt.StayDetails.CheckInDate,
+		receipt.StayDetails.CheckOutDate,
+	)
+
+	nowUTC := s.nowFunc().UTC().Format("20060102T150405Z")
+
+	var sb strings.Builder
+	sb.WriteString("BEGIN:VCALENDAR\r\n")
+	sb.WriteString("VERSION:2.0\r\n")
+	sb.WriteString("PRODID:-//Pulang ke Uttara//Hotel Booking Engine v1.0//ID\r\n")
+	sb.WriteString("CALSCALE:GREGORIAN\r\n")
+	sb.WriteString("METHOD:PUBLISH\r\n")
+	sb.WriteString("BEGIN:VTIMEZONE\r\n")
+	sb.WriteString("TZID:Asia/Jakarta\r\n")
+	sb.WriteString("BEGIN:STANDARD\r\n")
+	sb.WriteString("DTSTART:19700101T000000\r\n")
+	sb.WriteString("TZOFFSETFROM:+0700\r\n")
+	sb.WriteString("TZOFFSETTO:+0700\r\n")
+	sb.WriteString("TZNAME:WIB\r\n")
+	sb.WriteString("END:STANDARD\r\n")
+	sb.WriteString("END:VTIMEZONE\r\n")
+	sb.WriteString("BEGIN:VEVENT\r\n")
+	sb.WriteString(fmt.Sprintf("UID:booking-%s@pulangkeuttara.id\r\n", receipt.BookingID))
+	sb.WriteString(fmt.Sprintf("DTSTAMP:%s\r\n", nowUTC))
+	sb.WriteString(fmt.Sprintf("DTSTART;TZID=Asia/Jakarta:%sT140000\r\n", checkInClean))
+	sb.WriteString(fmt.Sprintf("DTEND;TZID=Asia/Jakarta:%sT120000\r\n", checkOutClean))
+	sb.WriteString(fmt.Sprintf("SUMMARY:%s\r\n", escapeICS(summary)))
+	sb.WriteString(fmt.Sprintf("DESCRIPTION:%s\r\n", escapeICS(description)))
+	sb.WriteString("LOCATION:Pulang ke Uttara, Jl. Kaliurang Km 5.6 No. 1, Caturtunggal, Depok, Sleman, D.I. Yogyakarta 55281\r\n")
+	sb.WriteString("STATUS:CONFIRMED\r\n")
+	sb.WriteString("BEGIN:VALARM\r\n")
+	sb.WriteString("ACTION:DISPLAY\r\n")
+	sb.WriteString("DESCRIPTION:Pengingat Check-in: Besok jadwal check-in di Pulang ke Uttara (14:00 WIB)\r\n")
+	sb.WriteString("TRIGGER:-P1D\r\n")
+	sb.WriteString("END:VALARM\r\n")
+	sb.WriteString("END:VEVENT\r\n")
+	sb.WriteString("END:VCALENDAR\r\n")
+
+	return []byte(sb.String()), nil
+}
+
+func escapeICS(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `;`, `\;`)
+	s = strings.ReplaceAll(s, `,`, `\,`)
+	s = strings.ReplaceAll(s, "\r\n", `\n`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
+}
+
 
 func computeAllowedActions(status string) AllowedActions {
 	switch status {
