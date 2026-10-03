@@ -1,0 +1,399 @@
+{
+  "review_date_local": "2026-10-03",
+  "timezone": "Asia/Jakarta",
+  "captured_at_utc": "2026-10-03T03:48:43.875566+00:00",
+  "backend_root": "/mnt/code/projects/jobs/pulang/current-booking",
+  "scope": "Source/document inspection; no new test execution, DB writes, migrations or provider calls. Hash inventory is broader than deeply reviewed code.",
+  "files": [
+    {
+      "path": "cmd/migrate/main.go",
+      "sha256": "73c1aa1850177ac31a0a50799cc776bdca14e9a4a756d47ae8eabc3d97ba8efe",
+      "bytes": 2279
+    },
+    {
+      "path": "cmd/server/main.go",
+      "sha256": "b53e346419c9618f7b4dc3dd3e8dbc8f82875c7e908451cec4d932526be74577",
+      "bytes": 10893
+    },
+    {
+      "path": "internal/adapter/notifier/log.go",
+      "sha256": "5665c347e21bca6dbc86ce7686812384b06c6ae13f10e569c8eef46d0abd8dd2",
+      "bytes": 1195
+    },
+    {
+      "path": "internal/adapter/notifier/log_test.go",
+      "sha256": "9399f53abaef29a0996e3301b531d356196e6fe9fa2f06e17474a27390e6d219",
+      "bytes": 837
+    },
+    {
+      "path": "internal/adapter/notifier/resend.go",
+      "sha256": "ca9761545daab7122e1126a2676af1dbc4254728d6cd43fb0b5eada4ee6c6c0c",
+      "bytes": 10068
+    },
+    {
+      "path": "internal/adapter/notifier/resend_test.go",
+      "sha256": "b5a3d41f4446db922d6929e73cdcf487ea0f3e3b3cdeda22ae347e18732f9f62",
+      "bytes": 4859
+    },
+    {
+      "path": "internal/adapter/payment/fake.go",
+      "sha256": "d998e87963006798ac5674682f19ffa25e919f4f773cfbb85bddab44c60b1862",
+      "bytes": 1537
+    },
+    {
+      "path": "internal/adapter/payment/fake_test.go",
+      "sha256": "a21486095f2f2604748f9fb66209405b8388f7c621e39f1ce3a7b267e9cb9f01",
+      "bytes": 792
+    },
+    {
+      "path": "internal/adapter/payment/xendit.go",
+      "sha256": "f8732906e52fe0926b928b30427b67542f9c7402afab9be08640fb5052d79f8d",
+      "bytes": 9079
+    },
+    {
+      "path": "internal/adapter/payment/xendit_test.go",
+      "sha256": "84b12294d49250ece726de1ce31594a3c2ffaa7b7e47527446c6a337f9818512",
+      "bytes": 6069
+    },
+    {
+      "path": "internal/api/guest_api_test.go",
+      "sha256": "03cc2d9c9306ae7253229366e3d613b9e010eebdd64bea719c188e8642a4c63d",
+      "bytes": 13033
+    },
+    {
+      "path": "internal/api/guest_auth.go",
+      "sha256": "01dbf662386c15f692dbef29f3141c1f43df1d14989faf2829f9b0a7a3bf1a4a",
+      "bytes": 11840
+    },
+    {
+      "path": "internal/api/idempotency.go",
+      "sha256": "49eb84b347c3fd71c7a58c3b640ac311e7e354af9d7f8472aef0417ed0ea88c7",
+      "bytes": 3090
+    },
+    {
+      "path": "internal/api/middleware.go",
+      "sha256": "6b45b7c0023d53ee9833612ab41b1d37c4c5bb0578d75d3200fb2cd87d430c27",
+      "bytes": 7199
+    },
+    {
+      "path": "internal/api/rbac_test.go",
+      "sha256": "93d70f8f8b3a62202cec4841638f90cc068e7354429cf63d2b874209cefedd24",
+      "bytes": 7556
+    },
+    {
+      "path": "internal/api/router.go",
+      "sha256": "6f2fdf25ffdd0f190aa2bce50f2f0621ac791954d9413783f49bfd4bd21f58e3",
+      "bytes": 31672
+    },
+    {
+      "path": "internal/api/router_test.go",
+      "sha256": "9376cc7b9891faf5791e7b9f7c401f8bd91dccab3488fae2ea89dd548c705d84",
+      "bytes": 62111
+    },
+    {
+      "path": "internal/api/webhook_test.go",
+      "sha256": "5c03c036cc9afea6717f4f9a1e7640e397febabcc6c62c4c4f40eaa4194a5ba9",
+      "bytes": 6627
+    },
+    {
+      "path": "internal/booking/booking.go",
+      "sha256": "6b5bbf7e06465b1a0c5323b4d9ffccd1f346d7ea9f951bbfa162b66ac6071805",
+      "bytes": 9514
+    },
+    {
+      "path": "internal/booking/booking_test.go",
+      "sha256": "569500c026a0f3163e4d5054fcd25d4c61a6a1f0aed787643f747d35e590e9a9",
+      "bytes": 2842
+    },
+    {
+      "path": "internal/booking/payment_attempt.go",
+      "sha256": "e3b33bedc7b80b899431677c5bb18c93de9a7487331f814ec5392621ee5000bb",
+      "bytes": 1137
+    },
+    {
+      "path": "internal/booking/postgres.go",
+      "sha256": "87d06ee455720c44bf1c0e1d24367f572c16d4b08cb27af375c45f6dd7fc112f",
+      "bytes": 13146
+    },
+    {
+      "path": "internal/booking/service.go",
+      "sha256": "b681e2695471f3a4d4b4300cceb95e7303b21ef230391effb80efc327e4ba100",
+      "bytes": 21005
+    },
+    {
+      "path": "internal/booking/service_test.go",
+      "sha256": "084faef7fd9c4fe0aa38db71e1ff91c19591824f3c75ab63bee46069f5bc728e",
+      "bytes": 40141
+    },
+    {
+      "path": "internal/catalog/catalog.go",
+      "sha256": "7bd4b1f88b4556f64209edd69f6883b1cd89bc298babc9622048eba33b576566",
+      "bytes": 4693
+    },
+    {
+      "path": "internal/catalog/catalog_test.go",
+      "sha256": "c2542a08b96ad2eb652a02cdfa4d5b8d86325acadfacae2218ce953f0d14df73",
+      "bytes": 15315
+    },
+    {
+      "path": "internal/catalog/fixture.go",
+      "sha256": "7f5c7d33c1a6cbac6e791f55d869ace0bdb98e8ff253e6344a0d71bfa78680af",
+      "bytes": 5853
+    },
+    {
+      "path": "internal/catalog/postgres.go",
+      "sha256": "2a630bbe8ce14cf6ba9fdbcc8ffd7ce494a4cfef50bb9789b647b244297d747c",
+      "bytes": 6488
+    },
+    {
+      "path": "internal/finance/model.go",
+      "sha256": "e91b312d44f5d7485c733d1431842ed9183457222acd392ba0e0f2b365a1af90",
+      "bytes": 3119
+    },
+    {
+      "path": "internal/finance/postgres.go",
+      "sha256": "a26d49910b07105c8b64715a740bf89adc8a1f4a230959763403247420dadeba",
+      "bytes": 8891
+    },
+    {
+      "path": "internal/finance/service.go",
+      "sha256": "0cd16852186be5593f6cbf0a36c89b1d2a5b3294424be1e2b937d8c083a8d2a7",
+      "bytes": 7483
+    },
+    {
+      "path": "internal/finance/service_test.go",
+      "sha256": "a9d46e7f7fd3e17a8856b99684b89cb3eaa02dc8c271f4311b523f25cd4d5ad6",
+      "bytes": 12350
+    },
+    {
+      "path": "internal/finance/store.go",
+      "sha256": "305616b159063b0fe0f3d566c526f355b3a67cc509d2957f8f87440c3d2073c3",
+      "bytes": 2478
+    },
+    {
+      "path": "internal/guest/model.go",
+      "sha256": "c45ecab15a568546b7d3fafbce88c584bcc549d2a7f546ca718c44e924f46995",
+      "bytes": 6500
+    },
+    {
+      "path": "internal/guest/postgres.go",
+      "sha256": "6edfe99b8f48a7b6eb9aab8ead03fa6dc27de114a7a6c60e6c740fd5f369c019",
+      "bytes": 13442
+    },
+    {
+      "path": "internal/guest/postgres_test.go",
+      "sha256": "e8e52af38d10837e09f6eeb80d5683d9eeb11656ea90abdb755ceb93ebaf054f",
+      "bytes": 4148
+    },
+    {
+      "path": "internal/guest/service.go",
+      "sha256": "cd96673b9d6997f2ce7603056d9101523fcddb7b4ecbd4b7cdc438c5444079ab",
+      "bytes": 12310
+    },
+    {
+      "path": "internal/guest/service_test.go",
+      "sha256": "05b630d6511cda1d3354ab56b0121e935b173c6ef0d3f8110813a2a51b08b53c",
+      "bytes": 20865
+    },
+    {
+      "path": "internal/guest/store.go",
+      "sha256": "bc3958fa1799e3ceb878ee3c089f7aaa2ea38a821b227b9c52592c60ee931e02",
+      "bytes": 1787
+    },
+    {
+      "path": "internal/inventory/availability.go",
+      "sha256": "1c6bcd7fa66410f55d0d890cf5d672c5350286c949274ad95b5d632695e5e20d",
+      "bytes": 2037
+    },
+    {
+      "path": "internal/inventory/availability_test.go",
+      "sha256": "9ecc54801ab5a80fd70042078149be4bff598c9e547c2cf59175a394b1c6d902",
+      "bytes": 1109
+    },
+    {
+      "path": "internal/inventory/postgres.go",
+      "sha256": "7a6f8adc44048833196aaa92503cabef9f9b6412f65192acc5c8cb40ff416956",
+      "bytes": 3060
+    },
+    {
+      "path": "internal/platform/auth/casbin_pgx.go",
+      "sha256": "2c7764b8a3d5cf49598c9cf42e778f6091d3b3d51a725ec4e058df9d5baca644",
+      "bytes": 6933
+    },
+    {
+      "path": "internal/platform/auth/casbin_pgx_test.go",
+      "sha256": "1104bf7936701454f42389446f9bd1468176a0689b4183067893922ddd9a0e8e",
+      "bytes": 8570
+    },
+    {
+      "path": "internal/platform/config.go",
+      "sha256": "b37e54f2d5ba9f2f37b4b736e343f3fa0516340a91ae5c9cae1cc3d1a3326e1c",
+      "bytes": 3878
+    },
+    {
+      "path": "internal/platform/config_test.go",
+      "sha256": "c43b9cedeb8e363610541d9e3b7ae1695f971893e4cfd162e424312dc3743eff",
+      "bytes": 4377
+    },
+    {
+      "path": "internal/rates/engine.go",
+      "sha256": "cafe461466288e5eb05de7b63248f2cda92c2169ad26bb14adbf38324bcea6b7",
+      "bytes": 9000
+    },
+    {
+      "path": "internal/rates/engine_test.go",
+      "sha256": "fdbd217fb8db6960b01e37cf06b4099db395b5cd160aa95c6bb1969f5ec00a0f",
+      "bytes": 6602
+    },
+    {
+      "path": "internal/workers/outbox.go",
+      "sha256": "ba53d362a1d8ebbc32503f05d88200b7486599974554b9fcfdb26fe60b512a7a",
+      "bytes": 4340
+    },
+    {
+      "path": "internal/workers/outbox_test.go",
+      "sha256": "9c259f8622c71405678e7266b77816a17046bf935402a8233eede0b2cec1d76a",
+      "bytes": 2319
+    },
+    {
+      "path": "internal/workers/workers.go",
+      "sha256": "ff3138d6711e26db65e72a5693140b4ae5009f166fe34965c8e4f0038e775eee",
+      "bytes": 4004
+    },
+    {
+      "path": "config/rbac_model.conf",
+      "sha256": "25f3fad482865409f4e6672183680be5e82a8cc6bf23e3461487a60fe48a49be",
+      "bytes": 251
+    },
+    {
+      "path": "migrations/00001_init.sql",
+      "sha256": "9cc958c73dc0fabe25903fffed1602ad6eb7051b8bb7044160b09b5bac314adb",
+      "bytes": 4222
+    },
+    {
+      "path": "migrations/00002_seed.sql",
+      "sha256": "f85ac214c1cec5388460c6b31206a7ae3741cb22247ba991620579ce42d6f46f",
+      "bytes": 1868
+    },
+    {
+      "path": "migrations/00003_casbin_rbac.sql",
+      "sha256": "9e93a2144b84cafcc22734c012c9f51ba5a21c3b23ec1493e68e2b668242bca3",
+      "bytes": 3036
+    },
+    {
+      "path": "migrations/00004_guest_token_and_security.sql",
+      "sha256": "1585b1de0dfeb8323b8d9c5e7d3062b8f138540f203ccf59759a3c40944a0754",
+      "bytes": 404
+    },
+    {
+      "path": "migrations/00005_catalog_parity.sql",
+      "sha256": "64f6f8b8e50bcd10b3e191425d3b7a0eb3035db632f759a995eb659342f6d0e0",
+      "bytes": 9688
+    },
+    {
+      "path": "migrations/00006_pricing_and_policies.sql",
+      "sha256": "45fcbeaaa94bba69ecc6f35668f611040e3370eca3f930032329dd7fd8de17d4",
+      "bytes": 2195
+    },
+    {
+      "path": "migrations/00007_checkout_idempotency_ledger.sql",
+      "sha256": "2b9627dfb56ea33beb224e80b84b7554372992d6d517c19276641a4de76c9c35",
+      "bytes": 2114
+    },
+    {
+      "path": "migrations/00008_guest_auth_and_sessions.sql",
+      "sha256": "4c488c6a96427968837dbef1262cf2cfcd14a99eda80af4a73669b83a051b948",
+      "bytes": 1511
+    },
+    {
+      "path": "migrations/00009_finance_reconciliation_and_refunds.sql",
+      "sha256": "f33d1df7b6bc28ce14b0a84e9d83e019782a80bf34602072791d97f2e10d91ad",
+      "bytes": 2632
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-013000-hotel-booking-rbac-e2e-report.md",
+      "sha256": "690b68022a2f739ac0c6d01e63496871c1cf9edfd73fbe8beeaafbb8fc4207ff",
+      "bytes": 5742
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-015430-boundary-api-security-batch-a-e2e-report.md",
+      "sha256": "71887a76326b7e5a8ae15af3fb75954a8647ec976a3222366b6d93a8349fd5e1",
+      "bytes": 10097
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-021000-catalog-search-batch-b-e2e-report.md",
+      "sha256": "32a6c0ad0dc854a448063997c7069b780a83c3b100dd4782c41971a8cd8a57b7",
+      "bytes": 8493
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-022000-catalog-crud-batch-b-e2e-report.md",
+      "sha256": "b7a4891dfa40372bdfa6a2d5606a76f006230a4b4ca5ae434aa6977c328d55d3",
+      "bytes": 8953
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-024800-pricing-quote-policies-e2e-report.md",
+      "sha256": "c7c81ea758350f41c613723b9ab73a5b3db881e12cf69ea299fbf5822fcd5d01",
+      "bytes": 10028
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-booking-confirmation-artifacts-f04-e2e-report.md",
+      "sha256": "04d5e634d5b64dc2ddf208bfdeed3ae751181cd19e514d2b703764460813dbe5",
+      "bytes": 4589
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-checkout-idempotency-batch-d-e2e-report.md",
+      "sha256": "a1a016d39bf17d4341af01f2ce81f2f0981d8512c14ab07cb601039ed4099dba",
+      "bytes": 6121
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-guest-auth-my-bookings-e2e-report.md",
+      "sha256": "8a7c0f02030ab8cd8ab58eb9dad3dfa24034e00d444aefcd7d73663939f584f0",
+      "bytes": 4328
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-operational-reliability-batch-e-e2e-report.md",
+      "sha256": "9af9601239a8c74ae84f88c94bc4724f8c74ae5a0a04d3443140d5235e02c66c",
+      "bytes": 8153
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-real-db-concurrency-batch-f-e2e-report.md",
+      "sha256": "10759bbee39630dd4bb77eb0c84bc8be1cf7104bf628ff7c5c6c76e1cf5c307a",
+      "bytes": 6478
+    },
+    {
+      "path": "testing/e2e/report/2026-10-03-xendit-resend-e2e-report.md",
+      "sha256": "a29acec8b348852a4cd8eec545453826766a7385cd268962d402cb0dba1f605b",
+      "bytes": 5177
+    },
+    {
+      "path": "testing/e2e/script/e2e_runner_test.go",
+      "sha256": "3e5c075f4e837cead1d96886bcc5165f508270a86b1fc8c23cfed04621777148",
+      "bytes": 63577
+    },
+    {
+      "path": "testing/e2e/script/guest_auth_my_bookings_e2e.sh",
+      "sha256": "477a1cca92101d85dbb1eacbd0602656a0537d1770dd358c1ef050e2cb9c2e00",
+      "bytes": 1744
+    },
+    {
+      "path": "testing/e2e/script/hotel_booking_rbac_e2e.sh",
+      "sha256": "0e1e5ff1f41aec52c45cf160ec39f231a401d254992cacbd42022188723417dd",
+      "bytes": 24782
+    },
+    {
+      "path": "testing/e2e/script/xendit_resend_e2e.sh",
+      "sha256": "ad326a31b7d4dc99faef929e198afae71de3fb634aaf3532261cf1ff576823c1",
+      "bytes": 2650
+    },
+    {
+      "path": "testing/integration/db_helper.go",
+      "sha256": "f0d0b58874d003578881c8baa2eff1131cd7d024f34da111e2cd548d778d708b",
+      "bytes": 2128
+    },
+    {
+      "path": "testing/integration/postgres_concurrency_test.go",
+      "sha256": "b384ee16b3f420b6858574182656e1febcda1ea26981e77adf7371decf5adb02",
+      "bytes": 15262
+    }
+  ]
+}

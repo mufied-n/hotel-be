@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/hotel-booking/internal/api"
+	"github.com/example/hotel-booking/internal/api/http"
 	"github.com/example/hotel-booking/internal/booking"
 )
 
@@ -18,7 +18,7 @@ import (
 func TestRealDB_IdempotencyReserveAtomic(t *testing.T) {
 	pool := GetTestPool(t)
 	ResetTestData(t, pool)
-	store := api.NewPostgresIdempotencyStore(pool)
+	store := http.NewPostgresIdempotencyStore(pool)
 	ctx := context.Background()
 
 	var acquired int32
@@ -50,7 +50,7 @@ func TestRealDB_IdempotencyReserveAtomic(t *testing.T) {
 		t.Fatalf("expected in-progress record, got ok=%v inProgress=%v err=%v", ok, rec.InProgress(), err)
 	}
 
-	if err := store.Complete(ctx, api.IdempotencyRecord{
+	if err := store.Complete(ctx, http.IdempotencyRecord{
 		Key: "idem-par", RequestHash: "hash-a", ResponseCode: 201, ResponseBody: `{"ok":true}`,
 		ExpiresAt: time.Now().Add(time.Hour),
 	}); err != nil {

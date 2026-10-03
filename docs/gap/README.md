@@ -1,4 +1,23 @@
-# Register gap backend — parity booking PULANG
+# Register gap backend — review ulang 3 Oktober 2026
+
+**Mulai dari [hasil review ulang](07-backend-reaudit-2026-10-03.md).** Source terbaru sudah memiliki banyak perbaikan dan route OTP/session/Booking Saya. Register BE-G01–BE-G22 di bawah adalah **snapshot audit awal**, bukan status aktif seluruh temuan. Matriks status terbaru, 18 temuan BE-R, cakupan F01–F15 dan batas bukti tersedia pada dokumen baru.
+
+- [Register review ulang dan status audit lama](07-backend-reaudit-2026-10-03.md).
+- [Keamanan, akses tamu dan sesi](08-security-and-guest-session-reaudit-2026-10-03.md).
+- [Checkout, pricing dan kebijakan](09-checkout-pricing-and-policy-reaudit-2026-10-03.md).
+- [Pembayaran, recovery dan provider](10-payment-recovery-and-provider-reaudit-2026-10-03.md).
+- [Roadmap F01–F15, bukti pengujian dan handoff FE](11-roadmap-coverage-and-verification-reaudit-2026-10-03.md).
+- [Delta review commit finance, housekeeping, front desk dan stay](12-post-commit-delta-review-2026-10-03.md).
+- [Audit ulang komprehensif sistem backend dan penutupan gap (4 Oktober 2026)](13-full-system-reaudit-2026-10-04.md).
+- [Manifest snapshot baru](source-manifest-reaudit-2026-10-03.json). Manifest lama tetap dipertahankan untuk provenance audit awal.
+
+Review ulang tidak mengubah source backend, schema atau frontend. Rekomendasi/acceptance belum merupakan implementasi atau hasil test baru.
+
+---
+
+## Arsip laporan baseline awal
+
+### Register baseline — parity booking PULANG
 
 Tanggal: 3 Oktober 2026. Kesimpulan: backend adalah fondasi demonstrasi modular monolith yang layak dilanjutkan, **belum sesuai untuk replacement live Book Secure**. UI Nuxt 4 dapat dimulai dengan fixture terpisah; pembayaran dan stok live diblokir sampai gate backend terpenuhi.
 

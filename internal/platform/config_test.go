@@ -199,6 +199,16 @@ func TestConfig_Validate(t *testing.T) {
 			modify:  func(c *Config) { c.ResendAPIKey = "" },
 			wantErr: true,
 		},
+		{
+			name:    "wildcard in CORSAllowedOrigins is rejected",
+			modify:  func(c *Config) { c.CORSAllowedOrigins = []string{"https://example.com", "*"} },
+			wantErr: true,
+		},
+		{
+			name:    "valid explicit CORS origins accepted",
+			modify:  func(c *Config) { c.CORSAllowedOrigins = []string{"https://hotel.example.com", "https://admin.example.com"} },
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -20,7 +20,7 @@ import (
 
 	"github.com/example/hotel-booking/internal/adapter/notifier"
 	"github.com/example/hotel-booking/internal/adapter/payment"
-	"github.com/example/hotel-booking/internal/api"
+	apihttp "github.com/example/hotel-booking/internal/api/http"
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
@@ -285,29 +285,47 @@ func main() {
 		resendNotifier.SetFeatureFlag(ffManager)
 	}
 
+	// ---- Domain Wiring & Composition Root (FR-01) ----
+	rateEngine.SetBaseRateSource(catalogStore)
+	bkSvc.SetQuoteStore(rateEngine.QuoteStore())
+	bkSvc.SetCatalogStore(catalogStore)
+
+	// ---- HTTP Mode & Rate Limiting ----
+	if cfg.IsProduction() {
+		gin.SetMode(gin.ReleaseMode)
+	} else {
+		gin.SetMode(gin.DebugMode)
+	}
+
+	authRateLimiter := apihttp.NewRateLimiter(5.0/60, 10) // 5 req/min, burst 10 (FR-23)
+
 	// ---- HTTP ----
-	handler := api.NewRouter(api.Deps{
-		BookingSvc:       bkSvc,
-		InvStore:         invStore,
-		RateSvc:          rateEngine,
-		RateEngine:       rateEngine,
-		QuoteStore:       rateEngine.QuoteStore(),
-		CatalogStore:     catalogStore,
-		Enqueuer:         enqueuer,
-		Enforcer:         enforcer,
-		IdempotencyStore: api.NewPostgresIdempotencyStore(pool),
-		StaffAuth:        staffSvc,
-		IsDevelopment:    cfg.IsDevelopment(),
-		RateLimiter:      api.NewRateLimiter(20, 40), // 20 req/s, burst 40
-		XenditGateway:    xenditGw,
-		GuestSvc:         guestSvc,
-		FinanceSvc:       financeSvc,
-		HousekeepingSvc:  housekeepingSvc,
-		FrontDeskSvc:     frontdeskSvc,
-		StaySvc:          staySvc,
-		AssistanceSvc:    assistanceSvc,
-		FeatureFlag:      ffManager,
-		NotifierMode:     notifierMode,
+	handler := apihttp.NewRouter(apihttp.Deps{
+		BookingSvc:          bkSvc,
+		InvStore:            invStore,
+		RateSvc:             rateEngine,
+		RateEngine:          rateEngine,
+		QuoteStore:          rateEngine.QuoteStore(),
+		CatalogStore:        catalogStore,
+		Enqueuer:            enqueuer,
+		Enforcer:            enforcer,
+		IdempotencyStore:    apihttp.NewPostgresIdempotencyStore(pool),
+		StaffAuth:           staffSvc,
+		IsDevelopment:       cfg.IsDevelopment(),
+		RateLimiter:         apihttp.NewRateLimiter(20, 40), // 20 req/s, burst 40
+		AuthRateLimiter:     authRateLimiter,
+		SkipRateLimitRoutes: []string{"/healthz", "/ready"},
+		TrustedProxies:      cfg.TrustedProxies,
+		CORSOrigins:         cfg.CORSAllowedOrigins,
+		XenditGateway:       xenditGw,
+		GuestSvc:            guestSvc,
+		FinanceSvc:          financeSvc,
+		HousekeepingSvc:     housekeepingSvc,
+		FrontDeskSvc:        frontdeskSvc,
+		StaySvc:             staySvc,
+		AssistanceSvc:       assistanceSvc,
+		FeatureFlag:         ffManager,
+		NotifierMode:        notifierMode,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

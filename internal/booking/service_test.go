@@ -1655,6 +1655,14 @@ func (f *fakeCatalogReader) GetVariant(_ context.Context, idOrCode string) (cata
 	return v, nil
 }
 
+func (f *fakeCatalogReader) ListVariants(_ context.Context) ([]catalog.RoomVariant, error) {
+	out := make([]catalog.RoomVariant, 0, len(f.variants))
+	for _, v := range f.variants {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
 func TestServiceCreate_CatalogCapacityInvariant(t *testing.T) {
 	fakeCat := &fakeCatalogReader{
 		variants: map[string]catalog.RoomVariant{

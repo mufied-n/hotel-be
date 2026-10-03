@@ -136,9 +136,14 @@ type EventPublisher interface {
 
 // PaymentEvent adalah hasil verifikasi webhook pembayaran (bahasa domain).
 type PaymentEvent struct {
-	BookingID string
-	Succeeded bool
-	Reference string
+	BookingID  string
+	Succeeded  bool
+	Reference  string
+	ExternalID string
+	ID         string
+	Status     string
+	Amount     int64
+	Currency   string
 }
 
 // ErrNotFound diembalikan bila booking tidak ditemukan.
@@ -243,6 +248,21 @@ var ErrPaymentDefinitiveFailure = errors.New("booking: payment gateway definitiv
 
 // ErrPaymentRecoveryNotPending dikembalikan saat pemulihan pembayaran diminta untuk booking yang bukan pending (BE-R15).
 var ErrPaymentRecoveryNotPending = errors.New("booking: payment recovery only available for pending bookings")
+
+// ErrPaymentAmountMismatch dikembalikan saat nominal event pembayaran tidak cocok dengan total booking (BE-R14, FR-15).
+var ErrPaymentAmountMismatch = errors.New("booking: payment amount mismatch")
+
+// ErrPaymentCurrencyMismatch dikembalikan saat mata uang event pembayaran tidak cocok dengan booking (BE-R14, FR-15).
+var ErrPaymentCurrencyMismatch = errors.New("booking: payment currency mismatch")
+
+// ErrInvoiceMismatch dikembalikan saat invoice ID tidak cocok dengan attempt yang tercatat di ledger (BE-R14, FR-15).
+var ErrInvoiceMismatch = errors.New("booking: invoice ID does not match recorded payment attempt")
+
+// ErrCatalogUnavailable dikembalikan saat layanan katalog kamar tidak dapat diakses (FR-14).
+var ErrCatalogUnavailable = errors.New("booking: catalog unavailable")
+
+// ErrInventoryUnavailable dikembalikan saat layanan inventori kamar tidak dapat diakses (FR-14).
+var ErrInventoryUnavailable = errors.New("booking: inventory unavailable")
 
 // PaymentRecovery merangkum informasi pemulihan tautan pembayaran untuk sesi aktif (BE-R15).
 type PaymentRecovery struct {

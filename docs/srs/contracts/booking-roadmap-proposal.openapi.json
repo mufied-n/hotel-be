@@ -1,0 +1,6688 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "PULANG booking roadmap — target contract proposal",
+    "version": "0.1.0-proposal",
+    "description": "PROPOSED, not implemented or approved. Existing Batch C/catalog/RBAC owner contracts retained. Provider event payloads are canonical adapter examples pending provider review. No live requests."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4010/api/v1",
+      "description": "Local mock only"
+    }
+  ],
+  "tags": [
+    {
+      "name": "F01",
+      "description": "Kelengkapan alur booking dan reset sesi"
+    },
+    {
+      "name": "F02",
+      "description": "Akses tamu, verifikasi kepemilikan dan sesi"
+    },
+    {
+      "name": "F03",
+      "description": "Booking Saya dan detail reservasi privat"
+    },
+    {
+      "name": "F04",
+      "description": "Konfirmasi, bukti booking dan kalender"
+    },
+    {
+      "name": "F05",
+      "description": "Hosted payment, hold dan pemulihan pembayaran"
+    },
+    {
+      "name": "F06",
+      "description": "Bantuan tamu, perubahan dan pembatalan"
+    },
+    {
+      "name": "F07",
+      "description": "Resepsionis, assignment kamar dan lifecycle menginap"
+    },
+    {
+      "name": "F08",
+      "description": "Katalog, stok harian dan kamar maintenance"
+    },
+    {
+      "name": "F09",
+      "description": "Manajemen tarif, paket dan promo"
+    },
+    {
+      "name": "F10",
+      "description": "Sinkronisasi kanal dan pencegahan overselling"
+    },
+    {
+      "name": "F11",
+      "description": "Notifikasi booking, payment dan operasional"
+    },
+    {
+      "name": "F12",
+      "description": "Identitas staff, izin dan audit perubahan"
+    },
+    {
+      "name": "F13",
+      "description": "Konfigurasi hotel dan publikasi kebijakan"
+    },
+    {
+      "name": "F14",
+      "description": "Rekonsiliasi pembayaran, late payment dan refund"
+    }
+  ],
+  "paths": {
+    "/booking-searches": {
+      "post": {
+        "operationId": "F01_1",
+        "summary": "Kelengkapan alur booking dan reset sesi — POST /booking-searches",
+        "description": "PROPOSAL. See SRS F01-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F01"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-cache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F01_1Response"
+                },
+                "example": {
+                  "search_id": "search-example",
+                  "data": [
+                    {
+                      "variant_id": "variant-example",
+                      "available": true
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F01_1Request"
+              },
+              "example": {
+                "check_in": "2026-10-10",
+                "check_out": "2026-10-12",
+                "rooms": [
+                  {
+                    "room_index": 0,
+                    "adults": 2,
+                    "children_ages": []
+                  }
+                ],
+                "currency": "IDR"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings": {
+      "post": {
+        "operationId": "F01_2",
+        "summary": "Kelengkapan alur booking dan reset sesi — POST /bookings",
+        "description": "PROPOSAL. See SRS F01-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review. Existing Batch D owner key length1–64 preserved; nested guest request and response naming target extension require amendment.",
+        "tags": [
+          "F01"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F01_2Response"
+                },
+                "example": {
+                  "booking_id": "booking-example",
+                  "status": "pending",
+                  "payment_status": "pending",
+                  "hold_expires_at": "2026-10-03T03:30:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F01_2Request"
+              },
+              "example": {
+                "quote_id": "quote-example",
+                "guest": {
+                  "name": "Tamu Contoh",
+                  "email": "guest@example.test"
+                },
+                "special_request": "",
+                "terms_accepted": true,
+                "privacy_accepted": true,
+                "policy_version": "policy-v1"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest-access-challenges": {
+      "post": {
+        "operationId": "F02_1",
+        "summary": "Akses tamu, verifikasi kepemilikan dan sesi — POST /guest-access-challenges",
+        "description": "PROPOSAL. See SRS F02-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F02"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-cache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F02_1Response"
+                },
+                "example": {
+                  "challenge_id": "challenge-example",
+                  "state": "accepted",
+                  "resend_after_seconds": 60
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F02_1Request"
+              },
+              "example": {
+                "email": "guest@example.test"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest-sessions": {
+      "post": {
+        "operationId": "F02_2",
+        "summary": "Akses tamu, verifikasi kepemilikan dan sesi — POST /guest-sessions",
+        "description": "PROPOSAL. See SRS F02-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F02"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-cache"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F02_2Response"
+                },
+                "example": {
+                  "session_id": "session-example",
+                  "expires_at": "2026-10-03T04:00:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F02_2Request"
+              },
+              "example": {
+                "challenge_id": "challenge-example",
+                "verification_code": "123456"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest-sessions/current": {
+      "delete": {
+        "operationId": "F02_3",
+        "summary": "Akses tamu, verifikasi kepemilikan dan sesi — DELETE /guest-sessions/current",
+        "description": "PROPOSAL. See SRS F02-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F02"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session revoked; no response body",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/guest/bookings": {
+      "get": {
+        "operationId": "F03_1",
+        "summary": "Booking Saya dan detail reservasi privat — GET /guest/bookings",
+        "description": "PROPOSAL. See SRS F03-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F03"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F03_1Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "booking_id": "booking-example",
+                      "reference": "PKU-EXAMPLE",
+                      "status": "confirmed",
+                      "check_in": "2026-10-10",
+                      "check_out": "2026-10-12"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/guest/bookings/{booking_id}": {
+      "get": {
+        "operationId": "F03_2",
+        "summary": "Booking Saya dan detail reservasi privat — GET /guest/bookings/{booking_id}",
+        "description": "PROPOSAL. See SRS F03-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F03"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F03_2Response"
+                },
+                "example": {
+                  "booking_id": "booking-example",
+                  "status": "confirmed",
+                  "payment_status": "paid",
+                  "policy_version": "policy-v1",
+                  "allowed_actions": [
+                    "download_confirmation",
+                    "request_assistance"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/guest/bookings/{booking_id}/artifacts": {
+      "post": {
+        "operationId": "F04_1",
+        "summary": "Konfirmasi, bukti booking dan kalender — POST /guest/bookings/{booking_id}/artifacts",
+        "description": "PROPOSAL. See SRS F04-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F04"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F04_1Response"
+                },
+                "example": {
+                  "artifact_id": "artifact-example",
+                  "state": "queued"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F04_1Request"
+              },
+              "example": {
+                "format": "pdf",
+                "language": "id"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest/booking-artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "F04_2",
+        "summary": "Konfirmasi, bukti booking dan kalender — GET /guest/booking-artifacts/{artifact_id}",
+        "description": "PROPOSAL. See SRS F04-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F04"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F04_2Response"
+                },
+                "example": {
+                  "artifact_id": "artifact-example",
+                  "state": "ready",
+                  "content_type": "application/pdf",
+                  "download_path": "/api/v1/guest/booking-artifacts/artifact-example/content"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/guest/booking-artifacts/{artifact_id}/content": {
+      "get": {
+        "operationId": "F04_3",
+        "summary": "Konfirmasi, bukti booking dan kalender — GET /guest/booking-artifacts/{artifact_id}/content",
+        "description": "PROPOSAL. See SRS F04-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F04"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "artifact_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/calendar": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/guest/bookings/{booking_id}/payment-attempts": {
+      "post": {
+        "operationId": "F05_1",
+        "summary": "Hosted payment, hold dan pemulihan pembayaran — POST /guest/bookings/{booking_id}/payment-attempts",
+        "description": "PROPOSAL. See SRS F05-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F05"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F05_1Response"
+                },
+                "example": {
+                  "attempt_id": "attempt-example",
+                  "status": "pending",
+                  "hosted_url": "https://payments.example.test/attempt-example",
+                  "expires_at": "2026-10-03T03:30:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F05_1Request"
+              },
+              "example": {
+                "return_path": "/guest/bookings/booking-example"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest/bookings/{booking_id}/payment-status": {
+      "get": {
+        "operationId": "F05_2",
+        "summary": "Hosted payment, hold dan pemulihan pembayaran — GET /guest/bookings/{booking_id}/payment-status",
+        "description": "PROPOSAL. See SRS F05-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F05"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F05_2Response"
+                },
+                "example": {
+                  "booking_status": "pending",
+                  "payment_status": "processing",
+                  "server_time": "2026-10-03T03:05:00Z",
+                  "hold_expires_at": "2026-10-03T03:30:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/payment-events": {
+      "post": {
+        "operationId": "F05_3",
+        "summary": "Hosted payment, hold dan pemulihan pembayaran — POST /payment-events",
+        "description": "PROPOSAL. See SRS F05-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F05"
+        ],
+        "security": [
+          {
+            "ProviderSignature": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F05_3Response"
+                },
+                "example": {
+                  "event_id": "provider-event-example",
+                  "state": "accepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F05_3Request"
+              },
+              "example": {
+                "event_id": "provider-event-example",
+                "provider_reference": "provider-reference-example",
+                "state": "paid",
+                "amount": 1131500,
+                "currency": "IDR"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/guest/bookings/{booking_id}/service-requests": {
+      "post": {
+        "operationId": "F06_1",
+        "summary": "Bantuan tamu, perubahan dan pembatalan — POST /guest/bookings/{booking_id}/service-requests",
+        "description": "PROPOSAL. See SRS F06-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F06"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F06_1Response"
+                },
+                "example": {
+                  "request_id": "request-example",
+                  "state": "received"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F06_1Request"
+              },
+              "example": {
+                "kind": "assistance",
+                "message": "Mohon bantuan detail arrival."
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "F06_2",
+        "summary": "Bantuan tamu, perubahan dan pembatalan — GET /guest/bookings/{booking_id}/service-requests",
+        "description": "PROPOSAL. See SRS F06-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F06"
+        ],
+        "security": [
+          {
+            "GuestSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F06_2Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "request_id": "request-example",
+                      "state": "received",
+                      "kind": "assistance"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/service-requests/{request_id}": {
+      "patch": {
+        "operationId": "F06_3",
+        "summary": "Bantuan tamu, perubahan dan pembatalan — PATCH /staff/service-requests/{request_id}",
+        "description": "PROPOSAL. See SRS F06-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F06"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F06_3Response"
+                },
+                "example": {
+                  "request_id": "request-example",
+                  "state": "under_review",
+                  "version": 2
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F06_3Request"
+              },
+              "example": {
+                "expected_version": 1,
+                "state": "under_review",
+                "reply": "Sedang ditinjau.",
+                "reason": "Triage tamu"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/reservations": {
+      "get": {
+        "operationId": "F07_1",
+        "summary": "Resepsionis, assignment kamar dan lifecycle menginap — GET /staff/reservations",
+        "description": "PROPOSAL. See SRS F07-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F07"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F07_1Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "booking_id": "booking-example",
+                      "status": "confirmed",
+                      "arrival": "2026-10-10"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/reservations/{booking_id}/room-assignments": {
+      "post": {
+        "operationId": "F07_2",
+        "summary": "Resepsionis, assignment kamar dan lifecycle menginap — POST /staff/reservations/{booking_id}/room-assignments",
+        "description": "PROPOSAL. See SRS F07-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F07"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F07_2Response"
+                },
+                "example": {
+                  "assignment_id": "assignment-example",
+                  "version": 2
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F07_2Request"
+              },
+              "example": {
+                "expected_version": 1,
+                "room_ids": [
+                  "physical-room-example"
+                ],
+                "reason": "Arrival assignment"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/reservations/{booking_id}/stay-events": {
+      "post": {
+        "operationId": "F07_3",
+        "summary": "Resepsionis, assignment kamar dan lifecycle menginap — POST /staff/reservations/{booking_id}/stay-events",
+        "description": "PROPOSAL. See SRS F07-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F07"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "booking_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F07_3Response"
+                },
+                "example": {
+                  "event_id": "stay-event-example",
+                  "status": "checked_in",
+                  "version": 3
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F07_3Request"
+              },
+              "example": {
+                "expected_version": 2,
+                "kind": "check_in",
+                "reason": "Guest arrived"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/inventory-availability": {
+      "get": {
+        "operationId": "F08_1",
+        "summary": "Katalog, stok harian dan kamar maintenance — GET /inventory-availability",
+        "description": "PROPOSAL. See SRS F08-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F08"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "check_in",
+            "in": "query",
+            "required": true,
+            "description": "Hotel DateOnly; checkout exclusive",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "check_out",
+            "in": "query",
+            "required": true,
+            "description": "Hotel DateOnly; checkout exclusive",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "rooms",
+            "in": "query",
+            "required": true,
+            "description": "Room quantity; occupancy supplied by booking search for full sellability",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-cache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F08_1Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "variant_id": "variant-example",
+                      "available_rooms": 1
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/maintenance-blocks": {
+      "post": {
+        "operationId": "F08_2",
+        "summary": "Katalog, stok harian dan kamar maintenance — POST /staff/maintenance-blocks",
+        "description": "PROPOSAL. See SRS F08-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F08"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F08_2Response"
+                },
+                "example": {
+                  "block_id": "block-example",
+                  "state": "planned",
+                  "version": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F08_2Request"
+              },
+              "example": {
+                "room_id": "physical-room-example",
+                "start_date": "2026-10-10",
+                "end_date": "2026-10-12",
+                "reason": "Perawatan"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/inventory-adjustments": {
+      "post": {
+        "operationId": "F08_3",
+        "summary": "Katalog, stok harian dan kamar maintenance — POST /staff/inventory-adjustments",
+        "description": "PROPOSAL. See SRS F08-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F08"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F08_3Response"
+                },
+                "example": {
+                  "adjustment_id": "adjustment-example",
+                  "version": 2
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F08_3Request"
+              },
+              "example": {
+                "variant_id": "variant-example",
+                "date": "2026-10-10",
+                "delta": 1,
+                "expected_version": 1,
+                "reason": "Owner allocation correction"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/rate-plans": {
+      "post": {
+        "operationId": "F09_1",
+        "summary": "Manajemen tarif, paket dan promo — POST /staff/rate-plans",
+        "description": "PROPOSAL. See SRS F09-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F09"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F09_1Response"
+                },
+                "example": {
+                  "rate_plan_id": "plan-example",
+                  "state": "draft",
+                  "version": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F09_1Request"
+              },
+              "example": {
+                "code": "plan-example",
+                "variant_ids": [
+                  "variant-example"
+                ],
+                "name": "Paket Contoh",
+                "policy_version": "policy-v1",
+                "breakfast_included": true
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "F09_3",
+        "summary": "Manajemen tarif, paket dan promo — GET /staff/rate-plans",
+        "description": "PROPOSAL. See SRS F09-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F09"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F09_3Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "rate_plan_id": "plan-example",
+                      "state": "draft"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/promotions": {
+      "post": {
+        "operationId": "F09_2",
+        "summary": "Manajemen tarif, paket dan promo — POST /staff/promotions",
+        "description": "PROPOSAL. See SRS F09-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F09"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F09_2Response"
+                },
+                "example": {
+                  "promotion_id": "promotion-example",
+                  "state": "draft",
+                  "version": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F09_2Request"
+              },
+              "example": {
+                "code": "PROMO-EXAMPLE",
+                "discount_basis_points": 1500,
+                "starts_at": "2026-10-10T00:00:00+07:00",
+                "ends_at": "2026-10-20T00:00:00+07:00",
+                "rate_plan_ids": [
+                  "plan-example"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channel-events": {
+      "post": {
+        "operationId": "F10_1",
+        "summary": "Sinkronisasi kanal dan pencegahan overselling — POST /channel-events",
+        "description": "PROPOSAL. See SRS F10-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F10"
+        ],
+        "security": [
+          {
+            "ProviderSignature": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F10_1Response"
+                },
+                "example": {
+                  "event_id": "external-event-example",
+                  "state": "accepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F10_1Request"
+              },
+              "example": {
+                "provider": "provider-example",
+                "event_id": "external-event-example",
+                "revision": 1,
+                "kind": "reservation_created",
+                "external_reference": "external-booking-example",
+                "variant_code": "mapped-variant",
+                "check_in": "2026-10-10",
+                "check_out": "2026-10-12",
+                "rooms": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/channel-sync-issues": {
+      "get": {
+        "operationId": "F10_2",
+        "summary": "Sinkronisasi kanal dan pencegahan overselling — GET /staff/channel-sync-issues",
+        "description": "PROPOSAL. See SRS F10-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F10"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F10_2Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "issue_id": "issue-example",
+                      "kind": "unmapped_variant",
+                      "state": "open"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/channel-reconciliations": {
+      "post": {
+        "operationId": "F10_3",
+        "summary": "Sinkronisasi kanal dan pencegahan overselling — POST /staff/channel-reconciliations",
+        "description": "PROPOSAL. See SRS F10-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F10"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F10_3Response"
+                },
+                "example": {
+                  "run_id": "channel-run-example",
+                  "state": "queued"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F10_3Request"
+              },
+              "example": {
+                "provider": "provider-example",
+                "date_from": "2026-10-10",
+                "date_to": "2026-10-12"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/notification-deliveries": {
+      "get": {
+        "operationId": "F11_1",
+        "summary": "Notifikasi booking, payment dan operasional — GET /staff/notification-deliveries",
+        "description": "PROPOSAL. See SRS F11-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F11"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F11_1Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "delivery_id": "delivery-example",
+                      "state": "failed",
+                      "channel": "email"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/notification-deliveries/{delivery_id}/redrives": {
+      "post": {
+        "operationId": "F11_2",
+        "summary": "Notifikasi booking, payment dan operasional — POST /staff/notification-deliveries/{delivery_id}/redrives",
+        "description": "PROPOSAL. See SRS F11-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F11"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F11_2Response"
+                },
+                "example": {
+                  "redrive_id": "redrive-example",
+                  "state": "queued"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F11_2Request"
+              },
+              "example": {
+                "reason": "Provider restored"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notification-events": {
+      "post": {
+        "operationId": "F11_3",
+        "summary": "Notifikasi booking, payment dan operasional — POST /notification-events",
+        "description": "PROPOSAL. See SRS F11-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F11"
+        ],
+        "security": [
+          {
+            "ProviderSignature": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F11_3Response"
+                },
+                "example": {
+                  "event_id": "delivery-event-example",
+                  "state": "accepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F11_3Request"
+              },
+              "example": {
+                "event_id": "delivery-event-example",
+                "provider_reference": "delivery-provider-example",
+                "state": "delivered"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/session": {
+      "get": {
+        "operationId": "F12_1",
+        "summary": "Identitas staff, izin dan audit perubahan — GET /staff/session",
+        "description": "PROPOSAL. See SRS F12-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F12"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F12_1Response"
+                },
+                "example": {
+                  "staff_id": "staff-example",
+                  "active": true,
+                  "permissions": [
+                    "reservations.read"
+                  ],
+                  "property_id": "property-example"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/users/{staff_id}/role-assignments": {
+      "patch": {
+        "operationId": "F12_2",
+        "summary": "Identitas staff, izin dan audit perubahan — PATCH /staff/users/{staff_id}/role-assignments",
+        "description": "PROPOSAL. See SRS F12-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F12"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "staff_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F12_2Response"
+                },
+                "example": {
+                  "staff_id": "staff-example",
+                  "roles": [
+                    "receptionist"
+                  ],
+                  "version": 2
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F12_2Request"
+              },
+              "example": {
+                "expected_version": 1,
+                "roles": [
+                  "receptionist"
+                ],
+                "reason": "Approved duty assignment"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/audit-events": {
+      "get": {
+        "operationId": "F12_3",
+        "summary": "Identitas staff, izin dan audit perubahan — GET /staff/audit-events",
+        "description": "PROPOSAL. See SRS F12-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F12"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F12_3Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "event_id": "audit-example",
+                      "actor_id": "staff-example",
+                      "action": "reservation.check_in",
+                      "resource_id": "booking-example",
+                      "occurred_at": "2026-10-03T03:00:00Z"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/hotel": {
+      "get": {
+        "operationId": "F13_1",
+        "summary": "Konfigurasi hotel dan publikasi kebijakan — GET /hotel",
+        "description": "PROPOSAL. See SRS F13-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F13"
+        ],
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-cache"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F13_1Response"
+                },
+                "example": {
+                  "name": "PULANG ke UTTARA",
+                  "timezone": "Asia/Jakarta",
+                  "check_in_time": "15:00",
+                  "check_out_time": "12:00",
+                  "policy_version": "policy-v1"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/policy-versions": {
+      "post": {
+        "operationId": "F13_2",
+        "summary": "Konfigurasi hotel dan publikasi kebijakan — POST /staff/policy-versions",
+        "description": "PROPOSAL. See SRS F13-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F13"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F13_2Response"
+                },
+                "example": {
+                  "policy_version_id": "policy-v2",
+                  "state": "draft",
+                  "version": 1
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F13_2Request"
+              },
+              "example": {
+                "kind": "booking_terms",
+                "content": "Teks contoh untuk review owner.",
+                "effective_at": "2026-10-10T00:00:00+07:00"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/policy-versions/{policy_version_id}/publications": {
+      "post": {
+        "operationId": "F13_3",
+        "summary": "Konfigurasi hotel dan publikasi kebijakan — POST /staff/policy-versions/{policy_version_id}/publications",
+        "description": "PROPOSAL. See SRS F13-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F13"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "policy_version_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              },
+              "Location": {
+                "description": "Created resource URI",
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F13_3Response"
+                },
+                "example": {
+                  "publication_id": "publication-example",
+                  "state": "scheduled"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F13_3Request"
+              },
+              "example": {
+                "expected_version": 1,
+                "reason": "Hotel approved publication"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/payment-reconciliations": {
+      "post": {
+        "operationId": "F14_1",
+        "summary": "Rekonsiliasi pembayaran, late payment dan refund — POST /staff/payment-reconciliations",
+        "description": "PROPOSAL. See SRS F14-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F14"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F14_1Response"
+                },
+                "example": {
+                  "run_id": "reconciliation-example",
+                  "state": "queued"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F14_1Request"
+              },
+              "example": {
+                "provider": "provider-example",
+                "date_from": "2026-10-01",
+                "date_to": "2026-10-03"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/staff/payment-cases": {
+      "get": {
+        "operationId": "F14_2",
+        "summary": "Rekonsiliasi pembayaran, late payment dan refund — GET /staff/payment-cases",
+        "description": "PROPOSAL. See SRS F14-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F14"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque owner/filter-bound cursor",
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Bounded page size proposal",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful authoritative resource view",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F14_2Response"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "case_id": "case-example",
+                      "kind": "late_payment",
+                      "state": "open"
+                    }
+                  ],
+                  "pagination": {
+                    "next_cursor": null,
+                    "has_more": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/staff/payment-cases/{case_id}/refunds": {
+      "post": {
+        "operationId": "F14_3",
+        "summary": "Rekonsiliasi pembayaran, late payment dan refund — POST /staff/payment-cases/{case_id}/refunds",
+        "description": "PROPOSAL. See SRS F14-FR and shared decisions C01–C13. Existing endpoints require compatibility/owner review.",
+        "tags": [
+          "F14"
+        ],
+        "security": [
+          {
+            "StaffSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "description": "Opaque resource ID; authority checked server",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Actor/resource scoped durable replay key; altered payload409",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF mechanism proposal paired with verified cookie session",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted, not completed",
+            "headers": {
+              "Cache-Control": {
+                "description": "Private data no-store",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "no-store"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/F14_3Response"
+                },
+                "example": {
+                  "refund_id": "refund-example",
+                  "state": "requested"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/F14_3Request"
+              },
+              "example": {
+                "expected_version": 1,
+                "amount": {
+                  "amount": 1131500,
+                  "currency": "IDR",
+                  "exponent": 0
+                },
+                "reason": "Approved late payment resolution"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "GuestSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pulang_guest_session",
+        "description": "Proposal session cookie; trusted ownership and CSRF checks required."
+      },
+      "StaffSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pulang_staff_session",
+        "description": "Verified staff identity, active permission/property scope; CSRF required."
+      },
+      "ProviderSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Provider-Signature",
+        "description": "ABSTRACT signing header. Provider-specific algorithm/raw payload/timestamp verification not final."
+      }
+    },
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "request_id",
+          "retryable"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "field",
+                "message"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "F01_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "check_in",
+          "check_out",
+          "rooms",
+          "currency"
+        ],
+        "properties": {
+          "check_in": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "rooms": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "room_index",
+                "adults",
+                "children_ages"
+              ],
+              "properties": {
+                "room_index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "adults": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4
+                },
+                "children_ages": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 17
+                  },
+                  "maxItems": 3
+                }
+              }
+            },
+            "maxItems": 4
+          },
+          "currency": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F01_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "search_id",
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "search_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "variant_id",
+                "available"
+              ],
+              "properties": {
+                "variant_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "available": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F01_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "quote_id",
+          "guest",
+          "special_request",
+          "terms_accepted",
+          "privacy_accepted",
+          "policy_version"
+        ],
+        "properties": {
+          "quote_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "guest": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "email"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "email": {
+                "type": "string",
+                "maxLength": 512,
+                "format": "email"
+              }
+            }
+          },
+          "special_request": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "terms_accepted": {
+            "type": "boolean"
+          },
+          "privacy_accepted": {
+            "type": "boolean"
+          },
+          "policy_version": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F01_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "booking_id",
+          "status",
+          "payment_status",
+          "hold_expires_at"
+        ],
+        "properties": {
+          "booking_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "payment_status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "hold_expires_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          }
+        }
+      },
+      "F02_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "email"
+          }
+        }
+      },
+      "F02_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "challenge_id",
+          "state",
+          "resend_after_seconds"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "resend_after_seconds": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F02_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "challenge_id",
+          "verification_code"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "verification_code": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^[0-9]{6}$",
+            "description": "OTP fixture example only; final method/length decided F02."
+          }
+        }
+      },
+      "F02_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "session_id",
+          "expires_at"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "expires_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          }
+        }
+      },
+      "F03_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "booking_id",
+                "reference",
+                "status",
+                "check_in",
+                "check_out"
+              ],
+              "properties": {
+                "booking_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "reference": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "check_in": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "format": "date"
+                },
+                "check_out": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "format": "date"
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F03_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "booking_id",
+          "status",
+          "payment_status",
+          "policy_version",
+          "allowed_actions"
+        ],
+        "properties": {
+          "booking_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "payment_status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "policy_version": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "allowed_actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          }
+        }
+      },
+      "F04_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "format",
+          "language"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F04_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "state"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F04_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "state",
+          "content_type",
+          "download_path"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "download_path": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F05_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "return_path"
+        ],
+        "properties": {
+          "return_path": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F05_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attempt_id",
+          "status",
+          "hosted_url",
+          "expires_at"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "hosted_url": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "uri"
+          },
+          "expires_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          }
+        }
+      },
+      "F05_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "booking_status",
+          "payment_status",
+          "server_time",
+          "hold_expires_at"
+        ],
+        "properties": {
+          "booking_status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "payment_status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "server_time": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          },
+          "hold_expires_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          }
+        }
+      },
+      "F05_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "provider_reference",
+          "state",
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "provider_reference": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F05_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "state"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F06_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F06_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "state"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F06_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "request_id",
+                "state",
+                "kind"
+              ],
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "state": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "kind": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F06_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "state",
+          "reply",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "reply": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F06_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "state",
+          "version"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F07_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "booking_id",
+                "status",
+                "arrival"
+              ],
+              "properties": {
+                "booking_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "status": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "arrival": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "format": "date"
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F07_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "room_ids",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "room_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F07_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "assignment_id",
+          "version"
+        ],
+        "properties": {
+          "assignment_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F07_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "kind",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F07_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "status",
+          "version"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F08_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "variant_id",
+                "available_rooms"
+              ],
+              "properties": {
+                "variant_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "available_rooms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F08_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "room_id",
+          "start_date",
+          "end_date",
+          "reason"
+        ],
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "start_date": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "end_date": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F08_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "block_id",
+          "state",
+          "version"
+        ],
+        "properties": {
+          "block_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F08_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "variant_id",
+          "date",
+          "delta",
+          "expected_version",
+          "reason"
+        ],
+        "properties": {
+          "variant_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "date": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "delta": {
+            "type": "integer"
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F08_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "adjustment_id",
+          "version"
+        ],
+        "properties": {
+          "adjustment_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F09_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "variant_ids",
+          "name",
+          "policy_version",
+          "breakfast_included"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "variant_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "policy_version": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "breakfast_included": {
+            "type": "boolean"
+          }
+        }
+      },
+      "F09_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rate_plan_id",
+          "state",
+          "version"
+        ],
+        "properties": {
+          "rate_plan_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F09_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "discount_basis_points",
+          "starts_at",
+          "ends_at",
+          "rate_plan_ids"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "discount_basis_points": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "starts_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          },
+          "ends_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          },
+          "rate_plan_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          }
+        }
+      },
+      "F09_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "promotion_id",
+          "state",
+          "version"
+        ],
+        "properties": {
+          "promotion_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F09_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rate_plan_id",
+                "state"
+              ],
+              "properties": {
+                "rate_plan_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "state": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F10_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "event_id",
+          "revision",
+          "kind",
+          "external_reference",
+          "variant_code",
+          "check_in",
+          "check_out",
+          "rooms"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "external_reference": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "variant_code": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "check_in": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "check_out": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "rooms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F10_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "state"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F10_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "issue_id",
+                "kind",
+                "state"
+              ],
+              "properties": {
+                "issue_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "kind": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "state": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F10_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "date_from",
+          "date_to"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "date_from": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "date_to": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          }
+        }
+      },
+      "F10_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "state"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F11_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "delivery_id",
+                "state",
+                "channel"
+              ],
+              "properties": {
+                "delivery_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "state": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "channel": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F11_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F11_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "redrive_id",
+          "state"
+        ],
+        "properties": {
+          "redrive_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F11_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "provider_reference",
+          "state"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "provider_reference": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F11_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "event_id",
+          "state"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F12_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "staff_id",
+          "active",
+          "permissions",
+          "property_id"
+        ],
+        "properties": {
+          "staff_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          },
+          "property_id": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F12_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "roles",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F12_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "staff_id",
+          "roles",
+          "version"
+        ],
+        "properties": {
+          "staff_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "maxItems": 100
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F12_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event_id",
+                "actor_id",
+                "action",
+                "resource_id",
+                "occurred_at"
+              ],
+              "properties": {
+                "event_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "actor_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "action": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "resource_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "occurred_at": {
+                  "type": "string",
+                  "maxLength": 512,
+                  "format": "date-time"
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F13_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "timezone",
+          "check_in_time",
+          "check_out_time",
+          "policy_version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "timezone": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "check_in_time": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "check_out_time": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "policy_version": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F13_2Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "content",
+          "effective_at"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "effective_at": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date-time"
+          }
+        }
+      },
+      "F13_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "policy_version_id",
+          "state",
+          "version"
+        ],
+        "properties": {
+          "policy_version_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "F13_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F13_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "publication_id",
+          "state"
+        ],
+        "properties": {
+          "publication_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F14_1Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "date_from",
+          "date_to"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "date_from": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          },
+          "date_to": {
+            "type": "string",
+            "maxLength": 512,
+            "format": "date"
+          }
+        }
+      },
+      "F14_1Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "state"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      },
+      "F14_2Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "case_id",
+                "kind",
+                "state"
+              ],
+              "properties": {
+                "case_id": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "kind": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "state": {
+                  "type": "string",
+                  "maxLength": 512
+                }
+              }
+            },
+            "maxItems": 100
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "next_cursor",
+              "has_more"
+            ],
+            "properties": {
+              "next_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              },
+              "has_more": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "F14_3Request": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_version",
+          "amount",
+          "reason"
+        ],
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "amount": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "amount",
+              "currency",
+              "exponent"
+            ],
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "currency": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "exponent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6
+              }
+            }
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "F14_3Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "refund_id",
+          "state"
+        ],
+        "properties": {
+          "refund_id": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "responses": {
+      "Error400": {
+        "description": "VALIDATION_ERROR",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/validation-error",
+              "title": "VALIDATION_ERROR",
+              "status": 400,
+              "code": "VALIDATION_ERROR",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error401": {
+        "description": "AUTHENTICATION_REQUIRED",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/authentication-required",
+              "title": "AUTHENTICATION_REQUIRED",
+              "status": 401,
+              "code": "AUTHENTICATION_REQUIRED",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error403": {
+        "description": "FORBIDDEN",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/forbidden",
+              "title": "FORBIDDEN",
+              "status": 403,
+              "code": "FORBIDDEN",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error404": {
+        "description": "RESOURCE_NOT_FOUND",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/resource-not-found",
+              "title": "RESOURCE_NOT_FOUND",
+              "status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error409": {
+        "description": "STATE_CONFLICT",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/state-conflict",
+              "title": "STATE_CONFLICT",
+              "status": 409,
+              "code": "STATE_CONFLICT",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error410": {
+        "description": "QUOTE_EXPIRED",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/quote-expired",
+              "title": "QUOTE_EXPIRED",
+              "status": 410,
+              "code": "QUOTE_EXPIRED",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error412": {
+        "description": "VERSION_CONFLICT",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/version-conflict",
+              "title": "VERSION_CONFLICT",
+              "status": 412,
+              "code": "VERSION_CONFLICT",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error413": {
+        "description": "PAYLOAD_TOO_LARGE",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/payload-too-large",
+              "title": "PAYLOAD_TOO_LARGE",
+              "status": 413,
+              "code": "PAYLOAD_TOO_LARGE",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error429": {
+        "description": "RATE_LIMITED",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/rate-limited",
+              "title": "RATE_LIMITED",
+              "status": 429,
+              "code": "RATE_LIMITED",
+              "request_id": "req-example",
+              "retryable": true
+            }
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds before bounded retry",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      },
+      "Error500": {
+        "description": "INTERNAL_ERROR",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/internal-error",
+              "title": "INTERNAL_ERROR",
+              "status": 500,
+              "code": "INTERNAL_ERROR",
+              "request_id": "req-example",
+              "retryable": false
+            }
+          }
+        }
+      },
+      "Error503": {
+        "description": "SERVICE_UNAVAILABLE",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            },
+            "example": {
+              "type": "/problems/service-unavailable",
+              "title": "SERVICE_UNAVAILABLE",
+              "status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "request_id": "req-example",
+              "retryable": true
+            }
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds before bounded retry",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

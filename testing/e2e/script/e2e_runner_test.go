@@ -7,16 +7,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/example/hotel-booking/internal/adapter/notifier"
 	"github.com/example/hotel-booking/internal/adapter/payment"
-	"github.com/example/hotel-booking/internal/api"
+	apihttp "github.com/example/hotel-booking/internal/api/http"
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
@@ -891,7 +895,7 @@ func newE2EFeatureFlagManager() featureflag.Manager {
 	return featureflag.NewMemoryManager(flags)
 }
 
-func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
+func setupE2EHandler(t testing.TB) (http.Handler, *e2eTxMock) {
 	t.Helper()
 
 	policies := [][]string{
@@ -1019,8 +1023,8 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 	tx.assistanceStore = astStore
 	astSvc := assistance.NewService(astStore, nil)
 
-	handler := api.NewRouter(api.Deps{
-		StaffAuth:       api.TestStaffVerifier(),
+	handler := apihttp.NewRouter(apihttp.Deps{
+		StaffAuth:       apihttp.TestStaffVerifier(),
 		BookingSvc:      bkSvc,
 		InvStore:        inv,
 		RateSvc:         ratesSvc,
@@ -1058,8 +1062,42 @@ func setupE2ETestServer(t *testing.T) (*httptest.Server, *e2eTxMock) {
 		},
 	})
 
+	return handler, tx
+}
+
+func setupE2ETestServer(t testing.TB) (*httptest.Server, *e2eTxMock) {
+	t.Helper()
+	handler, tx := setupE2EHandler(t)
 	srv := httptest.NewServer(handler)
 	return srv, tx
+}
+
+// TestEphemeralServerRunner menyediakan server live ephemeral bagi skrip shell E2E tanpa dependensi eksternal.
+func TestEphemeralServerRunner(t *testing.T) {
+	port := os.Getenv("RUN_EPHEMERAL_E2E_SERVER_PORT")
+	if port == "" {
+		t.Skip("RUN_EPHEMERAL_E2E_SERVER_PORT not set")
+	}
+	handler, _ := setupE2EHandler(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("failed to listen on port %s: %v", port, err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: handler}
+	t.Logf("Ephemeral E2E Server listening on 127.0.0.1:%s", port)
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
 }
 
 type mockInventoryStore struct {
@@ -1515,7 +1553,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusForbidden {
 			t.Errorf("cancel status = %d, want 403 Forbidden", res.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(res.Body).Decode(&pd)
 		if pd.Code != "FORBIDDEN_OWNERSHIP" {
 			t.Errorf("expected error code FORBIDDEN_OWNERSHIP, got %s", pd.Code)
@@ -1524,8 +1562,8 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 
 	// 13. BE-G10: Production mode gates /fake-pay (404 Not Found)
 	t.Run("E2E-13: Production mode gates /fake-pay (404 Not Found)", func(t *testing.T) {
-		prodHandler := api.NewRouter(api.Deps{
-			StaffAuth:     api.TestStaffVerifier(),
+		prodHandler := apihttp.NewRouter(apihttp.Deps{
+			StaffAuth:     apihttp.TestStaffVerifier(),
 			Enforcer:      auth.DefaultTestEnforcer(),
 			IsDevelopment: false,
 			FakePay: func(c *gin.Context) {
@@ -1601,7 +1639,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", res.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(res.Body).Decode(&pd)
 		if pd.Code != "CONSENT_REQUIRED" {
 			t.Errorf("expected code CONSENT_REQUIRED, got %s", pd.Code)
@@ -1665,7 +1703,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusConflict {
 			t.Fatalf("status = %d, want 409 Conflict", res.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(res.Body).Decode(&pd)
 		if pd.Code != "NON_REFUNDABLE_BOOKING" {
 			t.Errorf("expected code NON_REFUNDABLE_BOOKING, got %s", pd.Code)
@@ -1759,7 +1797,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusConflict {
 			t.Fatalf("status = %d, want 409 Conflict", res.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(res.Body).Decode(&pd)
 		if pd.Code != "IDEMPOTENCY_CONFLICT" {
 			t.Errorf("expected code IDEMPOTENCY_CONFLICT, got %s", pd.Code)
@@ -1780,7 +1818,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if payRes.StatusCode != http.StatusConflict {
 			t.Fatalf("expected 409 Conflict for expired hold payment, got %d", payRes.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(payRes.Body).Decode(&pd)
 		if pd.Code != "HOLD_EXPIRED" {
 			t.Errorf("expected code HOLD_EXPIRED, got %s", pd.Code)
@@ -1885,7 +1923,7 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400 Bad Request", res.StatusCode)
 		}
-		var pd api.ProblemDetails
+		var pd apihttp.ProblemDetails
 		_ = json.NewDecoder(res.Body).Decode(&pd)
 		if pd.Code != "NO_SHOW_TOO_EARLY" {
 			t.Errorf("expected error code NO_SHOW_TOO_EARLY, got %s", pd.Code)
@@ -3368,6 +3406,160 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		_ = json.NewDecoder(res.Body).Decode(&prob)
 		if prob["code"] != "INVALID_ROOM_COUNT" {
 			t.Errorf("expected code INVALID_ROOM_COUNT, got %v", prob["code"])
+		}
+	})
+
+	// 69. Router Refactor: NoRoute 404, NoMethod 405 (Allow header), and Security Headers
+	t.Run("E2E-69: Router Refactor NoRoute and NoMethod RFC 7807", func(t *testing.T) {
+		// NoRoute 404 check
+		res404, err := client.Get(srv.URL + "/api/v1/non-existent-route")
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res404.StatusCode != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", res404.StatusCode)
+		}
+		if res404.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("expected X-Content-Type-Options: nosniff, got %q", res404.Header.Get("X-Content-Type-Options"))
+		}
+		var prob404 apihttp.ProblemDetails
+		_ = json.NewDecoder(res404.Body).Decode(&prob404)
+		if prob404.Code != "NOT_FOUND" {
+			t.Errorf("expected code NOT_FOUND, got %q", prob404.Code)
+		}
+
+		// NoMethod 405 check
+		res405, err := client.Post(srv.URL+"/healthz", "application/json", nil)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if res405.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("expected status 405, got %d", res405.StatusCode)
+		}
+		if !strings.Contains(res405.Header.Get("Allow"), "GET") {
+			t.Errorf("expected Allow header containing GET, got %q", res405.Header.Get("Allow"))
+		}
+		var prob405 apihttp.ProblemDetails
+		_ = json.NewDecoder(res405.Body).Decode(&prob405)
+		if prob405.Code != "METHOD_NOT_ALLOWED" {
+			t.Errorf("expected code METHOD_NOT_ALLOWED, got %q", prob405.Code)
+		}
+
+		// Ready check
+		resReady, err := client.Get(srv.URL + "/ready")
+		if err != nil {
+			t.Fatalf("ready request failed: %v", err)
+		}
+		if resReady.StatusCode != http.StatusOK {
+			t.Errorf("expected status 200, got %d", resReady.StatusCode)
+		}
+	})
+
+	// 70. Router Refactor: Scoped Idempotency Key Replay and Conflict Isolation (D-01, FR-12)
+	t.Run("E2E-70: Scoped Idempotency Key Replay and Conflict Isolation", func(t *testing.T) {
+		ci := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+		co := time.Now().AddDate(0, 0, 12).Format("2006-01-02")
+		qID := e2eQuoteID(t, client, srv.URL, ci, co)
+
+		const rawKey = "ik-e2e-refactor-key"
+		validPayload := fmt.Sprintf(`{
+			"quote_id": %q,
+			"terms_accepted": true,
+			"privacy_accepted": true,
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": %q,
+			"check_out": %q,
+			"num_rooms": 1,
+			"num_guests": 2,
+			"guest_name": "Refactor Tamu",
+			"guest_email": "refactor@example.com"
+		}`, qID, ci, co)
+
+		// 1. First execution
+		req1, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings", strings.NewReader(validPayload))
+		req1.Header.Set("Content-Type", "application/json")
+		req1.Header.Set("Idempotency-Key", rawKey)
+		res1, err := client.Do(req1)
+		if err != nil {
+			t.Fatalf("first booking failed: %v", err)
+		}
+		if res1.StatusCode != http.StatusCreated {
+			body, _ := io.ReadAll(res1.Body)
+			t.Fatalf("expected 201 Created, got %d (body: %s)", res1.StatusCode, string(body))
+		}
+
+		// 2. Replayed execution with SAME payload
+		req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings", strings.NewReader(validPayload))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Idempotency-Key", rawKey)
+		res2, err := client.Do(req2)
+		if err != nil {
+			t.Fatalf("replay booking failed: %v", err)
+		}
+		if res2.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201 Created on replay, got %d", res2.StatusCode)
+		}
+		if res2.Header.Get("Idempotency-Replayed") != "true" {
+			t.Errorf("expected Idempotency-Replayed header true, got %q", res2.Header.Get("Idempotency-Replayed"))
+		}
+
+		// 3. Different payload with same key returns 409 Conflict
+		diffPayload := `{"room_type_id":"01900000-0000-7000-8000-000000000001","guest_name":"Different"}`
+		req3, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings", strings.NewReader(diffPayload))
+		req3.Header.Set("Content-Type", "application/json")
+		req3.Header.Set("Idempotency-Key", rawKey)
+		res3, err := client.Do(req3)
+		if err != nil {
+			t.Fatalf("conflict booking failed: %v", err)
+		}
+		if res3.StatusCode != http.StatusConflict {
+			t.Errorf("expected 409 Conflict, got %d", res3.StatusCode)
+		}
+	})
+
+	// 71. Router Refactor: Search Availability & Guest Occupancy Parser (FR-13, FR-14)
+	t.Run("E2E-71: Search Availability and Guest Occupancy Parser", func(t *testing.T) {
+		ci := time.Now().AddDate(0, 0, 10).Format("2006-01-02")
+		co := time.Now().AddDate(0, 0, 12).Format("2006-01-02")
+
+		// 1. Valid search returns variants structure
+		res, err := client.Get(fmt.Sprintf("%s/api/v1/search?check_in=%s&check_out=%s&adults=2&rooms=1", srv.URL, ci, co))
+		if err != nil {
+			t.Fatalf("search request failed: %v", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", res.StatusCode)
+		}
+		var searchResp struct {
+			TotalVariants  int `json:"total_variants"`
+			AvailableCount int `json:"available_count"`
+			Results        []struct {
+				Available bool `json:"available"`
+			} `json:"results"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&searchResp)
+		if searchResp.TotalVariants == 0 {
+			t.Errorf("expected total_variants > 0")
+		}
+
+		// 2. Parser invariants
+		resBadAge, _ := client.Get(fmt.Sprintf("%s/api/v1/search?check_in=%s&check_out=%s&child_ages=18", srv.URL, ci, co))
+		if resBadAge.StatusCode != http.StatusBadRequest {
+			t.Errorf("child_ages=18 status = %d, want 400", resBadAge.StatusCode)
+		}
+	})
+
+	// 72. Router Refactor: Webhook Delegation via ApplyPaymentEvent (FR-15)
+	t.Run("E2E-72: Webhook Delegation via ApplyPaymentEvent", func(t *testing.T) {
+		// Invalid callback token returns 401
+		reqBadToken, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/webhooks/xendit", strings.NewReader(`{}`))
+		reqBadToken.Header.Set("x-callback-token", "invalid-token")
+		resBadToken, err := client.Do(reqBadToken)
+		if err != nil {
+			t.Fatalf("webhook request failed: %v", err)
+		}
+		if resBadToken.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized, got %d", resBadToken.StatusCode)
 		}
 	})
 }

@@ -65,9 +65,15 @@ type (
 	Notifier interface {
 		SendBookingConfirmed(ctx context.Context, b Booking) error
 	}
-	// CatalogReader mendefinisikan port pembaca varian kamar untuk validasi kapasitas fisik (BE-R07).
+	// CatalogReader mendefinisikan port pembaca varian kamar untuk validasi kapasitas fisik (BE-R07) dan pencarian (FR-14).
 	CatalogReader interface {
 		GetVariant(ctx context.Context, idOrCode string) (catalog.RoomVariant, error)
+		ListVariants(ctx context.Context) ([]catalog.RoomVariant, error)
+	}
+
+	// LatePaymentRecorder mencatat insiden pembayaran terlambat pada hold kedaluwarsa (BE-R14, FR-15).
+	LatePaymentRecorder interface {
+		CreateLatePaymentCase(ctx context.Context, bookingID, providerRef string, amountMinor int64, notes string) error
 	}
 )
 
@@ -106,6 +112,7 @@ type Service struct {
 	attempts     PaymentAttemptStore
 	notify       Notifier
 	reader       Reader
+	latePayment  LatePaymentRecorder
 	holdTimeout  time.Duration
 	log          *slog.Logger
 	nowFunc      func() time.Time
@@ -186,6 +193,11 @@ func (s *Service) GetPaymentAttempts(ctx context.Context, bookingID string) ([]P
 		return nil, nil
 	}
 	return s.attempts.GetAttemptsByBookingID(ctx, bookingID)
+}
+
+// SetLatePaymentRecorder menyematkan recorder untuk mencatat insiden pembayaran telat (FR-15).
+func (s *Service) SetLatePaymentRecorder(lpr LatePaymentRecorder) {
+	s.latePayment = lpr
 }
 
 func (s *Service) HoldTimeout() time.Duration { return s.holdTimeout }

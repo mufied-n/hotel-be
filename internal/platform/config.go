@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,6 +37,11 @@ type Config struct {
 	ResendBaseURL   string
 	ResendAPIKey    string
 	ResendFromEmail string
+
+	// TrustedProxies daftar IP/CIDR load balancer yang dipercayai (FR-08)
+	TrustedProxies []string
+	// CORSAllowedOrigins daftar domain asal yang diizinkan untuk CORS (FR-22)
+	CORSAllowedOrigins []string
 }
 
 func (c Config) IsDevelopment() bool {
@@ -63,6 +69,11 @@ func (c Config) Validate() error {
 	if c.OutboxInterval <= 0 {
 		return fmt.Errorf("config: OUTBOX_INTERVAL must be positive duration")
 	}
+	for _, origin := range c.CORSAllowedOrigins {
+		if origin == "*" {
+			return fmt.Errorf("config: wildcard '*' in CORS_ALLOWED_ORIGINS is forbidden for security")
+		}
+	}
 	if c.IsProduction() {
 		if c.XenditSecretKey == "" {
 			return fmt.Errorf("config: XENDIT_SECRET_KEY is required in production (fake payment gateway is forbidden)")
@@ -87,6 +98,24 @@ func LoadConfig() Config {
 		outboxInterval = 2 * time.Second
 	}
 
+	var trustedProxies []string
+	if tp := os.Getenv("TRUSTED_PROXIES"); tp != "" {
+		for _, p := range strings.Split(tp, ",") {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				trustedProxies = append(trustedProxies, trimmed)
+			}
+		}
+	}
+
+	var corsOrigins []string
+	if co := os.Getenv("CORS_ALLOWED_ORIGINS"); co != "" {
+		for _, o := range strings.Split(co, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				corsOrigins = append(corsOrigins, trimmed)
+			}
+		}
+	}
+
 	return Config{
 		Environment:        getenv("APP_ENV", "development"),
 		Port:               getenv("APP_PORT", "8080"),
@@ -101,6 +130,8 @@ func LoadConfig() Config {
 		ResendBaseURL:      getenv("RESEND_BASE_URL", "https://api.resend.com"),
 		ResendAPIKey:       getenv("RESEND_API_KEY", ""),
 		ResendFromEmail:    getenv("RESEND_FROM_EMAIL", "Pulang ke Uttara <reservations@pulangkeuttara.com>"),
+		TrustedProxies:     trustedProxies,
+		CORSAllowedOrigins: corsOrigins,
 	}
 }
 
