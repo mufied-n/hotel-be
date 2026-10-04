@@ -2081,3 +2081,90 @@ func TestService_GetPaymentRecovery_TableDriven(t *testing.T) {
 	}
 }
 
+func TestService_DynamicHoldDuration_TableDriven(t *testing.T) {
+	ctx := context.Background()
+	roomType := "std"
+	checkIn := date("2026-10-15")
+	checkOut := date("2026-10-17") // 2 nights
+
+	tests := []struct {
+		name                string
+		availRoomsNight1    int
+		availRoomsNight2    int
+		wantHoldDurationMin int
+	}{
+		{
+			name:                "Normal inventory (5 rooms available) gets standard 30 min hold",
+			availRoomsNight1:    5,
+			availRoomsNight2:    5,
+			wantHoldDurationMin: 30,
+		},
+		{
+			name:                "Critical inventory on night 1 (1 room available) gets dynamic 15 min hold",
+			availRoomsNight1:    1,
+			availRoomsNight2:    4,
+			wantHoldDurationMin: 15,
+		},
+		{
+			name:                "Critical inventory on night 2 (1 room available) gets dynamic 15 min hold",
+			availRoomsNight1:    4,
+			availRoomsNight2:    1,
+			wantHoldDurationMin: 15,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+			tx := newFakeTx(map[string]*Booking{}, map[string][]string{})
+			tx.inventory[roomType+"|2026-10-15"] = tt.availRoomsNight1
+			tx.inventory[roomType+"|2026-10-16"] = tt.availRoomsNight2
+
+			inv := &fakeInvStore{
+				avail: []inventory.Availability{
+					{Date: checkIn, TotalRooms: 10, AvailableRooms: tt.availRoomsNight1},
+					{Date: date("2026-10-16"), TotalRooms: 10, AvailableRooms: tt.availRoomsNight2},
+				},
+			}
+			ratesSvc := &fakeRates{
+				quotes: []rates.Quote{
+					{Date: checkIn, RateMinor: 500_000},
+					{Date: date("2026-10-16"), RateMinor: 500_000},
+				},
+			}
+			pay := &fakePayment{}
+			reader := &fakeReader{bookings: tx.bookings}
+			svc := NewService(tx, inv, ratesSvc, pay, &fakeNotifier{}, reader, 30*time.Minute, slog.Default())
+			svc.SetNowFunc(func() time.Time { return now })
+
+			in := CreateInput{
+				RoomTypeID: roomType,
+				CheckIn:    checkIn,
+				CheckOut:   checkOut,
+				NumRooms:   1,
+				NumGuests:  1,
+				GuestName:  "Budi Dynamic",
+				GuestEmail: "budi@example.com",
+			}
+
+			b, _, err := svc.Create(ctx, withQuote(svc, in))
+			if err != nil {
+				t.Fatalf("Create error: %v", err)
+			}
+
+			if b.ExpiresAt == nil {
+				t.Fatalf("expected b.ExpiresAt to be set, got nil")
+			}
+
+			duration := b.ExpiresAt.Sub(now)
+			wantDuration := time.Duration(tt.wantHoldDurationMin) * time.Minute
+			diff := duration - wantDuration
+			if diff < -time.Minute || diff > time.Minute {
+				t.Errorf("expected hold duration ~%v, got %v", wantDuration, duration)
+			}
+		})
+	}
+}
+
+
+

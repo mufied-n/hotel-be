@@ -7,16 +7,19 @@ import (
 	"github.com/casbin/casbin/v2"
 	"github.com/gin-gonic/gin"
 
+	"github.com/example/hotel-booking/internal/adapter/notifier"
 	"github.com/example/hotel-booking/internal/adapter/payment"
 	"github.com/example/hotel-booking/internal/api/http/middleware"
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/channel"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/frontdesk"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
+	"github.com/example/hotel-booking/internal/platform/eventbus"
 	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
@@ -55,6 +58,9 @@ type Deps struct {
 	CORSOrigins         []string
 	RequestTimeout      time.Duration
 	SkipRateLimitRoutes []string
+	EventBus            eventbus.Bus
+	ChannelSvc          *channel.Service
+	WhatsAppSender      notifier.WhatsAppSender
 }
 
 type latePaymentAdapter struct {

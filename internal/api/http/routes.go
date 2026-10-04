@@ -29,6 +29,7 @@ func registerRoutes(r *gin.Engine, d Deps) {
 	r.POST("/api/v1/auth/guest/challenge", authLimit, ff("ff_guest_portal_auth"), handler.GuestChallenge(d))
 	r.POST("/api/v1/auth/guest/verify", authLimit, ff("ff_guest_portal_auth"), handler.GuestVerify(d))
 	r.POST("/api/v1/auth/staff/login", authLimit, handler.StaffLogin(d))
+	r.POST("/api/v1/channel-events", ff("ff_channel_sync_integration"), handler.HandleChannelWebhook(d))
 
 	v1 := r.Group("/api/v1")
 
@@ -68,8 +69,9 @@ func registerGuestRoutes(g *gin.RouterGroup, d Deps, ff func(string) gin.Handler
 	g.GET("/guest/bookings/:id/payment", ff("ff_guest_my_bookings"), handler.GuestBookingPayment(d))
 	g.GET("/guest/bookings/:id/receipt", ff("ff_booking_artifacts_receipt"), handler.GuestBookingReceipt(d))
 	g.GET("/guest/bookings/:id/calendar.ics", ff("ff_booking_artifacts_icalendar"), handler.GuestBookingCalendar(d))
-	g.GET("/guest/bookings/:id/voucher.pdf", ff("ff_booking_artifacts_receipt"), handler.GuestBookingVoucherPDF(d))
-	g.GET("/guest/bookings/:id/invoice.pdf", ff("ff_booking_artifacts_receipt"), handler.GuestBookingInvoicePDF(d))
+	g.GET("/guest/bookings/:id/voucher.pdf", ff("ff_official_pdf_voucher"), handler.GuestBookingVoucherPDF(d))
+	g.GET("/guest/bookings/:id/invoice.pdf", ff("ff_official_pdf_voucher"), handler.GuestBookingInvoicePDF(d))
+	g.GET("/guest/bookings/:id/live-status", ff("ff_realtime_event_hub"), handler.GuestBookingLiveStatus(d))
 	g.GET("/guest/bookings/:id/refund-status", ff("ff_guest_my_bookings"), handler.GuestRefundStatus(d))
 	g.POST("/guest/bookings/:id/special-requests", ff("ff_guest_special_requests"), handler.CreateGuestSpecialRequest(d))
 	g.GET("/guest/bookings/:id/special-requests", ff("ff_guest_special_requests"), handler.ListGuestSpecialRequests(d))
@@ -92,8 +94,8 @@ func registerDomainAPIRoutes(g *gin.RouterGroup, d Deps, ff func(string) gin.Han
 	g.POST("/bookings", handler.CreateBooking(d))
 	g.GET("/bookings/:id", handler.GetBooking(d))
 	g.GET("/bookings/:id/payment", handler.GetBookingPayment(d))
-	g.GET("/bookings/:id/voucher.pdf", handler.GetBookingVoucherPDF(d))
-	g.GET("/bookings/:id/invoice.pdf", handler.GetBookingInvoicePDF(d))
+	g.GET("/bookings/:id/voucher.pdf", ff("ff_official_pdf_voucher"), handler.GetBookingVoucherPDF(d))
+	g.GET("/bookings/:id/invoice.pdf", ff("ff_official_pdf_voucher"), handler.GetBookingInvoicePDF(d))
 	g.POST("/bookings/:id/cancel", handler.CancelBooking(d))
 	g.POST("/bookings/:id/check-in", handler.CheckIn(d))
 	g.POST("/bookings/:id/check-out", handler.CheckOut(d))
@@ -115,6 +117,7 @@ func registerDomainAPIRoutes(g *gin.RouterGroup, d Deps, ff func(string) gin.Han
 	g.GET("/front-desk/handover-notes", ff("ff_front_desk_operations"), handler.FrontDeskListHandovers(d))
 	g.POST("/front-desk/handover-notes", ff("ff_front_desk_operations"), handler.FrontDeskRecordHandover(d))
 	g.GET("/front-desk/verify-voucher", ff("ff_front_desk_operations"), handler.VerifyVoucher(d))
+	g.GET("/front-desk/live-stream", ff("ff_realtime_event_hub"), handler.FrontDeskLiveStream(d))
 
 	// Stay Modification: Room Move & Extension (Proposed 03)
 	g.POST("/bookings/:id/room-move", ff("ff_stay_modification"), handler.HandleRoomMove(d))
@@ -130,9 +133,14 @@ func registerDomainAPIRoutes(g *gin.RouterGroup, d Deps, ff func(string) gin.Han
 	g.PUT("/admin/feature-flags/:key", handler.AdminUpdateFlag(d))
 
 	// Revenue Management (Proposed Candidate A: Dynamic Rates & Stop-Sell)
-	g.GET("/revenue/calendar", handler.GetRevenueCalendar(d))
-	g.PUT("/revenue/calendar/bulk", handler.BulkUpdateCalendar(d))
-	g.GET("/revenue/promos", handler.ListPromos(d))
-	g.POST("/revenue/promos", handler.CreatePromo(d))
-	g.PUT("/revenue/promos/:id", handler.UpdatePromo(d))
+	g.GET("/revenue/calendar", ff("ff_dynamic_rates_calendar"), handler.GetRevenueCalendar(d))
+	g.PUT("/revenue/calendar/bulk", ff("ff_dynamic_rates_calendar"), handler.BulkUpdateCalendar(d))
+	g.GET("/revenue/promos", ff("ff_promotions_engine"), handler.ListPromos(d))
+	g.POST("/revenue/promos", ff("ff_promotions_engine"), handler.CreatePromo(d))
+	g.PUT("/revenue/promos/:id", ff("ff_promotions_engine"), handler.UpdatePromo(d))
+
+	// Channel Management & OTA Integration (F10)
+	g.GET("/staff/channel-sync-issues", ff("ff_channel_sync_integration"), handler.HandleListChannelSyncIssues(d))
+	g.POST("/staff/channel-sync-issues/:id/resolve", ff("ff_last_room_safeguards"), handler.HandleResolveChannelSyncIssue(d))
+	g.GET("/staff/channel-partners/:code", ff("ff_channel_sync_integration"), handler.HandleGetChannelPartner(d))
 }

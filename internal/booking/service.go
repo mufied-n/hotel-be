@@ -291,6 +291,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	quotes := lockedQuote.NightlyRates
 
 	// 2. Pre-flight check (tanpa lock) untuk fail-fast
+	isCritical := false
 	if s.inv != nil {
 		avail, err := s.inv.GetByDate(ctx, in.RoomTypeID, in.CheckIn, in.CheckOut)
 		if err != nil {
@@ -298,6 +299,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 		}
 		if err := inventory.Check(avail, in.CheckIn, in.CheckOut, in.NumRooms); err != nil {
 			return Booking{}, ChargeResult{}, err
+		}
+		for _, a := range avail {
+			if a.AvailableRooms <= 1 || a.AvailableRooms-in.NumRooms <= 0 {
+				isCritical = true
+				break
+			}
 		}
 	}
 
@@ -333,12 +340,26 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Booking, ChargeRe
 	b.TermsAccepted = true
 	b.TermsAcceptedAt = &nowConsent
 
+	// Evaluasi durasi hold dinamis: jika kamar tinggal 1 (stok kritis), pangkas durasi hold ke 15 menit
+	holdDuration := s.holdTimeout
+	if isCritical {
+		if s.holdTimeout > 15*time.Minute {
+			holdDuration = 15 * time.Minute
+		} else {
+			holdDuration = s.holdTimeout / 2
+			if holdDuration <= 0 {
+				holdDuration = s.holdTimeout
+			}
+		}
+	}
+	holdExpiry := s.now().UTC().Add(holdDuration)
+
 	// 2. Transaksi kritis lokal: lock + decrement + insert + outbox.
 	txErr := s.tx.InTx(ctx, func(tx InventoryTx, events EventPublisher) error {
 		if err := tx.LockAndDecrement(ctx, b.RoomTypeID, b.CheckIn, b.CheckOut, b.NumRooms); err != nil {
 			return err
 		}
-		if err := tx.InsertBookingWithHold(ctx, &b, quotes, s.holdExpiry()); err != nil {
+		if err := tx.InsertBookingWithHold(ctx, &b, quotes, holdExpiry); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]any{

@@ -38,6 +38,17 @@ type Config struct {
 	ResendAPIKey    string
 	ResendFromEmail string
 
+	// NATS JetStream EventBus
+	NATSURL string
+
+	// WhatsApp Notifier (F11 modular provider)
+	WhatsAppProvider      string // "log", "generic_http", "twilio", "meta_cloud"
+	WhatsAppAPIKey        string
+	WhatsAppBaseURL       string
+	WhatsAppAccountSID    string
+	WhatsAppPhoneNumberID string
+	WhatsAppFromPhone     string
+
 	// TrustedProxies daftar IP/CIDR load balancer yang dipercayai (FR-08)
 	TrustedProxies []string
 	// CORSAllowedOrigins daftar domain asal yang diizinkan untuk CORS (FR-22)
@@ -130,8 +141,15 @@ func LoadConfig() Config {
 		ResendBaseURL:      getenv("RESEND_BASE_URL", "https://api.resend.com"),
 		ResendAPIKey:       getenv("RESEND_API_KEY", ""),
 		ResendFromEmail:    getenv("RESEND_FROM_EMAIL", "Pulang ke Uttara <reservations@pulangkeuttara.com>"),
-		TrustedProxies:     trustedProxies,
-		CORSAllowedOrigins: corsOrigins,
+		NATSURL:               getenv("NATS_URL", "nats://127.0.0.1:4222"),
+		WhatsAppProvider:      getenv("WHATSAPP_PROVIDER", "log"),
+		WhatsAppAPIKey:        getenv("WHATSAPP_API_KEY", ""),
+		WhatsAppBaseURL:       getenv("WHATSAPP_BASE_URL", ""),
+		WhatsAppAccountSID:    getenv("WHATSAPP_ACCOUNT_SID", ""),
+		WhatsAppPhoneNumberID: getenv("WHATSAPP_PHONE_NUMBER_ID", ""),
+		WhatsAppFromPhone:     getenv("WHATSAPP_FROM_PHONE", ""),
+		TrustedProxies:        trustedProxies,
+		CORSAllowedOrigins:    corsOrigins,
 	}
 }
 

@@ -48,6 +48,7 @@ services:
       APP_PORT: "8080"
       DATABASE_URL: postgres://postgres:dev@postgres:5432/booking?sslmode=disable
       VALKEY_ADDR: valkey:6379
+      NATS_URL: nats://nats:4222
       HOLD_TIMEOUT: 30m
       FAKE_PAY_BASE_URL: http://localhost:18080   # agar payment_url bisa dibuka dari host
     depends_on:
@@ -55,10 +56,26 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      nats:
+        condition: service_healthy
       migration:
         condition: service_completed_successfully
     ports:
       - "18080:8080"   # host 8080 sering terpakai; app tetap listen di 8080 internal
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - natsdata:/data
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/varz"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
   asynqmon:
     image: hibiken/asynqmon
@@ -72,3 +89,4 @@ services:
 volumes:
   pgdata:
   valkeydata:
+  natsdata:

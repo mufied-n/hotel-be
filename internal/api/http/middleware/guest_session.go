@@ -24,6 +24,11 @@ func GuestSessionFromContext(ctx context.Context) *guest.GuestSession {
 	return nil
 }
 
+// ContextWithGuestSession menyisipkan sesi tamu ke dalam context.
+func ContextWithGuestSession(ctx context.Context, sess *guest.GuestSession) context.Context {
+	return context.WithValue(ctx, guestSessionContextKey, sess)
+}
+
 // ExtractGuestSessionToken mengekstrak token sesi tamu dari Authorization header, header khusus, atau cookie.
 func ExtractGuestSessionToken(r *http.Request) string {
 	// 1. Cek Header Authorization: Bearer <token>

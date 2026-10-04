@@ -31,6 +31,10 @@ Tanggal: 3 Oktober 2026 (Asia/Jakarta). Status: PROPOSED / REQUIRES ARCHITECTURE
 - [Router Refactor & Transport Modularization](router-refactor-architecture-2026-10-04.md).
 - [Dynamic Rates, Room Allotment & Stop-Sell Architecture](dynamic-rates-and-stop-sell-architecture-2026-10-04.md).
 - [Official PDF Confirmation Voucher & PBJT Tax Invoice Architecture](official-pdf-voucher-and-tax-invoice-architecture-2026-10-04.md).
+- [Real-Time Hospitality Event Hub: NATS JetStream, Live Front Desk SSE, Multi-Channel Webhooks & Notifier Architecture](realtime-hospitality-event-hub-and-channel-sync-architecture-2026-10-04.md).
+- [Last-Room Hospitality Safeguards: LRDA Safety Buffer, Dynamic Hold & 1-Click Upgrade Architecture](last-room-safeguards-and-complimentary-upgrade-architecture-2026-10-04.md).
+- [Modular WhatsApp Notifier Architecture & Multi-Provider Engine](modular-whatsapp-notifier-provider-architecture-2026-10-04.md).
+- [Hospitality & Multi-Channel Feature Flags System Architecture](hospitality-and-channels-feature-flags-architecture-2026-10-04.md).
 - [Register konflik C01–C14](../srs/00-shared-contracts-and-decisions-2026-10-03.md).
 - [PRD registry](../prd/README.md) dan [SRS registry](../srs/README.md).
 

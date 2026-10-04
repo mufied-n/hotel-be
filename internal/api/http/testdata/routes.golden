@@ -14,12 +14,14 @@ GET /api/v1/finance/cases
 GET /api/v1/finance/reconciliations
 GET /api/v1/front-desk/daily-roster
 GET /api/v1/front-desk/handover-notes
+GET /api/v1/front-desk/live-stream
 GET /api/v1/front-desk/special-requests
 GET /api/v1/front-desk/verify-voucher
 GET /api/v1/guest/bookings
 GET /api/v1/guest/bookings/:id
 GET /api/v1/guest/bookings/:id/calendar.ics
 GET /api/v1/guest/bookings/:id/invoice.pdf
+GET /api/v1/guest/bookings/:id/live-status
 GET /api/v1/guest/bookings/:id/payment
 GET /api/v1/guest/bookings/:id/receipt
 GET /api/v1/guest/bookings/:id/refund-status
@@ -29,6 +31,8 @@ GET /api/v1/housekeeping/rooms
 GET /api/v1/revenue/calendar
 GET /api/v1/revenue/promos
 GET /api/v1/search
+GET /api/v1/staff/channel-partners/:code
+GET /api/v1/staff/channel-sync-issues
 GET /healthz
 GET /ready
 HEAD /healthz
@@ -46,6 +50,7 @@ POST /api/v1/bookings/:id/extend-stay
 POST /api/v1/bookings/:id/no-show
 POST /api/v1/bookings/:id/room-move
 POST /api/v1/catalog/rooms
+POST /api/v1/channel-events
 POST /api/v1/finance/cases/:id/resolve
 POST /api/v1/finance/refunds
 POST /api/v1/front-desk/handover-notes
@@ -53,6 +58,7 @@ POST /api/v1/guest/bookings/:id/special-requests
 POST /api/v1/housekeeping/rooms/:id/out-of-order
 POST /api/v1/quotes
 POST /api/v1/revenue/promos
+POST /api/v1/staff/channel-sync-issues/:id/resolve
 POST /api/v1/webhooks/xendit
 POST /fake-pay/:ref
 PUT /api/v1/admin/feature-flags/:key

@@ -35,6 +35,10 @@ PRD menjelaskan outcome, persona, authority, scope, acceptance dan keputusan bis
 - [hotel-booking-parity-and-gap-remediation](hotel-booking-parity-and-gap-remediation-2026-10-03.md) — dipertahankan; status dibaca pada dokumen owner, tidak dianggap bukti deployment.
 - [Dynamic Rates, Room Allotment & Stop-Sell Engine](dynamic-rates-and-stop-sell-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk antarmuka HTTP kalender tarif, stop-sell, dan kuota promo.
 - [Official PDF Confirmation Voucher & PBJT Tax Invoice Engine](official-pdf-voucher-and-tax-invoice-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk streaming PDF voucher A4 ber-QR code dan faktur PBJT 10%.
+- [Real-Time Hospitality Event Hub: NATS JetStream, Live Front Desk SSE, Multi-Channel Webhooks & Notifier](realtime-hospitality-event-hub-and-channel-sync-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk kontrak SSE live status tamu & meja depan, webhook reservasi OTA, dan topologi subjek NATS.
+- [Last-Room Hospitality Safeguards: LRDA Safety Buffer, Dynamic Hold & 1-Click Complimentary Upgrade](last-room-safeguards-and-complimentary-upgrade-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk kontrak LRDA safety buffer OTA, hold dinamis 15 menit, dan endpoint HTTP penyelesaian upgrade meja depan.
+- [Modular WhatsApp Notifier Architecture & Multi-Provider Engine](modular-whatsapp-notifier-provider-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk kontrak antarmuka pengirim WhatsApp modular, normalisasi format nomor telepon, dan adapter protokol Twilio, Meta Cloud API, Generic Gateway.
+- [Hospitality & Multi-Channel Feature Flags System](hospitality-and-channels-feature-flags-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk kontrak middleware gating RequireFeature, format error 503 RFC 7807, dan endpoint administrasi toggling runtime.
 
 Referensi pasangan: [PRD registry](../prd/README.md).
 [Shared contract dan register konflik](../srs/00-shared-contracts-and-decisions-2026-10-03.md); [OpenAPI target proposal](../srs/contracts/booking-roadmap-proposal.openapi.json).

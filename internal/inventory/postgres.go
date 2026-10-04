@@ -46,6 +46,25 @@ func (s *PostgresStore) GetByDate(ctx context.Context, roomTypeID string, from, 
 	return out, nil
 }
 
+// CheckAvailability memeriksa ketersediaan kamar sepanjang rentang tanggal [from, to).
+func (s *PostgresStore) CheckAvailability(ctx context.Context, roomTypeID string, from, to time.Time, rooms int) error {
+	avail, err := s.GetByDate(ctx, roomTypeID, from, to)
+	if err != nil {
+		return err
+	}
+	return Check(avail, from, to, rooms)
+}
+
+// CheckAvailabilityWithBuffer memeriksa ketersediaan kamar dengan ambang batas safety buffer (LRDA).
+func (s *PostgresStore) CheckAvailabilityWithBuffer(ctx context.Context, roomTypeID string, from, to time.Time, rooms, safetyBuffer int) error {
+	avail, err := s.GetByDate(ctx, roomTypeID, from, to)
+	if err != nil {
+		return err
+	}
+	return CheckWithBuffer(avail, from, to, rooms, safetyBuffer)
+}
+
+
 // EnsureRows mengisi baris inventory yang hilang dengan 0 kamar — dipakai
 // admin tooling saat menambah tipe kamar baru. Tidak dipakai di hot path.
 func (s *PostgresStore) EnsureRows(ctx context.Context, roomTypeID string, from, to time.Time, total int) error {

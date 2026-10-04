@@ -24,6 +24,7 @@ import (
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/channel"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/frontdesk"
 	"github.com/example/hotel-booking/internal/guest"
@@ -31,6 +32,7 @@ import (
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform"
 	"github.com/example/hotel-booking/internal/platform/auth"
+	"github.com/example/hotel-booking/internal/platform/eventbus"
 	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/staffauth"
@@ -59,6 +61,22 @@ func main() {
 
 	redisClient := platform.NewValkey(cfg)
 	defer func() { _ = redisClient.Close() }()
+
+	// ---- EventBus (NATS JetStream dengan Memory fallback) ----
+	var eventBus eventbus.Bus
+	if cfg.NATSURL != "" {
+		nb, err := eventbus.NewNATSBus(ctx, cfg.NATSURL)
+		if err != nil {
+			log.Warn("nats.connect_fallback_memory", "url", cfg.NATSURL, "err", err)
+			eventBus = eventbus.NewMemoryBus()
+		} else {
+			eventBus = nb
+			log.Info("nats.jetstream.connected", "url", cfg.NATSURL)
+		}
+	} else {
+		eventBus = eventbus.NewMemoryBus()
+	}
+	defer eventBus.Close()
 
 	// ---- Wiring domain & adapter (composition root — §8.2) ----
 	invStore := &inventory.PostgresStore{Pool: pool}
@@ -126,6 +144,20 @@ func main() {
 		notifierMode = "log"
 		log.Info("notifier.log.active", "mode", "dev_fallback")
 	}
+	waCfg := notifier.WhatsAppConfig{
+		Provider:      cfg.WhatsAppProvider,
+		BaseURL:       cfg.WhatsAppBaseURL,
+		APIKey:        cfg.WhatsAppAPIKey,
+		AccountSID:    cfg.WhatsAppAccountSID,
+		PhoneNumberID: cfg.WhatsAppPhoneNumberID,
+		FromPhone:     cfg.WhatsAppFromPhone,
+		Timeout:       10 * time.Second,
+	}
+	waSender, err := notifier.NewWhatsAppSender(waCfg, log)
+	if err != nil {
+		log.Error("whatsapp.init_failed, falling back to log mock", "error", err)
+		waSender = notifier.NewLogWhatsApp(log)
+	}
 
 	bkSvc := booking.NewService(bkRunner, invStore, rateEngine, payGateway, notifierSvc, bkReader, cfg.HoldTimeout, log)
 	bkSvc.SetPaymentAttemptStore(booking.NewPostgresPaymentAttemptStore(pool))
@@ -160,19 +192,35 @@ func main() {
 		Log:         log,
 		Handlers: map[string]func(ctx context.Context, payload []byte) error{
 			"booking.created": func(ctx context.Context, payload []byte) error {
-				// Saat ini: hanya log. PMS sync / analytics masuk di sini nanti.
 				var ev map[string]any
 				_ = json.Unmarshal(payload, &ev)
 				log.InfoContext(ctx, "event.booking.created", "payload", ev)
+				id, _ := workers.ParsePayloadBookingID(payload)
+				if id != "" {
+					_ = eventBus.Publish(ctx, "hospitality.booking."+id+".created", "booking_created", "evt-created-"+id, payload)
+					_ = eventBus.Publish(ctx, "hospitality.frontdesk.booking_created", "booking_created", "evt-fd-created-"+id, payload)
+				}
 				return nil
 			},
-			"booking.confirmed": onConfirmed,
+			"booking.confirmed": func(ctx context.Context, payload []byte) error {
+				if err := onConfirmed(ctx, payload); err != nil {
+					return err
+				}
+				id, _ := workers.ParsePayloadBookingID(payload)
+				if id != "" {
+					_ = eventBus.Publish(ctx, "hospitality.booking."+id+".confirmed", "payment_confirmed", "evt-confirmed-"+id, payload)
+					_ = eventBus.Publish(ctx, "hospitality.frontdesk.payment_confirmed", "payment_confirmed", "evt-fd-confirmed-"+id, payload)
+				}
+				return nil
+			},
 			"booking.cancelled": func(ctx context.Context, payload []byte) error {
 				id, err := workers.ParsePayloadBookingID(payload)
 				if err != nil {
 					return err
 				}
 				log.InfoContext(ctx, "event.booking.cancelled", "booking_id", id)
+				_ = eventBus.Publish(ctx, "hospitality.booking."+id+".cancelled", "booking_cancelled", "evt-cancelled-"+id, payload)
+				_ = eventBus.Publish(ctx, "hospitality.frontdesk.booking_cancelled", "booking_cancelled", "evt-fd-cancelled-"+id, payload)
 				return nil
 			},
 			"booking.expired": func(ctx context.Context, payload []byte) error {
@@ -181,13 +229,17 @@ func main() {
 					return err
 				}
 				log.InfoContext(ctx, "event.booking.expired", "booking_id", id)
+				_ = eventBus.Publish(ctx, "hospitality.booking."+id+".expired", "booking_expired", "evt-expired-"+id, payload)
 				return nil
 			},
 			"booking.checked_in": func(ctx context.Context, payload []byte) error {
-				// PMS sync / housekeeping notification masuk di sini nanti.
 				var ev map[string]any
 				_ = json.Unmarshal(payload, &ev)
 				log.InfoContext(ctx, "event.booking.checked_in", "payload", ev)
+				id, _ := workers.ParsePayloadBookingID(payload)
+				if id != "" {
+					_ = eventBus.Publish(ctx, "hospitality.frontdesk.checked_in", "checked_in", "evt-checked-in-"+id, payload)
+				}
 				return nil
 			},
 			"booking.checked_out": func(ctx context.Context, payload []byte) error {
@@ -196,6 +248,7 @@ func main() {
 					return err
 				}
 				log.InfoContext(ctx, "event.booking.checked_out", "booking_id", id)
+				_ = eventBus.Publish(ctx, "hospitality.frontdesk.checked_out", "checked_out", "evt-checked-out-"+id, payload)
 				return nil
 			},
 			"booking.no_show": func(ctx context.Context, payload []byte) error {
@@ -278,6 +331,10 @@ func main() {
 	assistanceStore := assistance.NewPostgresStore(pool)
 	assistanceSvc := assistance.NewService(assistanceStore, log)
 
+	// ---- Channel Manager & Event Webhook Service (F10 & F11) ----
+	channelStore := channel.NewPostgresStore(pool)
+	channelSvc := channel.NewService(channelStore, invStore, eventBus)
+
 	// ---- Feature Flags Engine ----
 	ffManager, err := featureflag.NewPostgresManager(ctx, pool, redisClient, 30*time.Second, log)
 	if err != nil {
@@ -332,6 +389,9 @@ func main() {
 		PromoStore:          promoStore,
 		FeatureFlag:         ffManager,
 		NotifierMode:        notifierMode,
+		EventBus:            eventBus,
+		ChannelSvc:          channelSvc,
+		WhatsAppSender:      waSender,
 		ReadyCheck: func(ctx context.Context) error {
 			if err := pool.Ping(ctx); err != nil {
 				return fmt.Errorf("postgres ping: %w", err)

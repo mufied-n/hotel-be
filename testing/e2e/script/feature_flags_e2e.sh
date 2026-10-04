@@ -1,108 +1,193 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# E2E Test Script: Feature Flags & Runtime Configuration System
-# Hotel Booking Engine — Pulang ke Uttara (Yogyakarta)
-#
-# Menguji:
-# 1. Autorisasi Admin Casbin RBAC pada Endpoint Feature Flags
-# 2. Toggle Runtime Global (Kill Switch) & Respons 503 RFC 7807
-# 3. Role-Based Scoping (Canary Rollout) & Pengecualian Akses
-# 4. Pemulihan Fitur (Restoration to Active State)
+# Script: feature_flags_e2e.sh
+# Deskripsi: Pengujian E2E Otomatis untuk Hospitality & Multi-Channel Feature Flags (FR-FF-08)
+#            Memverifikasi dynamic runtime kill-switch dan live toggling via admin API.
 # ==============================================================================
 
 set -euo pipefail
 
-BASE_URL="${API_BASE_URL:-http://localhost:18080}"
-source "$(dirname "${BASH_SOURCE[0]}")/lib_staff_login.sh"
-load_staff_tokens
-GM_TOKEN="${T_GM_ADMIN}"
-RECEPTION_TOKEN="${T_RECEPTIONIST}"
-REVENUE_MGR_TOKEN="${T_REVENUE_MGR}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-echo "=== [E2E] Menjalankan Pengujian Feature Flags & Runtime Toggle ==="
-echo "Target Base URL: ${BASE_URL}"
+TOTAL_TESTS=0
+PASSED_TESTS=0
+FAILED_TESTS=0
 
-# 1. Healthcheck
-echo "--- 1. Healthcheck Service ---"
-curl -sS -f "${BASE_URL}/healthz" > /dev/null
-echo "✓ Service Healthcheck OK"
+COLOR_GREEN='\033[0;32m'
+COLOR_RED='\033[0;31m'
+COLOR_BLUE='\033[0;34m'
+COLOR_RESET='\033[0m'
 
-# 2. Admin RBAC: List Feature Flags
-echo "--- 2. RBAC Access Test: GET /api/v1/admin/feature-flags ---"
-HTTP_CODE_REC=$(curl -sS -o /dev/null -w "%{http_code}" "${BASE_URL}/api/v1/admin/feature-flags" \
-  -H "Authorization: Bearer ${RECEPTION_TOKEN}")
+log_info() {
+    echo -e "${COLOR_BLUE}[INFO]${COLOR_RESET} $1"
+}
 
-if [ "${HTTP_CODE_REC}" -eq 403 ]; then
-  echo "✓ Akses ditolak untuk role receptionist (403 Forbidden)"
+log_pass() {
+    echo -e "  ${COLOR_GREEN}✓${COLOR_RESET} $1"
+    PASSED_TESTS=$((PASSED_TESTS + 1))
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+}
+
+log_fail() {
+    echo -e "  ${COLOR_RED}✗${COLOR_RESET} $1"
+    FAILED_TESTS=$((FAILED_TESTS + 1))
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+}
+
+assert_status() {
+    local desc="$1"
+    local expected="$2"
+    local actual="$3"
+    if [ "$actual" -eq "$expected" ]; then
+        log_pass "$desc (Expected: $expected)"
+    else
+        log_fail "$desc (Expected: $expected, Got: $actual)"
+    fi
+}
+
+assert_contains() {
+    local desc="$1"
+    local needle="$2"
+    local haystack="$3"
+    if echo "$haystack" | grep -q "$needle"; then
+        log_pass "$desc (Contains: '$needle')"
+    else
+        log_fail "$desc (Missing: '$needle' in '$haystack')"
+    fi
+}
+
+echo "=============================================================================="
+echo "  E2E TEST AUTOMATION: HOSPITALITY & CHANNELS FEATURE FLAGS (FR-FF-08)        "
+echo "=============================================================================="
+echo "Target: Hotel Booking Engine — Pulang ke Uttara (Yogyakarta)"
+echo "Waktu : $(date)"
+echo ""
+
+# ------------------------------------------------------------------------------
+# 1. Jalankan Go In-Process E2E Sub-test (E2E-82)
+# ------------------------------------------------------------------------------
+log_info "1. Menjalankan Go In-Process E2E Suite (E2E-82)..."
+if go test -v -run "TestEndToEndHotelBookingRBACLifecycle/E2E-82" ./testing/e2e/script/... > /tmp/go_ff_e2e.log 2>&1; then
+    log_pass "Go In-Process E2E-82 (Feature Flags Kill-Switch & Admin Toggling) lulus 100%"
 else
-  echo "✗ Resepionis tidak diblokir: HTTP ${HTTP_CODE_REC}"
-  exit 1
+    cat /tmp/go_ff_e2e.log
+    log_fail "Go In-Process E2E-82 gagal"
 fi
 
-LIST_RESP=$(curl -sS -X GET "${BASE_URL}/api/v1/admin/feature-flags" \
-  -H "Authorization: Bearer ${GM_TOKEN}")
+# ------------------------------------------------------------------------------
+# 2. Setup Live Ephemeral Server
+# ------------------------------------------------------------------------------
+TMP_DIR=$(mktemp -d)
+EPHEMERAL_PID=""
 
-TOTAL_FLAGS=$(echo "${LIST_RESP}" | grep -o '"key":' | wc -l || true)
-echo "✓ Akses diizinkan untuk gm_admin (200 OK), total flags ditemukan: ${TOTAL_FLAGS}"
+cleanup() {
+    log_info "Membersihkan proses live server..."
+    if [ -n "$EPHEMERAL_PID" ]; then
+        kill -9 "$EPHEMERAL_PID" 2>/dev/null || true
+        wait "$EPHEMERAL_PID" 2>/dev/null || true
+    fi
+    rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 
-# 3. Global Kill Switch: Disable ff_multi_variant_search
-echo "--- 3. Global Kill Switch Test: Disable ff_multi_variant_search ---"
-UPDATE_RESP=$(curl -sS -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_multi_variant_search" \
-  -H "Authorization: Bearer ${GM_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": false, "allowed_roles": []}')
+PORT=28095
+BASE_URL="http://127.0.0.1:${PORT}"
 
-echo "Toggle Response: ${UPDATE_RESP}"
+log_info "2. Memulai Ephemeral Live Server pada port ${PORT}..."
+(cd "${REPO_ROOT}" && RUN_EPHEMERAL_E2E_SERVER_PORT="${PORT}" go test -v ./testing/e2e/script -run TestEphemeralServerRunner > "$TMP_DIR/ephemeral.log" 2>&1) &
+EPHEMERAL_PID=$!
 
-# Verifikasi GET /api/v1/search ditolak dengan 503 FEATURE_DISABLED
-SEARCH_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${BASE_URL}/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=1")
-if [ "${SEARCH_STATUS}" -eq 503 ]; then
-  echo "✓ Endpoint pencarian berhasil diblokir saat flag disabled (503 Service Unavailable)"
-else
-  echo "✗ Endpoint pencarian tidak mengembalikan 503: HTTP ${SEARCH_STATUS}"
-  exit 1
+READY=0
+for _ in $(seq 1 40); do
+    if curl -s -f "${BASE_URL}/healthz" > /dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 0.2
+done
+
+if [ "$READY" -ne 1 ]; then
+    echo "Server gagal menyala. Log:"
+    cat "$TMP_DIR/ephemeral.log" || true
+    exit 1
 fi
+log_pass "Ephemeral live server berhasil aktif di ${BASE_URL}"
 
-# 4. Restore Global Flag: Enable ff_multi_variant_search
-echo "--- 4. Restore Global Flag Test: Enable ff_multi_variant_search ---"
-RESTORE_RESP=$(curl -sS -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_multi_variant_search" \
-  -H "Authorization: Bearer ${GM_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true, "allowed_roles": []}')
+# ------------------------------------------------------------------------------
+# 3. GM Admin Inspect Daftar Feature Flags Baru
+# ------------------------------------------------------------------------------
+log_info "3. Pengujian GM Admin Menginspeksi Daftar Feature Flags..."
+LIST_RESP=$(curl -s -w "\n%{http_code}" -X GET "${BASE_URL}/api/v1/admin/feature-flags" \
+    -H "Authorization: Bearer gm_admin")
+HTTP_CODE=$(echo "$LIST_RESP" | tail -n1)
+BODY=$(echo "$LIST_RESP" | sed '$d')
 
-SEARCH_RESTORED_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" "${BASE_URL}/api/v1/search?check_in=2026-10-10&check_out=2026-10-12&adults=1")
-if [ "${SEARCH_RESTORED_STATUS}" -eq 200 ]; then
-  echo "✓ Endpoint pencarian pulih dan aktif normal kembali (200 OK)"
+assert_status "GM Admin membaca daftar feature flags" 200 "$HTTP_CODE"
+assert_contains "Memuat flag ff_channel_sync_integration" "ff_channel_sync_integration" "$BODY"
+assert_contains "Memuat flag ff_realtime_event_hub" "ff_realtime_event_hub" "$BODY"
+assert_contains "Memuat flag ff_last_room_safeguards" "ff_last_room_safeguards" "$BODY"
+assert_contains "Memuat flag ff_dynamic_rates_calendar" "ff_dynamic_rates_calendar" "$BODY"
+assert_contains "Memuat flag ff_official_pdf_voucher" "ff_official_pdf_voucher" "$BODY"
+
+# ------------------------------------------------------------------------------
+# 4. Emergency Kill-Switch: Matikan ff_channel_sync_integration
+# ------------------------------------------------------------------------------
+log_info "4. Pengujian Emergency Kill-Switch: Matikan ff_channel_sync_integration..."
+DISABLE_RESP=$(curl -s -w "\n%{http_code}" -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_channel_sync_integration" \
+    -H "Authorization: Bearer gm_admin" \
+    -H "Content-Type: application/json" \
+    -d '{"enabled": false}')
+HTTP_CODE=$(echo "$DISABLE_RESP" | tail -n1)
+BODY=$(echo "$DISABLE_RESP" | sed '$d')
+
+assert_status "GM Admin menonaktifkan ff_channel_sync_integration" 200 "$HTTP_CODE"
+assert_contains "Status respons updated" "updated" "$BODY"
+
+# Coba akses webhook yang telah dimatikan
+WEBHOOK_RESP=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/channel-events" \
+    -H "Content-Type: application/json" \
+    -d '{}')
+HTTP_CODE=$(echo "$WEBHOOK_RESP" | tail -n1)
+BODY=$(echo "$WEBHOOK_RESP" | sed '$d')
+
+assert_status "Akses ke webhook tertutup dengan 503 Service Unavailable" 503 "$HTTP_CODE"
+assert_contains "Respons memuat kode FEATURE_DISABLED" "FEATURE_DISABLED" "$BODY"
+
+# ------------------------------------------------------------------------------
+# 5. Pemulihan Flag: Nyalakan Kembali ff_channel_sync_integration
+# ------------------------------------------------------------------------------
+log_info "5. Pemulihan Flag: Mengaktifkan Kembali ff_channel_sync_integration..."
+ENABLE_RESP=$(curl -s -w "\n%{http_code}" -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_channel_sync_integration" \
+    -H "Authorization: Bearer gm_admin" \
+    -H "Content-Type: application/json" \
+    -d '{"enabled": true}')
+HTTP_CODE=$(echo "$ENABLE_RESP" | tail -n1)
+assert_status "GM Admin mengaktifkan kembali ff_channel_sync_integration" 200 "$HTTP_CODE"
+
+# Coba akses webhook kembali (sekarang harus diproses oleh handler, ditolak 400 Bad Request karena payload kosong, BUKAN 503)
+WEBHOOK_RESTORE_RESP=$(curl -s -w "\n%{http_code}" -X POST "${BASE_URL}/api/v1/channel-events" \
+    -H "Content-Type: application/json" \
+    -d '{}')
+HTTP_CODE=$(echo "$WEBHOOK_RESTORE_RESP" | tail -n1)
+assert_status "Webhook diproses normal oleh handler (400 Bad Request, bukan 503)" 400 "$HTTP_CODE"
+
+# ------------------------------------------------------------------------------
+# 6. Ringkasan Hasil
+# ------------------------------------------------------------------------------
+echo ""
+echo "=============================================================================="
+echo "  RINGKASAN HASIL PENGUJIAN E2E: FEATURE FLAGS SYSTEM                         "
+echo "=============================================================================="
+echo "Total Asersi: $TOTAL_TESTS"
+echo "Lulus (Passed) : $PASSED_TESTS"
+echo "Gagal (Failed) : $FAILED_TESTS"
+echo ""
+
+if [ "$FAILED_TESTS" -eq 0 ]; then
+    echo -e "${COLOR_GREEN}★★★ SELURUH PENGUJIAN FEATURE FLAGS BERHASIL (100% PASS) ★★★${COLOR_RESET}"
+    exit 0
 else
-  echo "✗ Endpoint pencarian gagal pulih: HTTP ${SEARCH_RESTORED_STATUS}"
-  exit 1
+    echo -e "${COLOR_RED}✗ BEBERAPA PENGUJIAN GAGAL (FAILED)${COLOR_RESET}"
+    exit 1
 fi
-
-# 5. Role-Scoped Canary Testing: Restrict ff_catalog_write to gm_admin only
-echo "--- 5. Role-Scoped Canary Test: Restrict ff_catalog_write to gm_admin only ---"
-curl -sS -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_catalog_write" \
-  -H "Authorization: Bearer ${GM_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true, "allowed_roles": ["gm_admin"]}' > /dev/null
-
-# Call POST /catalog/rooms as revenue_mgr (should receive 503 FEATURE_DISABLED despite Casbin permission)
-REV_POST_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "${BASE_URL}/api/v1/catalog/rooms" \
-  -H "Authorization: Bearer ${REVENUE_MGR_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"code":"TEST-TMP","name":"Test Room","base_price_minor":500000,"max_capacity":2,"max_adults":2,"max_children":1}')
-
-if [ "${REV_POST_STATUS}" -eq 503 ]; then
-  echo "✓ Revenue Manager diblokir oleh Role-Scoping Feature Flag (503 Service Unavailable)"
-else
-  echo "✗ Revenue Manager tidak diblokir oleh flag: HTTP ${REV_POST_STATUS}"
-  exit 1
-fi
-
-# Restore ff_catalog_write to original allowed_roles
-curl -sS -X PUT "${BASE_URL}/api/v1/admin/feature-flags/ff_catalog_write" \
-  -H "Authorization: Bearer ${GM_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true, "allowed_roles": ["revenue_mgr", "gm_admin"]}' > /dev/null
-echo "✓ Status flag ff_catalog_write berhasil dikembalikan ke semula"
-
-echo "=== Selesai: Seluruh pengujian E2E Feature Flags berhasil 100% ==="

@@ -1,8 +1,12 @@
 package script
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,12 +30,14 @@ import (
 	"github.com/example/hotel-booking/internal/assistance"
 	"github.com/example/hotel-booking/internal/booking"
 	"github.com/example/hotel-booking/internal/catalog"
+	"github.com/example/hotel-booking/internal/channel"
 	"github.com/example/hotel-booking/internal/finance"
 	"github.com/example/hotel-booking/internal/frontdesk"
 	"github.com/example/hotel-booking/internal/guest"
 	"github.com/example/hotel-booking/internal/housekeeping"
 	"github.com/example/hotel-booking/internal/inventory"
 	"github.com/example/hotel-booking/internal/platform/auth"
+	"github.com/example/hotel-booking/internal/platform/eventbus"
 	"github.com/example/hotel-booking/internal/platform/featureflag"
 	"github.com/example/hotel-booking/internal/rates"
 	"github.com/example/hotel-booking/internal/stay"
@@ -55,6 +62,9 @@ type e2eTxMock struct {
 	frontdeskStore  *e2eFrontDeskStore
 	stayStore       *e2eStayStore
 	assistanceStore *e2eAssistanceStore
+	eventBus        *eventbus.MemoryBus
+	channelStore    *channel.MemoryStore
+	invStore        *mockInventoryStore
 }
 
 func (m *e2eTxMock) LockAndDecrement(_ context.Context, _ string, _, _ time.Time, _ int) error {
@@ -139,11 +149,21 @@ type e2eGuestStore struct {
 }
 
 func newE2EGuestStore(tx *e2eTxMock) *e2eGuestStore {
-	return &e2eGuestStore{
+	store := &e2eGuestStore{
 		challenges: make(map[string]*guest.Challenge),
 		sessions:   make(map[string]*guest.GuestSession),
 		tx:         tx,
 	}
+	seedToken := "gst_sess_e2e_secret_token_123"
+	h := sha256.Sum256([]byte(seedToken))
+	tokenHash := hex.EncodeToString(h[:])
+	store.sessions[tokenHash] = &guest.GuestSession{
+		ID:         "sess-e2e-seed",
+		GuestEmail: "budi@example.com",
+		TokenHash:  tokenHash,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+	}
+	return store
 }
 
 func (s *e2eGuestStore) CreateChallenge(ctx context.Context, c *guest.Challenge) error {
@@ -893,6 +913,12 @@ func newE2EFeatureFlagManager() featureflag.Manager {
 		"ff_front_desk_operations":        {Key: "ff_front_desk_operations", Enabled: true},
 		"ff_stay_modification":            {Key: "ff_stay_modification", Enabled: true},
 		"ff_guest_special_requests":       {Key: "ff_guest_special_requests", Enabled: true},
+		"ff_dynamic_rates_calendar":       {Key: "ff_dynamic_rates_calendar", Enabled: true, AllowedRoles: []string{"receptionist", "revenue_mgr", "gm_admin"}},
+		"ff_official_pdf_voucher":         {Key: "ff_official_pdf_voucher", Enabled: true},
+		"ff_realtime_event_hub":           {Key: "ff_realtime_event_hub", Enabled: true},
+		"ff_channel_sync_integration":     {Key: "ff_channel_sync_integration", Enabled: true},
+		"ff_last_room_safeguards":         {Key: "ff_last_room_safeguards", Enabled: true, AllowedRoles: []string{"receptionist", "revenue_mgr", "gm_admin"}},
+		"ff_whatsapp_notifier":            {Key: "ff_whatsapp_notifier", Enabled: true},
 	}
 	return featureflag.NewMemoryManager(flags)
 }
@@ -943,6 +969,15 @@ func setupE2EHandler(t testing.TB) (http.Handler, *e2eTxMock) {
 		{"p", "receptionist", "/api/v1/revenue/calendar", "GET"},
 		{"p", "receptionist", "/api/v1/bookings/:id/voucher.pdf", "GET"},
 		{"p", "receptionist", "/api/v1/front-desk/verify-voucher", "GET"},
+		{"p", "receptionist", "/api/v1/front-desk/live-stream", "GET"},
+		{"p", "receptionist", "/api/v1/staff/channel-sync-issues", "GET"},
+		{"p", "receptionist", "/api/v1/staff/channel-sync-issues/:id/resolve", "POST"},
+		{"p", "revenue_mgr", "/api/v1/staff/channel-sync-issues", "GET"},
+		{"p", "revenue_mgr", "/api/v1/staff/channel-sync-issues/:id/resolve", "POST"},
+		{"p", "gm_admin", "/api/v1/staff/channel-sync-issues", "GET"},
+		{"p", "gm_admin", "/api/v1/staff/channel-sync-issues/:id/resolve", "POST"},
+		{"p", "revenue_mgr", "/api/v1/staff/channel-partners/:code", "GET"},
+		{"p", "gm_admin", "/api/v1/staff/channel-partners/:code", "GET"},
 		{"p", "finance", "/api/v1/bookings/:id/invoice.pdf", "GET"},
 		{"p", "gm_admin", "/api/v1/*", "*"},
 		{"g", "receptionist", "guest"},
@@ -1045,6 +1080,14 @@ func setupE2EHandler(t testing.TB) (http.Handler, *e2eTxMock) {
 	tx.assistanceStore = astStore
 	astSvc := assistance.NewService(astStore, nil)
 
+	eventBus := eventbus.NewMemoryBus()
+	channelStore := channel.NewMemoryStore()
+	channelSvc := channel.NewService(channelStore, inv, eventBus)
+	waSender := notifier.NewLogWhatsApp(nil)
+	tx.eventBus = eventBus
+	tx.channelStore = channelStore
+	tx.invStore = inv
+
 	handler := apihttp.NewRouter(apihttp.Deps{
 		StaffAuth:       apihttp.TestStaffVerifier(),
 		BookingSvc:      bkSvc,
@@ -1065,6 +1108,9 @@ func setupE2EHandler(t testing.TB) (http.Handler, *e2eTxMock) {
 		CalendarStore:   calStore,
 		PromoStore:      promoStore,
 		FeatureFlag:     newE2EFeatureFlagManager(),
+		EventBus:        eventBus,
+		ChannelSvc:      channelSvc,
+		WhatsAppSender:  waSender,
 		ReadyCheck:      func(ctx context.Context) error { return nil },
 		FakePay: func(c *gin.Context) {
 			bID := c.Query("booking_id")
@@ -1130,6 +1176,14 @@ type mockInventoryStore struct {
 
 func (m *mockInventoryStore) GetByDate(_ context.Context, _ string, _, _ time.Time) ([]inventory.Availability, error) {
 	return m.avail, nil
+}
+
+func (m *mockInventoryStore) CheckAvailability(_ context.Context, _ string, from, to time.Time, rooms int) error {
+	return inventory.Check(m.avail, from, to, rooms)
+}
+
+func (m *mockInventoryStore) CheckAvailabilityWithBuffer(_ context.Context, _ string, from, to time.Time, rooms, safetyBuffer int) error {
+	return inventory.CheckWithBuffer(m.avail, from, to, rooms, safetyBuffer)
 }
 
 type mockRateProvider struct {
@@ -3935,6 +3989,594 @@ func TestEndToEndHotelBookingRBACLifecycle(t *testing.T) {
 		if resForbidden.StatusCode != http.StatusForbidden {
 			t.Errorf("expected 403 Forbidden for receptionist on tax invoice, got %d", resForbidden.StatusCode)
 		}
+	})
+
+	// 77. Real-Time SSE Live Streams for Guests and Front Desk (F10)
+	t.Run("E2E-77: Real-Time SSE Live Streams for Guests and Front Desk", func(t *testing.T) {
+		gstTok := guestSessionToken
+		if gstTok == "" {
+			targetEmail := tx.booking.GuestEmail
+			chal, _ := client.Post(srv.URL+"/api/v1/auth/guest/challenge", "application/json", strings.NewReader(fmt.Sprintf(`{"email":%q}`, targetEmail)))
+			_ = chal.Body.Close()
+			verBody, _ := json.Marshal(map[string]string{"email": targetEmail, "code": tx.otpNotifier.lastOTP})
+			verRes, _ := client.Post(srv.URL+"/api/v1/auth/guest/verify", "application/json", bytes.NewReader(verBody))
+			var vResp map[string]any
+			_ = json.NewDecoder(verRes.Body).Decode(&vResp)
+			_ = verRes.Body.Close()
+			gstTok, _ = vResp["token"].(string)
+			guestSessionToken = gstTok
+		}
+
+		// 1. Unauthenticated request to guest live-status returns 401 Unauthorized
+		reqUnauth, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/live-status", nil)
+		resUnauth, err := client.Do(reqUnauth)
+		if err != nil {
+			t.Fatalf("unauth request failed: %v", err)
+		}
+		if resUnauth.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized for missing guest session, got %d", resUnauth.StatusCode)
+		}
+
+		// 2. Guest connects to SSE stream with valid session
+		ctxGuest, cancelGuest := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelGuest()
+
+		reqStream, _ := http.NewRequestWithContext(ctxGuest, http.MethodGet, srv.URL+"/api/v1/guest/bookings/bk-e2e-001/live-status", nil)
+		reqStream.Header.Set("Authorization", "Bearer "+gstTok)
+		resStream, err := client.Do(reqStream)
+		if err != nil {
+			t.Fatalf("guest stream request failed: %v", err)
+		}
+		defer resStream.Body.Close()
+
+		if resStream.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for guest live stream, got %d", resStream.StatusCode)
+		}
+		if ct := resStream.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+			t.Errorf("expected text/event-stream, got %s", ct)
+		}
+
+		// In background, publish an event to EventBus for this booking
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			_ = tx.eventBus.Publish(context.Background(), "hospitality.booking.bk-e2e-001.confirmed", "payment_confirmed", "evt-live-01", []byte(`{"status":"CONFIRMED","amount":1100000}`))
+		}()
+
+		reader := bufio.NewReader(resStream.Body)
+		gotConnected := false
+		gotPaymentConfirmed := false
+		for i := 0; i < 20; i++ {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				break
+			}
+			if strings.Contains(line, "event:connected") || strings.Contains(line, "event: connected") {
+				gotConnected = true
+			}
+			if strings.Contains(line, "event:payment_confirmed") || strings.Contains(line, "event: payment_confirmed") {
+				gotPaymentConfirmed = true
+				break
+			}
+		}
+
+		if !gotConnected {
+			t.Errorf("expected initial connected event on guest SSE")
+		}
+		if !gotPaymentConfirmed {
+			t.Errorf("expected pushed payment_confirmed event on guest SSE")
+		}
+
+		// 3. Front Desk Live Operational Stream connects for receptionist
+		ctxFD, cancelFD := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelFD()
+
+		reqFD, _ := http.NewRequestWithContext(ctxFD, http.MethodGet, srv.URL+"/api/v1/front-desk/live-stream", nil)
+		reqFD.Header.Set("Authorization", "Bearer receptionist")
+		resFD, err := client.Do(reqFD)
+		if err != nil {
+			t.Fatalf("front desk stream request failed: %v", err)
+		}
+		defer resFD.Body.Close()
+
+		if resFD.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for front desk live stream, got %d", resFD.StatusCode)
+		}
+
+		// 4. Guest role trying to connect to front desk stream returns 403 Forbidden
+		reqFDForbidden, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/live-stream", nil)
+		reqFDForbidden.Header.Set("Authorization", "Bearer "+gstTok)
+		resFDForbidden, err := client.Do(reqFDForbidden)
+		if err != nil {
+			t.Fatalf("forbidden front desk stream request failed: %v", err)
+		}
+		if resFDForbidden.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for guest on front desk stream, got %d", resFDForbidden.StatusCode)
+		}
+	})
+
+	// 78. Inbound Channel Webhooks, HMAC Verification, Idempotency, and Conflict Quarantine (F11)
+	t.Run("E2E-78: Inbound Channel Webhooks, HMAC Verification, Idempotency, and Conflict Quarantine", func(t *testing.T) {
+		partnerSecret := "agd_secret_webhook_signature_key_2026"
+		webhookURL := srv.URL + "/api/v1/channel-events"
+
+		validPayload := `{
+			"event_id": "EVT-AGODA-7801",
+			"event_type": "reservation_created",
+			"external_reference": "AGD-998822",
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "2026-10-10",
+			"check_out": "2026-10-12",
+			"rooms": 1,
+			"guest_name": "Agoda Guest Michael",
+			"guest_email": "michael@traveler.com",
+			"guest_phone": "+6281299998888",
+			"total_payout_idr": 1100000
+		}`
+
+		calcHMAC := func(secret, payload string) string {
+			mac := hmac.New(sha256.New, []byte(secret))
+			mac.Write([]byte(payload))
+			return hex.EncodeToString(mac.Sum(nil))
+		}
+
+		// 1. Missing X-Channel-Provider header -> 400 Bad Request
+		reqNoProv, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(validPayload))
+		reqNoProv.Header.Set("Content-Type", "application/json")
+		resNoProv, _ := client.Do(reqNoProv)
+		if resNoProv.StatusCode != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request on missing provider, got %d", resNoProv.StatusCode)
+		}
+
+		// 2. Missing X-Channel-Signature header -> 401 Unauthorized
+		reqNoSig, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(validPayload))
+		reqNoSig.Header.Set("Content-Type", "application/json")
+		reqNoSig.Header.Set("X-Channel-Provider", "AGODA")
+		resNoSig, _ := client.Do(reqNoSig)
+		if resNoSig.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized on missing signature, got %d", resNoSig.StatusCode)
+		}
+
+		// 3. Invalid signature -> 401 Unauthorized
+		reqBadSig, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(validPayload))
+		reqBadSig.Header.Set("Content-Type", "application/json")
+		reqBadSig.Header.Set("X-Channel-Provider", "AGODA")
+		reqBadSig.Header.Set("X-Channel-Signature", "wrong_signature_hex")
+		resBadSig, _ := client.Do(reqBadSig)
+		if resBadSig.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 Unauthorized on bad signature, got %d", resBadSig.StatusCode)
+		}
+
+		// 4. Valid signature -> 202 Accepted
+		sig := calcHMAC(partnerSecret, validPayload)
+		reqValid, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(validPayload))
+		reqValid.Header.Set("Content-Type", "application/json")
+		reqValid.Header.Set("X-Channel-Provider", "AGODA")
+		reqValid.Header.Set("X-Channel-Signature", sig)
+		resValid, err := client.Do(reqValid)
+		if err != nil {
+			t.Fatalf("valid webhook request failed: %v", err)
+		}
+		if resValid.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted for valid webhook, got %d", resValid.StatusCode)
+		}
+		var validRes map[string]interface{}
+		_ = json.NewDecoder(resValid.Body).Decode(&validRes)
+		if validRes["status"] != "ACCEPTED" {
+			t.Errorf("expected status ACCEPTED, got %v", validRes["status"])
+		}
+
+		// 5. Replay identical event ID -> 200 OK (DUPLICATE_ACCEPTED idempotency)
+		reqDup, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(validPayload))
+		reqDup.Header.Set("Content-Type", "application/json")
+		reqDup.Header.Set("X-Channel-Provider", "AGODA")
+		reqDup.Header.Set("X-Channel-Signature", sig)
+		resDup, err := client.Do(reqDup)
+		if err != nil {
+			t.Fatalf("dup webhook request failed: %v", err)
+		}
+		if resDup.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK for duplicate webhook, got %d", resDup.StatusCode)
+		}
+		var dupRes map[string]interface{}
+		_ = json.NewDecoder(resDup.Body).Decode(&dupRes)
+		if dupRes["status"] != "DUPLICATE_ACCEPTED" {
+			t.Errorf("expected status DUPLICATE_ACCEPTED, got %v", dupRes["status"])
+		}
+
+		// 6. Overbooking conflict (requesting 50 rooms when inventory only has 10) -> 409 Conflict & quarantine
+		conflictPayload := `{
+			"event_id": "EVT-AGODA-CONFLICT-01",
+			"event_type": "reservation_created",
+			"external_reference": "AGD-OVERBOOK-999",
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "2026-10-10",
+			"check_out": "2026-10-12",
+			"rooms": 50,
+			"guest_name": "Big Tour Group",
+			"guest_email": "tour@traveler.com",
+			"guest_phone": "+6281299998888",
+			"total_payout_idr": 55000000
+		}`
+		sigConflict := calcHMAC(partnerSecret, conflictPayload)
+		reqConflict, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(conflictPayload))
+		reqConflict.Header.Set("Content-Type", "application/json")
+		reqConflict.Header.Set("X-Channel-Provider", "AGODA")
+		reqConflict.Header.Set("X-Channel-Signature", sigConflict)
+		resConflict, _ := client.Do(reqConflict)
+		if resConflict.StatusCode != http.StatusConflict {
+			t.Errorf("expected 409 Conflict on overbooking, got %d", resConflict.StatusCode)
+		}
+
+		// 7. Revenue Manager retrieves channel sync issues -> 200 OK
+		reqIssues, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/staff/channel-sync-issues?partner=AGODA", nil)
+		reqIssues.Header.Set("Authorization", "Bearer revenue_mgr")
+		resIssues, err := client.Do(reqIssues)
+		if err != nil {
+			t.Fatalf("channel sync issues request failed: %v", err)
+		}
+		if resIssues.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for revenue_mgr on sync issues, got %d", resIssues.StatusCode)
+		}
+		var issuesResult map[string]interface{}
+		_ = json.NewDecoder(resIssues.Body).Decode(&issuesResult)
+		issuesList, _ := issuesResult["issues"].([]interface{})
+		if len(issuesList) == 0 {
+			t.Errorf("expected quarantined sync issues in list, got 0")
+		}
+
+		// 8. Revenue Manager views channel partner details -> 200 OK
+		reqPartner, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/staff/channel-partners/AGODA", nil)
+		reqPartner.Header.Set("Authorization", "Bearer revenue_mgr")
+		resPartner, err := client.Do(reqPartner)
+		if err != nil {
+			t.Fatalf("channel partner request failed: %v", err)
+		}
+		if resPartner.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK on get channel partner, got %d", resPartner.StatusCode)
+		}
+
+		// 9. Unauthorized role (housekeeping) forbidden from channel sync issues -> 403 Forbidden
+		reqForbidden, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/staff/channel-sync-issues", nil)
+		reqForbidden.Header.Set("Authorization", "Bearer housekeeping")
+		resForbidden, _ := client.Do(reqForbidden)
+		if resForbidden.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for housekeeping on channel issues, got %d", resForbidden.StatusCode)
+		}
+	})
+
+	// E2E-79: Dynamic Last-Room Hold Timeout & LRDA Safety Buffer (OTA Rejected 409)
+	t.Run("E2E-79: Dynamic Last-Room Hold Timeout & LRDA Safety Buffer Protection", func(t *testing.T) {
+		// 1. Setup inventory kondisi kritis: sisa kamar = 1
+		criticalDate := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+		tx.invStore.avail = []inventory.Availability{
+			{Date: criticalDate, TotalRooms: 10, AvailableRooms: 1},
+			{Date: criticalDate.Add(24 * time.Hour), TotalRooms: 10, AvailableRooms: 1},
+		}
+
+		// 2. OTA Agoda mencoba memesan 1 kamar saat sisa kamar = 1 (safety_buffer default = 1)
+		webhookURL := srv.URL + "/api/v1/channel-events"
+		agodaPayload := `{
+			"provider": "AGODA",
+			"event_id": "evt_agoda_lrda_001",
+			"event_type": "reservation_created",
+			"external_reference": "AGD-LRDA-9901",
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "2026-11-25",
+			"check_out": "2026-11-27",
+			"rooms": 1,
+			"guest_name": "Tamu OTA Terbentur Safety Buffer",
+			"guest_email": "ota.guest@example.com",
+			"guest_phone": "+6281122334455",
+			"total_payout_idr": 1100000
+		}`
+		partnerSecret := "agd_secret_webhook_signature_key_2026"
+		calcHMAC := func(secret, payload string) string {
+			mac := hmac.New(sha256.New, []byte(secret))
+			mac.Write([]byte(payload))
+			return hex.EncodeToString(mac.Sum(nil))
+		}
+		sig := calcHMAC(partnerSecret, agodaPayload)
+
+		reqOTA, _ := http.NewRequest(http.MethodPost, webhookURL, strings.NewReader(agodaPayload))
+		reqOTA.Header.Set("Content-Type", "application/json")
+		reqOTA.Header.Set("X-Channel-Provider", "AGODA")
+		reqOTA.Header.Set("X-Channel-Signature", sig)
+		resOTA, err := client.Do(reqOTA)
+		if err != nil {
+			t.Fatalf("OTA webhook request failed: %v", err)
+		}
+		if resOTA.StatusCode != http.StatusConflict {
+			t.Errorf("expected 409 Conflict due to LRDA safety buffer, got %d", resOTA.StatusCode)
+		}
+
+		// 3. Pada kondisi stok kritis sisa 1 kamar ini, Tamu Web Direct memesan kamar
+		quoteID := e2eQuoteID(t, client, srv.URL, "2026-11-25", "2026-11-27")
+		bookPayload := fmt.Sprintf(`{
+			"quote_id": %q,
+			"room_type_id": "01900000-0000-7000-8000-000000000001",
+			"check_in": "2026-11-25",
+			"check_out": "2026-11-27",
+			"num_rooms": 1,
+			"num_guests": 2,
+			"guest_name": "Direct Guest Last Room",
+			"guest_email": "direct.guest@example.com",
+			"terms_accepted": true,
+			"privacy_accepted": true
+		}`, quoteID)
+
+		reqDirect, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/bookings", strings.NewReader(bookPayload))
+		reqDirect.Header.Set("Content-Type", "application/json")
+		resDirect, err := client.Do(reqDirect)
+		if err != nil {
+			t.Fatalf("direct booking request failed: %v", err)
+		}
+		if resDirect.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201 Created for direct booking on last room, got %d", resDirect.StatusCode)
+		}
+
+		// 4. Verifikasi hold timeout dinamis: pada stok kritis sisa kamar <= 1, hold duration dipersingkat ke 15 menit
+		if tx.booking.ExpiresAt == nil {
+			t.Fatalf("expected booking.ExpiresAt to be set, got nil")
+		}
+		holdDuration := tx.booking.ExpiresAt.Sub(time.Now().UTC())
+		if holdDuration < 10*time.Minute || holdDuration > 16*time.Minute {
+			t.Errorf("expected dynamic hold duration ~15 minutes, got %v", holdDuration)
+		}
+	})
+
+	// E2E-80: 1-Click Complimentary Upgrade Resolution Engine & RBAC Verification
+	t.Run("E2E-80: 1-Click Complimentary Upgrade Resolution Engine & RBAC Verification", func(t *testing.T) {
+		// 1. Receptionist mengambil daftar channel sync issues -> 200 OK (RBAC receptionist allowed)
+		reqIssues, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/staff/channel-sync-issues", nil)
+		reqIssues.Header.Set("Authorization", "Bearer receptionist")
+		resIssues, err := client.Do(reqIssues)
+		if err != nil {
+			t.Fatalf("receptionist sync issues request failed: %v", err)
+		}
+		if resIssues.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK for receptionist, got %d", resIssues.StatusCode)
+		}
+
+		var issuesResult map[string]interface{}
+		_ = json.NewDecoder(resIssues.Body).Decode(&issuesResult)
+		issuesList, ok := issuesResult["issues"].([]interface{})
+		if !ok || len(issuesList) == 0 {
+			t.Fatalf("expected at least 1 quarantined issue, got 0")
+		}
+
+		firstIssue := issuesList[0].(map[string]interface{})
+		targetIssueID := firstIssue["id"].(string)
+
+		// 2. Unauthorized role (housekeeping) mencoba menyelesaikan isu -> 403 Forbidden
+		resolvePayload := `{
+			"action": "COMPLIMENTARY_UPGRADE",
+			"target_room_type_id": "01900000-0000-7000-8000-000000000002",
+			"notes": "Upgrade gratis ke Deluxe Room oleh Meja Depan"
+		}`
+		reqHK, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/staff/channel-sync-issues/"+targetIssueID+"/resolve", strings.NewReader(resolvePayload))
+		reqHK.Header.Set("Content-Type", "application/json")
+		reqHK.Header.Set("Authorization", "Bearer housekeeping")
+		resHK, err := client.Do(reqHK)
+		if err != nil {
+			t.Fatalf("housekeeping resolve request failed: %v", err)
+		}
+		if resHK.StatusCode != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for housekeeping on resolve issue, got %d", resHK.StatusCode)
+		}
+
+		// 3. Receptionist menyelesaikan isu via 1-Click Complimentary Upgrade -> 200 OK
+		reqResolve, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/staff/channel-sync-issues/"+targetIssueID+"/resolve", strings.NewReader(resolvePayload))
+		reqResolve.Header.Set("Content-Type", "application/json")
+		reqResolve.Header.Set("Authorization", "Bearer receptionist")
+		resResolve, err := client.Do(reqResolve)
+		if err != nil {
+			t.Fatalf("receptionist resolve request failed: %v", err)
+		}
+		if resResolve.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 OK on resolve issue, got %d", resResolve.StatusCode)
+		}
+
+		var resolveResult map[string]interface{}
+		_ = json.NewDecoder(resResolve.Body).Decode(&resolveResult)
+		if resolveResult["status"] != "SUCCESS" {
+			t.Errorf("expected status SUCCESS, got %v", resolveResult["status"])
+		}
+		issueObj := resolveResult["issue"].(map[string]interface{})
+		if issueObj["status"] != "RESOLVED" {
+			t.Errorf("expected issue status RESOLVED, got %v", issueObj["status"])
+		}
+
+		// 4. Double resolution: Staf mencoba resolve isu yang sudah selesai -> 409 Conflict
+		reqDouble, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/staff/channel-sync-issues/"+targetIssueID+"/resolve", strings.NewReader(resolvePayload))
+		reqDouble.Header.Set("Content-Type", "application/json")
+		reqDouble.Header.Set("Authorization", "Bearer receptionist")
+		resDouble, _ := client.Do(reqDouble)
+		if resDouble.StatusCode != http.StatusConflict {
+			t.Errorf("expected 409 Conflict on double resolution, got %d", resDouble.StatusCode)
+		}
+	})
+
+	// 81. Modular Multi-Provider WhatsApp Notifier Engine (F11)
+	t.Run("E2E-81: Modular Multi-Provider WhatsApp Notifier Engine (Twilio, Meta WABA, Gateway, Log Mock)", func(t *testing.T) {
+		msg := notifier.WhatsAppBookingMessage{
+			ToPhone:    "081234567890",
+			GuestName:  "Dian Sastrowardoyo",
+			Reference:  "PKU-E2E-WA-01",
+			RoomName:   "Deluxe Room",
+			CheckIn:    "2026-11-01",
+			CheckOut:   "2026-11-03",
+			VoucherURL: "https://pulang.id/v/PKU-E2E-WA-01",
+		}
+
+		// 1. Log Mock Provider
+		logSender, err := notifier.NewWhatsAppSender(notifier.WhatsAppConfig{Provider: "log"}, nil)
+		if err != nil {
+			t.Fatalf("failed to init log whatsapp: %v", err)
+		}
+		if err := logSender.SendBookingConfirmation(context.Background(), msg); err != nil {
+			t.Fatalf("log sender failed: %v", err)
+		}
+
+		// 2. Generic HTTP Gateway Mock
+		gwServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "gw-secret-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["target"] != "6281234567890" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer gwServer.Close()
+
+		gwSender, err := notifier.NewWhatsAppSender(notifier.WhatsAppConfig{
+			Provider: "generic_http",
+			BaseURL:  gwServer.URL,
+			APIKey:   "gw-secret-token",
+		}, nil)
+		if err != nil {
+			t.Fatalf("failed to init generic gateway: %v", err)
+		}
+		if err := gwSender.SendBookingConfirmation(context.Background(), msg); err != nil {
+			t.Fatalf("generic gateway sender failed: %v", err)
+		}
+
+		// 3. Twilio Programmable Messaging Mock
+		twilioServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, pass, ok := r.BasicAuth()
+			if !ok || user != "AC_MOCK" || pass != "TWILIO_SECRET" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			b, _ := io.ReadAll(r.Body)
+			vals, _ := url.ParseQuery(string(b))
+			if vals.Get("From") != "whatsapp:+14155238886" || vals.Get("To") != "whatsapp:+6281234567890" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+		}))
+		defer twilioServer.Close()
+
+		twilioSender, err := notifier.NewWhatsAppSender(notifier.WhatsAppConfig{
+			Provider:   "twilio",
+			BaseURL:    twilioServer.URL,
+			AccountSID: "AC_MOCK",
+			APIKey:     "TWILIO_SECRET",
+			FromPhone:  "+14155238886",
+		}, nil)
+		if err != nil {
+			t.Fatalf("failed to init twilio sender: %v", err)
+		}
+		if err := twilioSender.SendBookingConfirmation(context.Background(), msg); err != nil {
+			t.Fatalf("twilio sender failed: %v", err)
+		}
+
+		// 4. Meta WhatsApp Business Cloud API Mock
+		metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer META_SECRET_KEY" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			if payload["messaging_product"] != "whatsapp" || payload["to"] != "6281234567890" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer metaServer.Close()
+
+		metaSender, err := notifier.NewWhatsAppSender(notifier.WhatsAppConfig{
+			Provider:      "meta_cloud",
+			BaseURL:       metaServer.URL,
+			PhoneNumberID: "100998877",
+			APIKey:        "META_SECRET_KEY",
+		}, nil)
+		if err != nil {
+			t.Fatalf("failed to init meta cloud sender: %v", err)
+		}
+		if err := metaSender.SendBookingConfirmation(context.Background(), msg); err != nil {
+			t.Fatalf("meta cloud sender failed: %v", err)
+		}
+
+		// 5. Unsupported provider validation
+		_, err = notifier.NewWhatsAppSender(notifier.WhatsAppConfig{Provider: "invalid_xyz"}, nil)
+		if !errors.Is(err, notifier.ErrUnsupportedProvider) {
+			t.Errorf("expected ErrUnsupportedProvider, got %v", err)
+		}
+	})
+
+	// 82. Hospitality & Channel Feature Flags Dynamic Kill-Switch & Admin Toggling (FR-FF-08)
+	t.Run("E2E-82: Hospitality & Channel Feature Flags Dynamic Kill-Switch & Admin Toggling", func(t *testing.T) {
+		// 1. GM Admin memeriksa daftar feature flags
+		reqList, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/admin/feature-flags", nil)
+		reqList.Header.Set("Authorization", "Bearer gm_admin")
+		resList, err := client.Do(reqList)
+		if err != nil {
+			t.Fatalf("failed to list flags: %v", err)
+		}
+		if resList.StatusCode != http.StatusOK {
+			t.Fatalf("list flags status = %d, want 200", resList.StatusCode)
+		}
+
+		// 2. GM Admin menonaktifkan flag ff_channel_sync_integration (Emergency Kill-Switch)
+		disablePayload := `{"enabled": false}`
+		reqDisable, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_channel_sync_integration", strings.NewReader(disablePayload))
+		reqDisable.Header.Set("Authorization", "Bearer gm_admin")
+		reqDisable.Header.Set("Content-Type", "application/json")
+		resDisable, err := client.Do(reqDisable)
+		if err != nil {
+			t.Fatalf("disable flag request failed: %v", err)
+		}
+		if resDisable.StatusCode != http.StatusOK {
+			t.Fatalf("disable flag status = %d, want 200", resDisable.StatusCode)
+		}
+
+		// 3. Permintaan webhook masuk ke /api/v1/channel-events sekarang ditolak 503 Service Unavailable
+		reqWebhook, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/channel-events", strings.NewReader(`{}`))
+		reqWebhook.Header.Set("Content-Type", "application/json")
+		resWebhook, err := client.Do(reqWebhook)
+		if err != nil {
+			t.Fatalf("webhook request failed: %v", err)
+		}
+		if resWebhook.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 Service Unavailable for disabled channel sync, got %d", resWebhook.StatusCode)
+		}
+
+		// 4. GM Admin mengaktifkan kembali flag ff_channel_sync_integration
+		enablePayload := `{"enabled": true}`
+		reqEnable, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_channel_sync_integration", strings.NewReader(enablePayload))
+		reqEnable.Header.Set("Authorization", "Bearer gm_admin")
+		reqEnable.Header.Set("Content-Type", "application/json")
+		resEnable, err := client.Do(reqEnable)
+		if err != nil || resEnable.StatusCode != http.StatusOK {
+			t.Fatalf("enable flag failed: status %d", resEnable.StatusCode)
+		}
+
+		// 5. Uji Kill-Switch pada Live Stream Real-Time (ff_realtime_event_hub)
+		reqDisableSSE, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_realtime_event_hub", strings.NewReader(disablePayload))
+		reqDisableSSE.Header.Set("Authorization", "Bearer gm_admin")
+		reqDisableSSE.Header.Set("Content-Type", "application/json")
+		_, _ = client.Do(reqDisableSSE)
+
+		reqSSE, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/front-desk/live-stream", nil)
+		reqSSE.Header.Set("Authorization", "Bearer receptionist")
+		resSSE, _ := client.Do(reqSSE)
+		if resSSE.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("expected 503 for disabled live stream SSE, got %d", resSSE.StatusCode)
+		}
+
+		// Pulihkan kembali ff_realtime_event_hub
+		reqEnableSSE, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/v1/admin/feature-flags/ff_realtime_event_hub", strings.NewReader(enablePayload))
+		reqEnableSSE.Header.Set("Authorization", "Bearer gm_admin")
+		reqEnableSSE.Header.Set("Content-Type", "application/json")
+		_, _ = client.Do(reqEnableSSE)
 	})
 }
 

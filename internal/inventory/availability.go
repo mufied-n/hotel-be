@@ -36,17 +36,26 @@ type AvailabilityStore interface {
 // Check memverifikasi bahwa jumlah kamar tersedia sepanjang rentang tanggal.
 // Fungsi murni — mudah di-unit-test tanpa DB.
 func Check(avail []Availability, from, to time.Time, numRooms int) error {
+	return CheckWithBuffer(avail, from, to, numRooms, 0)
+}
+
+// CheckWithBuffer memverifikasi ketersediaan kamar dengan mempertimbangkan ambang batas safety buffer (LRDA).
+func CheckWithBuffer(avail []Availability, from, to time.Time, numRooms, safetyBuffer int) error {
 	fromUTC := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC)
 	toUTC := time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC)
 	nights := int(toUTC.Sub(fromUTC) / (24 * time.Hour))
 	if len(avail) < nights {
 		return fmt.Errorf("%w: expected %d nights, got %d rows", ErrNotFound, nights, len(avail))
 	}
+	if safetyBuffer < 0 {
+		safetyBuffer = 0
+	}
 	for _, a := range avail {
-		if a.AvailableRooms < numRooms {
-			return fmt.Errorf("%w: %s has %d, need %d",
-				ErrInsufficient, a.Date.Format("2006-01-02"), a.AvailableRooms, numRooms)
+		if a.AvailableRooms-numRooms < safetyBuffer {
+			return fmt.Errorf("%w: %s has %d available, requested %d exceeds safety buffer threshold %d",
+				ErrInsufficient, a.Date.Format("2006-01-02"), a.AvailableRooms, numRooms, safetyBuffer)
 		}
 	}
 	return nil
 }
+
