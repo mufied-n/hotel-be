@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -20,6 +21,10 @@ type Config struct {
 	Port           string
 	DatabaseDSN    string
 	ValkeyAddr     string
+	// Redis / Valkey Cloud & Password Support
+	RedisURL      string
+	RedisPassword string
+	RedisUser     string
 	// HoldTimeout durasi hold kamar sebelum dirilis otomatis (desain §12: 30 menit).
 	HoldTimeout time.Duration
 	// OutboxInterval interval polling relay outbox.
@@ -71,8 +76,8 @@ func (c Config) Validate() error {
 	if c.DatabaseDSN == "" {
 		return fmt.Errorf("config: DATABASE_URL cannot be empty")
 	}
-	if c.ValkeyAddr == "" {
-		return fmt.Errorf("config: VALKEY_ADDR cannot be empty")
+	if c.ValkeyAddr == "" && c.RedisURL == "" {
+		return fmt.Errorf("config: VALKEY_ADDR or REDIS_URL cannot be empty")
 	}
 	if c.HoldTimeout <= 0 {
 		return fmt.Errorf("config: HOLD_TIMEOUT must be positive duration")
@@ -131,7 +136,10 @@ func LoadConfig() Config {
 		Environment:        getenv("APP_ENV", "development"),
 		Port:               getenv("APP_PORT", "8080"),
 		DatabaseDSN:        getenv("DATABASE_URL", "postgres://postgres:dev@localhost:5432/booking?sslmode=disable"),
-		ValkeyAddr:         getenv("VALKEY_ADDR", "localhost:6379"),
+		ValkeyAddr:         getenv("VALKEY_ADDR", getenv("REDIS_ADDR", "localhost:6379")),
+		RedisURL:           getenv("REDIS_URL", getenv("VALKEY_URL", "")),
+		RedisPassword:      getenv("REDIS_PASSWORD", getenv("VALKEY_PASSWORD", "")),
+		RedisUser:          getenv("REDIS_USER", getenv("VALKEY_USER", "")),
 		HoldTimeout:        holdTimeout,
 		OutboxInterval:     outboxInterval,
 		AppBaseURL:         getenv("APP_BASE_URL", "http://localhost:3000"),
@@ -182,11 +190,41 @@ func NewDB(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// NewValkey membuat klien Redis/Valkey (RESP-compatible — desain §6).
+// AsynqRedisOpt mengembalikan opsi koneksi asynq baik via REDIS_URL maupun Addr/Password.
+func AsynqRedisOpt(cfg Config) (asynq.RedisConnOpt, error) {
+	if cfg.RedisURL != "" {
+		return asynq.ParseRedisURI(cfg.RedisURL)
+	}
+	return asynq.RedisClientOpt{
+		Addr:     cfg.ValkeyAddr,
+		Password: cfg.RedisPassword,
+		Username: cfg.RedisUser,
+	}, nil
+}
+
+// NewValkey membuat klien Redis/Valkey (RESP-compatible — kompatibel penuh dengan Redis Cloud, Upstash, dan Valkey).
 func NewValkey(cfg Config) *redis.Client {
+	client, err := NewRedisClient(cfg)
+	if err != nil {
+		return redis.NewClient(&redis.Options{Addr: cfg.ValkeyAddr})
+	}
+	return client
+}
+
+// NewRedisClient membuat klien Redis/Valkey dari REDIS_URL atau Addr/Password.
+func NewRedisClient(cfg Config) (*redis.Client, error) {
+	if cfg.RedisURL != "" {
+		opts, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse redis url: %w", err)
+		}
+		return redis.NewClient(opts), nil
+	}
 	return redis.NewClient(&redis.Options{
-		Addr: cfg.ValkeyAddr,
-	})
+		Addr:     cfg.ValkeyAddr,
+		Password: cfg.RedisPassword,
+		Username: cfg.RedisUser,
+	}), nil
 }
 
 // NewLogger membuat structured logger (NFR §15: slog).

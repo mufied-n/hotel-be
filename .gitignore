@@ -25,6 +25,8 @@ profile.out
 *.local
 !*.env.example
 !*.env.template
+docker-compose.override.yml
+docker-compose.*.local.yml
 
 # Cryptographic Keys, Certs & Private Tokens
 *.pem

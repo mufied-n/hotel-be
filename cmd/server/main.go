@@ -164,8 +164,13 @@ func main() {
 	bkSvc.SetQuoteStore(rateEngine.QuoteStore())
 	bkSvc.SetCatalogStore(catalogStore)
 
-	// ---- asynq (job queue di Valkey — §5.4, §6) ----
-	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: cfg.ValkeyAddr})
+	// ---- asynq (job queue di Redis/Valkey — §5.4, §6) ----
+	asynqOpt, err := platform.AsynqRedisOpt(cfg)
+	if err != nil {
+		log.Error("asynq.opt_invalid", "err", err)
+		os.Exit(1)
+	}
+	asynqClient := asynq.NewClient(asynqOpt)
 	defer func() { _ = asynqClient.Close() }()
 	enqueuer := &workers.Enqueuer{Client: asynqClient}
 
@@ -271,7 +276,7 @@ func main() {
 			return onConfirmed(ctx, payload)
 		}, log)
 	asynqSrv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: cfg.ValkeyAddr},
+		asynqOpt,
 		asynq.Config{Concurrency: 4},
 	)
 	go func() {

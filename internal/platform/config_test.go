@@ -209,6 +209,22 @@ func TestConfig_Validate(t *testing.T) {
 			modify:  func(c *Config) { c.CORSAllowedOrigins = []string{"https://hotel.example.com", "https://admin.example.com"} },
 			wantErr: false,
 		},
+		{
+			name: "valid with RedisURL instead of ValkeyAddr",
+			modify: func(c *Config) {
+				c.ValkeyAddr = ""
+				c.RedisURL = "redis://default:secret@redis-cloud.com:12345"
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty both valkey addr and redis url",
+			modify: func(c *Config) {
+				c.ValkeyAddr = ""
+				c.RedisURL = ""
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -222,3 +238,44 @@ func TestConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestRedisClientAndAsynqOpt(t *testing.T) {
+	// 1. With RedisURL
+	cfgURL := Config{
+		RedisURL: "redis://default:secretpass@localhost:6379/1",
+	}
+	clientURL, err := NewRedisClient(cfgURL)
+	if err != nil {
+		t.Fatalf("unexpected NewRedisClient error: %v", err)
+	}
+	_ = clientURL.Close()
+
+	optURL, err := AsynqRedisOpt(cfgURL)
+	if err != nil {
+		t.Fatalf("unexpected AsynqRedisOpt error: %v", err)
+	}
+	if optURL == nil {
+		t.Fatal("expected non-nil asynq opt from RedisURL")
+	}
+
+	// 2. With Addr + Password
+	cfgAddr := Config{
+		ValkeyAddr:    "localhost:6379",
+		RedisPassword: "mypassword",
+		RedisUser:     "default",
+	}
+	clientAddr, err := NewRedisClient(cfgAddr)
+	if err != nil {
+		t.Fatalf("unexpected NewRedisClient error: %v", err)
+	}
+	_ = clientAddr.Close()
+
+	optAddr, err := AsynqRedisOpt(cfgAddr)
+	if err != nil {
+		t.Fatalf("unexpected AsynqRedisOpt error: %v", err)
+	}
+	if optAddr == nil {
+		t.Fatal("expected non-nil asynq opt from Addr")
+	}
+}
+
