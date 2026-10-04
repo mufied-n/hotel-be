@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"uuid"
 
 	"github.com/jackc/pgx/v5"
@@ -99,8 +98,8 @@ func (s *PostgresStore) GetVariant(ctx context.Context, idOrCode string) (RoomVa
 
 // CreateVariant menyisipkan varian kamar baru ke tabel room_types.
 func (s *PostgresStore) CreateVariant(ctx context.Context, v RoomVariant) (RoomVariant, error) {
-	if strings.TrimSpace(v.Code) == "" || strings.TrimSpace(v.Name) == "" || v.MaxCapacity < 1 || v.BasePriceMinor <= 0 {
-		return RoomVariant{}, ErrInvalidVariant
+	if err := ValidateVariant(v); err != nil {
+		return RoomVariant{}, err
 	}
 	if v.ID == "" {
 		v.ID = uuid.NewV7().String()
@@ -146,8 +145,8 @@ func (s *PostgresStore) CreateVariant(ctx context.Context, v RoomVariant) (RoomV
 
 // UpdateVariant memperbarui varian kamar yang ada berdasarkan ID UUID atau slug code.
 func (s *PostgresStore) UpdateVariant(ctx context.Context, id string, v RoomVariant) (RoomVariant, error) {
-	if strings.TrimSpace(v.Code) == "" || strings.TrimSpace(v.Name) == "" || v.MaxCapacity < 1 || v.BasePriceMinor <= 0 {
-		return RoomVariant{}, ErrInvalidVariant
+	if err := ValidateVariant(v); err != nil {
+		return RoomVariant{}, err
 	}
 	if v.Amenities == nil {
 		v.Amenities = []string{}

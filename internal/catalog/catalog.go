@@ -42,6 +42,36 @@ var (
 	ErrCannotDelete    = errors.New("catalog: cannot delete variant in active use")
 )
 
+const (
+	// MaxPhotosPerVariant membatasi jumlah foto agar payload dan halaman tetap ringan.
+	MaxPhotosPerVariant = 20
+	// MaxPhotoAltLen membatasi panjang teks alternatif foto.
+	MaxPhotoAltLen = 200
+)
+
+// ValidateVariant memeriksa data varian kamar dan foto. Foto hanya boleh berupa
+// path lokal "/asset/rooms/..." (tanpa "..") atau URL https absolut.
+func ValidateVariant(v RoomVariant) error {
+	if strings.TrimSpace(v.Code) == "" || strings.TrimSpace(v.Name) == "" || v.MaxCapacity < 1 || v.BasePriceMinor <= 0 {
+		return ErrInvalidVariant
+	}
+	if len(v.Photos) > MaxPhotosPerVariant {
+		return ErrInvalidVariant
+	}
+	for _, p := range v.Photos {
+		url := strings.TrimSpace(p.URL)
+		local := strings.HasPrefix(url, "/asset/rooms/") && !strings.Contains(url, "..") && !strings.Contains(url, "\\")
+		remote := strings.HasPrefix(url, "https://") && len(url) > len("https://")
+		if !local && !remote {
+			return ErrInvalidVariant
+		}
+		if len([]rune(p.Alt)) > MaxPhotoAltLen {
+			return ErrInvalidVariant
+		}
+	}
+	return nil
+}
+
 // Store mendefinisikan port data untuk membaca dan mengelola katalog kamar.
 type Store interface {
 	ListVariants(ctx context.Context) ([]RoomVariant, error)
@@ -89,8 +119,8 @@ func (m *MemoryStore) GetVariant(_ context.Context, idOrCode string) (RoomVarian
 func (m *MemoryStore) CreateVariant(_ context.Context, v RoomVariant) (RoomVariant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if strings.TrimSpace(v.Code) == "" || strings.TrimSpace(v.Name) == "" || v.MaxCapacity < 1 || v.BasePriceMinor <= 0 {
-		return RoomVariant{}, ErrInvalidVariant
+	if err := ValidateVariant(v); err != nil {
+		return RoomVariant{}, err
 	}
 	for _, existing := range m.variants {
 		if strings.EqualFold(existing.Code, v.Code) {
@@ -113,8 +143,8 @@ func (m *MemoryStore) CreateVariant(_ context.Context, v RoomVariant) (RoomVaria
 func (m *MemoryStore) UpdateVariant(_ context.Context, id string, v RoomVariant) (RoomVariant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if strings.TrimSpace(v.Code) == "" || strings.TrimSpace(v.Name) == "" || v.MaxCapacity < 1 || v.BasePriceMinor <= 0 {
-		return RoomVariant{}, ErrInvalidVariant
+	if err := ValidateVariant(v); err != nil {
+		return RoomVariant{}, err
 	}
 	idx := -1
 	for i, existing := range m.variants {
