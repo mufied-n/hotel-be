@@ -1,0 +1,142 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mufied-n/hotel-be
+
+jobs:
+  # ============================================================================
+  # Tahap 1: Quality Gate & Test (Go Vet, Go Test & OpenAPI Lint)
+  # ============================================================================
+  test:
+    name: Test & Lint Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '>=1.24'
+
+      - name: Run Go Vet
+        run: go vet ./...
+
+      - name: Run Test Suite
+        run: go test -v -cover ./...
+
+      - name: Set up Node.js for Redocly
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate OpenAPI 3.1 Contract
+        run: npx --yes @redocly/cli lint docs/srs/contracts/pulang-hotel-booking.openapi.json
+
+  # ============================================================================
+  # Tahap 2: Build & Push Docker Image ke GitHub Container Registry (GHCR)
+  # ============================================================================
+  build-and-push:
+    name: Build & Push Docker Image to GHCR
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================================================
+  # Tahap 3: Continuous Deployment ke VPS via SSH
+  # ============================================================================
+  deploy:
+    name: Deploy to VPS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Execute remote deployment via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT || 22 }}
+          script: |
+            set -e
+            APP_DIR="/opt/hotel-be"
+            
+            echo "==> Memverifikasi direktori aplikasi di ${APP_DIR}..."
+            if [ ! -d "${APP_DIR}" ]; then
+              echo "Error: Direktori ${APP_DIR} belum ada di VPS. Jalankan bootstrap awal terlebih dahulu."
+              exit 1
+            fi
+            
+            cd "${APP_DIR}"
+            
+            echo "==> 1. Mengunduh image terbaru dari GHCR..."
+            docker compose -f docker-compose.prod.yml pull
+            
+            echo "==> 2. Menjalankan migrasi database Goose (Up)..."
+            docker compose -f docker-compose.prod.yml run --rm migration
+            
+            echo "==> 3. Me-restart layanan container aplikasi (zero-downtime rolling update)..."
+            docker compose -f docker-compose.prod.yml up -d --no-deps app
+            
+            echo "==> 4. Memeriksa status kesehatan aplikasi (Readiness Probe)..."
+            sleep 5
+            for i in {1..10}; do
+              if curl -s -f http://127.0.0.1:8080/ready > /dev/null; then
+                echo "Layanan aplikasi sehat dan siap menerima lalu lintas!"
+                break
+              fi
+              echo "Menunggu kesiapan pod (percobaan $i/10)..."
+              sleep 2
+              if [ $i -eq 10 ]; then
+                echo "Error: Kesiapan pod /ready gagal setelah deployment!"
+                docker compose -f docker-compose.prod.yml logs --tail=50 app
+                exit 1
+              fi
+            done
+            
+            echo "==> 5. Membersihkan image lama yang tidak terpakai..."
+            docker image prune -f
+            
+            echo "==> Deployment berhasil diselesaikan!"
