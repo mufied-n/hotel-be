@@ -38,7 +38,7 @@ jobs:
       - name: Set up Node.js for Redocly
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Validate OpenAPI 3.1 Contract
         run: npx --yes @redocly/cli lint docs/srs/contracts/pulang-hotel-booking.openapi.json
