@@ -41,7 +41,10 @@ PRD menjelaskan outcome, persona, authority, scope, acceptance dan keputusan bis
 - [Hospitality & Multi-Channel Feature Flags System](hospitality-and-channels-feature-flags-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk kontrak middleware gating RequireFeature, format error 503 RFC 7807, dan endpoint administrasi toggling runtime.
 
 Referensi pasangan: [PRD registry](../prd/README.md).
-[Shared contract dan register konflik](../srs/00-shared-contracts-and-decisions-2026-10-03.md); [OpenAPI target proposal](../srs/contracts/booking-roadmap-proposal.openapi.json).
+- [Kontrak Kanonikal Resmi OpenAPI 3.1](../srs/contracts/pulang-hotel-booking.openapi.json) (Paritas 100% dengan 69 rute HTTP handler aktif).
+- [Laporan Audit Spesifikasi API (5 Okt 2026)](../srs/contracts/api-spec-audit-report-2026-10-05.md).
+- [Validasi Kontrak & Riwayat](../srs/contracts/validation-report.md).
+- [Shared contract dan register konflik](../srs/00-shared-contracts-and-decisions-2026-10-03.md); [OpenAPI target proposal awal (3 Okt 2026)](../srs/contracts/booking-roadmap-proposal.openapi.json).
 
 ## Urutan delivery
 

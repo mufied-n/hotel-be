@@ -1,0 +1,4553 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Pulang ke Uttara — Hotel Booking Engine REST API",
+    "version": "1.0.0",
+    "description": "Spesifikasi RESTful API resmi untuk sistem mesin pemesanan kamar dan operasional hotel butik bintang 4 Pulang ke Uttara (95 kamar), Sleman, D.I. Yogyakarta.\nMencakup reservasi kamar publik, live SSE, e-voucher PDF resmi, rekonsiliasi keuangan, manajemen tarif dinamis, sinkronisasi kanal OTA, pencegahan overbooking meja depan, dan administrasi feature flags.",
+    "contact": {
+      "name": "Engineering Team Pulang ke Uttara",
+      "email": "engineering@pulangkeuttara.com",
+      "url": "https://pulangkeuttara.com"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://pulangkeuttara.com/terms"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.pulangkeuttara.com",
+      "description": "Production API Gateway"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Probe kesehatan dan kesiapan sistem"
+    },
+    {
+      "name": "Guest Auth",
+      "description": "Autentikasi tamu berbasis email challenge & OTP passwordless"
+    },
+    {
+      "name": "Staff Auth",
+      "description": "Autentikasi kredensial staf hotel dan pengelolaan sesi"
+    },
+    {
+      "name": "Catalog & Search",
+      "description": "Katalog kamar, pencarian ketersediaan, dan kuotasi harga terkunci"
+    },
+    {
+      "name": "Bookings",
+      "description": "Siklus hidup pemesanan kamar: checkout, pembatalan, check-in, check-out"
+    },
+    {
+      "name": "Guest Portal",
+      "description": "Akses sesi privat tamu ke daftar reservasi, kuitansi, kalender .ics, dan permintaan khusus"
+    },
+    {
+      "name": "Voucher & Invoice",
+      "description": "Penerbitan PDF e-voucher QR code dan faktur pajak daerah PBJT 10% Sleman"
+    },
+    {
+      "name": "Real-Time SSE",
+      "description": "Streaming real-time live status konfirmasi tamu dan monitor operasional meja depan"
+    },
+    {
+      "name": "Finance",
+      "description": "Rekonsiliasi transaksi, kasus sengketa pembayaran, dan pengembalian dana (refund)"
+    },
+    {
+      "name": "Housekeeping",
+      "description": "Papan status kebersihan 95 kamar hotel dan penetapan out-of-order"
+    },
+    {
+      "name": "Front Desk",
+      "description": "Roster harian, catatan serah terima shift (handover), dan verifikasi voucher"
+    },
+    {
+      "name": "Stay Modification",
+      "description": "Pemindahan kamar mid-stay (room move) dan perpanjangan menginap (extend stay)"
+    },
+    {
+      "name": "Revenue Management",
+      "description": "Kalender tarif harian musiman, stop-sell, min-LOS, dan manajemen promo diskon"
+    },
+    {
+      "name": "Channel Integration",
+      "description": "Penerimaan webhook reservasi OTA, karantina konflik, dan 1-click complimentary upgrade"
+    },
+    {
+      "name": "Feature Flags",
+      "description": "Administrasi konfigurasi runtime kill-switch dan role-scoped access control"
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "get_healthz",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe",
+        "description": "Mengembalikan status operasional pod/server.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Operasi sukses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "head_healthz",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe HEAD",
+        "description": "Header probe.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Operasi sukses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "get_ready",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness probe",
+        "description": "Memeriksa kesiapan koneksi PostgreSQL dan Valkey.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Operasi sukses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "head_ready",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Readiness probe HEAD",
+        "description": "Header probe.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Operasi sukses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/xendit": {
+      "post": {
+        "operationId": "post_webhooks_xendit",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Webhook Callback Pembayaran Xendit",
+        "description": "Menerima webhook callback pembayaran QRIS/VA dari payment gateway Xendit. Dilindungi feature flag 'ff_xendit_payment_gateway'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Webhook berhasil diproses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "x-callback-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/channel-events": {
+      "post": {
+        "operationId": "post_channel_events",
+        "tags": [
+          "Channel Integration"
+        ],
+        "summary": "Inbound OTA Webhook Reservation Event",
+        "description": "Menerima webhook pemesanan kamar dari mitra OTA (Agoda, Booking.com, Traveloka). Dilindungi verifikasi HMAC-SHA256 constant-time dan feature flag 'ff_channel_sync_integration'.",
+        "security": [
+          {
+            "ChannelWebhookHMAC": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Event diterima dan dijadwalkan"
+          },
+          "200": {
+            "description": "Event duplikat diabaikan secara idempoten"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "X-Channel-Provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "AGODA"
+            }
+          },
+          {
+            "name": "X-Channel-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "event_id",
+                  "event_type",
+                  "provider_booking_id",
+                  "room_type_id",
+                  "check_in",
+                  "check_out",
+                  "rooms_count",
+                  "guest_name",
+                  "guest_email",
+                  "guest_phone"
+                ],
+                "properties": {
+                  "event_id": {
+                    "type": "string",
+                    "example": "EVT-AGD-001"
+                  },
+                  "event_type": {
+                    "type": "string",
+                    "example": "BOOKING_CREATED"
+                  },
+                  "provider_booking_id": {
+                    "type": "string",
+                    "example": "AGD-BK-99123"
+                  },
+                  "room_type_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "check_in": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-11-10"
+                  },
+                  "check_out": {
+                    "type": "string",
+                    "format": "date",
+                    "example": "2026-11-12"
+                  },
+                  "rooms_count": {
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "guest_name": {
+                    "type": "string",
+                    "example": "Budi Santoso"
+                  },
+                  "guest_email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "budi@example.com"
+                  },
+                  "guest_phone": {
+                    "type": "string",
+                    "example": "+6281234567890"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/guest/challenge": {
+      "post": {
+        "operationId": "post_auth_guest_challenge",
+        "tags": [
+          "Guest Auth"
+        ],
+        "summary": "Minta Challenge OTP Tamu",
+        "description": "Meminta kode OTP login tamu yang dikirimkan via email. Dilindungi feature flag 'ff_guest_portal_auth'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Challenge berhasil dibuat",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "challenge_id": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "example": 300
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "tamu@example.com"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/guest/verify": {
+      "post": {
+        "operationId": "post_auth_guest_verify",
+        "tags": [
+          "Guest Auth"
+        ],
+        "summary": "Verifikasi OTP Tamu",
+        "description": "Memverifikasi OTP dan menerbitkan token sesi tamu 'gst_sess_xxx'. Dilindungi feature flag 'ff_guest_portal_auth'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Sesi tamu berhasil diterbitkan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "example": "gst_sess_..."
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "example": 86400
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "challenge_id",
+                  "otp"
+                ],
+                "properties": {
+                  "challenge_id": {
+                    "type": "string"
+                  },
+                  "otp": {
+                    "type": "string",
+                    "example": "123456"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/guest/me": {
+      "get": {
+        "operationId": "get_auth_guest_me",
+        "tags": [
+          "Guest Auth"
+        ],
+        "summary": "Profil Sesi Tamu",
+        "description": "Mengambil data akun tamu berdasarkan token sesi aktif.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profil tamu",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string",
+                      "example": "guest"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/guest/logout": {
+      "post": {
+        "operationId": "post_auth_guest_logout",
+        "tags": [
+          "Guest Auth"
+        ],
+        "summary": "Logout Sesi Tamu",
+        "description": "Mencabut token sesi tamu yang sedang aktif.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sesi berhasil dicabut",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/staff/login": {
+      "post": {
+        "operationId": "post_auth_staff_login",
+        "tags": [
+          "Staff Auth"
+        ],
+        "summary": "Login Staf Hotel",
+        "description": "Autentikasi staf hotel menggunakan username dan password.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Login berhasil",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "example": "stf_..."
+                    },
+                    "role": {
+                      "type": "string",
+                      "example": "receptionist"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "example": "fo_receptionist"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/staff/me": {
+      "get": {
+        "operationId": "get_auth_staff_me",
+        "tags": [
+          "Staff Auth"
+        ],
+        "summary": "Profil Sesi Staf",
+        "description": "Mengambil informasi staf dari sesi aktif.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profil staf",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "username": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/staff/logout": {
+      "post": {
+        "operationId": "post_auth_staff_logout",
+        "tags": [
+          "Staff Auth"
+        ],
+        "summary": "Logout Sesi Staf",
+        "description": "Mencabut token sesi staf.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Logout sukses"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/rooms": {
+      "get": {
+        "operationId": "get_catalog_rooms",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Daftar Tipe Kamar",
+        "description": "Menampilkan seluruh tipe kamar hotel aktif beserta kapasitas dan foto.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Daftar tipe kamar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoomType"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_catalog_rooms",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Tambah Tipe Kamar Baru",
+        "description": "Menambahkan tipe kamar baru ke inventori katalog. Dilindungi role 'revenue_mgr'/'gm_admin' dan feature flag 'ff_catalog_write'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Kamar berhasil dibuat"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoomType"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/rooms/{id}": {
+      "get": {
+        "operationId": "get_catalog_rooms_id",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Detail Tipe Kamar",
+        "description": "Mengambil detail tipe kamar berdasarkan UUID.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Detail tipe kamar",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoomType"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "put_catalog_rooms_id",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Perbarui Tipe Kamar",
+        "description": "Memperbarui data tipe kamar. Dilindungi 'ff_catalog_write'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kamar berhasil diperbarui"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoomType"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_catalog_rooms_id",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Hapus Tipe Kamar",
+        "description": "Menghapus tipe kamar dari katalog. Dilindungi 'ff_catalog_write'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kamar berhasil dihapus",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "operationId": "get_search",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Pencarian Ketersediaan Kamar",
+        "description": "Mencari kamar yang tersedia pada rentang tanggal tertentu dengan tarif terhitung. Dilindungi 'ff_multi_variant_search'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Hasil pencarian ketersediaan"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "check_in",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-11-01"
+            }
+          },
+          {
+            "name": "check_out",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-11-03"
+            }
+          },
+          {
+            "name": "guests",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 2
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/availability": {
+      "get": {
+        "operationId": "get_availability",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Ketersediaan Stok Kamar",
+        "description": "Mengambil jumlah unit kamar fisik yang tersedia per tanggal.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Data ketersediaan"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "room_type_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/quotes": {
+      "post": {
+        "operationId": "post_quotes",
+        "tags": [
+          "Catalog & Search"
+        ],
+        "summary": "Kalkulasi Kuotasi Harga Terkunci (Quote)",
+        "description": "Mengunci harga sewa kamar selama 15 menit. Dilindungi 'ff_quote_locking_engine'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Kuotasi harga terkunci"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "room_type_id",
+                  "check_in",
+                  "check_out",
+                  "num_rooms",
+                  "num_guests"
+                ],
+                "properties": {
+                  "room_type_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "check_in": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "check_out": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "num_rooms": {
+                    "type": "integer",
+                    "default": 1
+                  },
+                  "num_guests": {
+                    "type": "integer",
+                    "default": 2
+                  },
+                  "promo_code": {
+                    "type": "string",
+                    "example": "MERAPIHEMAT"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings": {
+      "post": {
+        "operationId": "post_bookings",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Buat Reservasi Baru (Checkout)",
+        "description": "Melakukan pemesanan kamar berdasarkan quote_id valid. Menerapkan dynamic hold timeout 15 menit jika stok kamar <= 1.",
+        "security": [],
+        "responses": {
+          "201": {
+            "description": "Pemesanan berhasil dibuat",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Booking"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "quote_id",
+                  "guest_name",
+                  "guest_email",
+                  "guest_phone"
+                ],
+                "properties": {
+                  "quote_id": {
+                    "type": "string"
+                  },
+                  "guest_name": {
+                    "type": "string"
+                  },
+                  "guest_email": {
+                    "type": "string",
+                    "format": "email"
+                  },
+                  "guest_phone": {
+                    "type": "string"
+                  },
+                  "estimated_arrival_time": {
+                    "type": "string",
+                    "example": "14:00"
+                  },
+                  "special_requests": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/{id}": {
+      "get": {
+        "operationId": "get_bookings_id",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Ambil Detail Pemesanan",
+        "description": "Mengambil rincian pemesanan kamar.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Detail pemesanan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Booking"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/payment": {
+      "get": {
+        "operationId": "get_bookings_id_payment",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Status Pembayaran Pemesanan",
+        "description": "Mengecek status pembayaran dan invoice Xendit.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Status pembayaran"
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/voucher.pdf": {
+      "get": {
+        "operationId": "get_bookings_id_voucher_pdf",
+        "tags": [
+          "Voucher & Invoice"
+        ],
+        "summary": "Unduh PDF E-Voucher Resmi (Staf/Publik)",
+        "description": "Streaming PDF e-voucher A4 resmi ber-QR code. Dilindungi 'ff_official_pdf_voucher'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Berkas PDF e-voucher",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/invoice.pdf": {
+      "get": {
+        "operationId": "get_bookings_id_invoice_pdf",
+        "tags": [
+          "Voucher & Invoice"
+        ],
+        "summary": "Unduh PDF Faktur Pajak PBJT 10% (Staf/Publik)",
+        "description": "Streaming PDF faktur pajak daerah PBJT 10% Kabupaten Sleman. Dilindungi 'ff_official_pdf_voucher'.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Berkas PDF faktur pajak",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/cancel": {
+      "post": {
+        "operationId": "post_bookings_id_cancel",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Batalkan Pemesanan",
+        "description": "Membatalkan pemesanan sesuai aturan pembatalan hotel.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Pemesanan berhasil dibatalkan"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/{id}/check-in": {
+      "post": {
+        "operationId": "post_bookings_id_check_in",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Check-in Tamu",
+        "description": "Proses check-in tamu di meja depan. Memvalidasi kamar berstatus inspected jika flag 'ff_room_readiness_checkin_guard' aktif.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Check-in sukses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/check-out": {
+      "post": {
+        "operationId": "post_bookings_id_check_out",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Check-out Tamu",
+        "description": "Proses check-out tamu di meja depan. Mengubah status kamar ke DIRTY.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Check-out sukses"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/bookings/{id}/no-show": {
+      "post": {
+        "operationId": "post_bookings_id_no_show",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Tandai Tamu No-Show",
+        "description": "Menandai reservasi sebagai no-show.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status no-show tercatat"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings": {
+      "get": {
+        "operationId": "get_guest_bookings",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Daftar Reservasi Tamu",
+        "description": "Menampilkan riwayat pemesanan milik tamu yang terotentikasi. Dilindungi 'ff_guest_my_bookings'.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar booking tamu"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/guest/bookings/{id}": {
+      "get": {
+        "operationId": "get_guest_bookings_id",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Detail Reservasi Tamu",
+        "description": "Menampilkan rincian reservasi privat tamu dengan verifikasi kepemilikan anti-IDOR.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detail booking tamu"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/payment": {
+      "get": {
+        "operationId": "get_guest_bookings_id_payment",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Status Pembayaran Sesi Tamu",
+        "description": "Mengecek status pembayaran booking dari portal tamu.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status pembayaran"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/receipt": {
+      "get": {
+        "operationId": "get_guest_bookings_id_receipt",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Kuitansi Pembayaran Tamu",
+        "description": "Mengambil metadata kuitansi resmi berformat INV/PKU/...",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kuitansi resmi"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/calendar.ics": {
+      "get": {
+        "operationId": "get_guest_bookings_id_calendar_ics",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Unduh Kalender Menginap (.ics)",
+        "description": "Menghasilkan berkas iCalendar RFC 5545 untuk kalender Google/Apple.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berkas kalender .ics",
+            "content": {
+              "text/calendar": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/voucher.pdf": {
+      "get": {
+        "operationId": "get_guest_bookings_id_voucher_pdf",
+        "tags": [
+          "Voucher & Invoice"
+        ],
+        "summary": "Unduh PDF E-Voucher Tamu",
+        "description": "Streaming PDF e-voucher A4 resmi ber-QR code untuk sesi tamu.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berkas PDF voucher",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/invoice.pdf": {
+      "get": {
+        "operationId": "get_guest_bookings_id_invoice_pdf",
+        "tags": [
+          "Voucher & Invoice"
+        ],
+        "summary": "Unduh PDF Faktur Pajak PBJT Tamu",
+        "description": "Streaming PDF faktur pajak PBJT 10% Sleman untuk sesi tamu.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berkas PDF invoice",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/live-status": {
+      "get": {
+        "operationId": "get_guest_bookings_id_live_status",
+        "tags": [
+          "Real-Time SSE"
+        ],
+        "summary": "Streaming Live Status Booking Tamu (SSE)",
+        "description": "Koneksi HTTP Server-Sent Events non-blocking untuk memantau status pembayaran QRIS/VA secara real-time.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream aktif",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/refund-status": {
+      "get": {
+        "operationId": "get_guest_bookings_id_refund_status",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Status Pengembalian Dana Tamu",
+        "description": "Mengecek progres pengembalian dana pembatalan.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status refund"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/guest/bookings/{id}/special-requests": {
+      "post": {
+        "operationId": "post_guest_bookings_id_special_requests",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Kirim Permintaan Khusus Tamu",
+        "description": "Mengirim permintaan khusus masa menginap (misal bantal tambahan, check-in awal).",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Permintaan berhasil dibuat"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "category",
+                  "details"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "example": "extra_bedding"
+                  },
+                  "details": {
+                    "type": "string",
+                    "example": "Bantal bulu angsa non-alergi"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_guest_bookings_id_special_requests",
+        "tags": [
+          "Guest Portal"
+        ],
+        "summary": "Daftar Permintaan Khusus Tamu",
+        "description": "Melihat status pemenuhan permintaan khusus.",
+        "security": [
+          {
+            "GuestSessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar permintaan"
+          },
+          "401": {
+            "description": "Autentikasi gagal atau sesi tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/refunds": {
+      "post": {
+        "operationId": "post_finance_refunds",
+        "tags": [
+          "Finance"
+        ],
+        "summary": "Eksekusi Automated Gateway Refund",
+        "description": "Eksekusi refund pembayaran ke rekening asal melalui Xendit API. Dilindungi 'ff_gateway_automated_refund' dan role 'finance'/'gm_admin'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Refund diproses"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "booking_id",
+                  "amount",
+                  "reason"
+                ],
+                "properties": {
+                  "booking_id": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/finance/cases": {
+      "get": {
+        "operationId": "get_finance_cases",
+        "tags": [
+          "Finance"
+        ],
+        "summary": "Daftar Kasus Keuangan & Sengketa",
+        "description": "Menampilkan kasus pembayaran bermasalah atau permintaan refund tertunda.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar kasus keuangan"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/finance/cases/{id}/resolve": {
+      "post": {
+        "operationId": "post_finance_cases_id_resolve",
+        "tags": [
+          "Finance"
+        ],
+        "summary": "Selesaikan Kasus Keuangan",
+        "description": "Penyelesaian sengketa transaksi oleh tim Finance.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kasus berhasil diselesaikan"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "resolution",
+                  "notes"
+                ],
+                "properties": {
+                  "resolution": {
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/finance/reconciliations": {
+      "get": {
+        "operationId": "get_finance_reconciliations",
+        "tags": [
+          "Finance"
+        ],
+        "summary": "Ringkasan Rekonsiliasi Pembayaran",
+        "description": "Laporan rekapitulasi penerimaan kas, potongan fee gateway, dan retensi PBJT 10%.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ringkasan rekonsiliasi"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/housekeeping/rooms": {
+      "get": {
+        "operationId": "get_housekeeping_rooms",
+        "tags": [
+          "Housekeeping"
+        ],
+        "summary": "Papan Status Kebersihan Kamar",
+        "description": "Menampilkan status 95 kamar hotel (clean, dirty, inspected, occupied, out_of_order). Dilindungi 'ff_housekeeping_board'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Papan status kamar"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/housekeeping/rooms/{id}/status": {
+      "put": {
+        "operationId": "put_housekeeping_rooms_id_status",
+        "tags": [
+          "Housekeeping"
+        ],
+        "summary": "Perbarui Status Kebersihan Kamar",
+        "description": "Mengubah status kebersihan kamar (misal dirty -> clean -> inspected).",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status kamar diperbarui"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "301"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "clean",
+                      "inspected",
+                      "dirty",
+                      "occupied",
+                      "out_of_order"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/housekeeping/rooms/{id}/out-of-order": {
+      "post": {
+        "operationId": "post_housekeeping_rooms_id_out_of_order",
+        "tags": [
+          "Housekeeping"
+        ],
+        "summary": "Tetapkan Kamar Out-of-Order",
+        "description": "Mengeluarkan kamar dari inventori jual karena perbaikan fasilitas.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kamar ditetapkan out-of-order"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/front-desk/daily-roster": {
+      "get": {
+        "operationId": "get_front_desk_daily_roster",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Roster Operasional Harian Front Desk",
+        "description": "Daftar perkiraan kedatangan (expected arrivals), tamu in-house, dan rencana check-out harian. Dilindungi 'ff_front_desk_operations'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Roster harian meja depan"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/front-desk/handover-notes": {
+      "get": {
+        "operationId": "get_front_desk_handover_notes",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Daftar Catatan Handover Shift",
+        "description": "Melihat catatan serah terima antar shift resepsionis.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catatan handover"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_front_desk_handover_notes",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Catat Pesan Handover Shift Baru",
+        "description": "Mencatat pesan penting antar-shift meja depan.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Pesan handover tercatat"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "note",
+                  "shift"
+                ],
+                "properties": {
+                  "note": {
+                    "type": "string"
+                  },
+                  "shift": {
+                    "type": "string",
+                    "enum": [
+                      "morning",
+                      "afternoon",
+                      "night"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/front-desk/verify-voucher": {
+      "get": {
+        "operationId": "get_front_desk_verify_voucher",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Verifikasi Keaslian E-Voucher QR Code",
+        "description": "Memverifikasi keaslian voucher QR code tamu saat check-in di meja depan.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Voucher valid"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "booking_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/front-desk/live-stream": {
+      "get": {
+        "operationId": "get_front_desk_live_stream",
+        "tags": [
+          "Real-Time SSE"
+        ],
+        "summary": "Papan Monitor Operasional Real-Time Meja Depan (SSE)",
+        "description": "Streaming Server-Sent Events untuk resepsionis: kedatangan tamu, pembayaran sukses, dan peringatan overbooking instan.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream aktif",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/front-desk/special-requests": {
+      "get": {
+        "operationId": "get_front_desk_special_requests",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Daftar Permintaan Khusus Tamu (Staf)",
+        "description": "Daftar permintaan fasilitas kamar tamu.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar permintaan khusus"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/front-desk/special-requests/{id}/status": {
+      "put": {
+        "operationId": "put_front_desk_special_requests_id_status",
+        "tags": [
+          "Front Desk"
+        ],
+        "summary": "Perbarui Status Permintaan Khusus",
+        "description": "Memperbarui status pemenuhan permintaan tamu (pending -> in_progress -> fulfilled / rejected).",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status berhasil diperbarui"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "to_status"
+                ],
+                "properties": {
+                  "to_status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "fulfilled",
+                      "rejected"
+                    ]
+                  },
+                  "staff_notes": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/{id}/room-move": {
+      "post": {
+        "operationId": "post_bookings_id_room_move",
+        "tags": [
+          "Stay Modification"
+        ],
+        "summary": "Pindah Kamar (Room Move Mid-Stay)",
+        "description": "Memindahkan tamu ke unit fisik kamar lain di tengah masa menginap. Dilindungi 'ff_stay_modification'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pemindahan kamar berhasil"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "to_room_number",
+                  "reason"
+                ],
+                "properties": {
+                  "to_room_number": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/{id}/extend-stay": {
+      "post": {
+        "operationId": "post_bookings_id_extend_stay",
+        "tags": [
+          "Stay Modification"
+        ],
+        "summary": "Perpanjang Masa Menginap (Extend Stay)",
+        "description": "Memperpanjang tanggal check-out tamu dengan verifikasi stok kamar kontinu.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Perpanjangan menginap berhasil"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "new_check_out"
+                ],
+                "properties": {
+                  "new_check_out": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bookings/{id}/room-moves": {
+      "get": {
+        "operationId": "get_bookings_id_room_moves",
+        "tags": [
+          "Stay Modification"
+        ],
+        "summary": "Riwayat Pemindahan Kamar",
+        "description": "Melihat riwayat log perpindahan kamar selama menginap.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Riwayat perpindahan kamar"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/revenue/calendar": {
+      "get": {
+        "operationId": "get_revenue_calendar",
+        "tags": [
+          "Revenue Management"
+        ],
+        "summary": "Kalender Tarif & Ketersediaan Musiman",
+        "description": "Menampilkan kalender tarif harian, batasan stop-sell, dan min-LOS. Dilindungi 'ff_dynamic_rates_calendar' dan role 'revenue_mgr'/'gm_admin'/'receptionist'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Data kalender revenue"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "start_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/revenue/calendar/bulk": {
+      "put": {
+        "operationId": "put_revenue_calendar_bulk",
+        "tags": [
+          "Revenue Management"
+        ],
+        "summary": "Pembaruan Massal Kalender Tarif & Stop-Sell",
+        "description": "Memperbarui harga harian, mengaktifkan stop-sell, dan menetapkan min_stay_nights secara massal.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pembaruan massal berhasil"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "updates"
+                ],
+                "properties": {
+                  "updates": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/revenue/promos": {
+      "get": {
+        "operationId": "get_revenue_promos",
+        "tags": [
+          "Revenue Management"
+        ],
+        "summary": "Daftar Kode Promo",
+        "description": "Menampilkan daftar kode promo diskon aktif. Dilindungi 'ff_promotions_engine'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar kode promo"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_revenue_promos",
+        "tags": [
+          "Revenue Management"
+        ],
+        "summary": "Buat Kampanye Promo Baru",
+        "description": "Menambahkan kode promo baru, persentase diskon, dan kuota pemakaian.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Promo berhasil dibuat"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "discount_percent",
+                  "valid_from",
+                  "valid_to"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "example": "LEBARANHEMAT"
+                  },
+                  "discount_percent": {
+                    "type": "integer",
+                    "example": 20
+                  },
+                  "max_discount_idr": {
+                    "type": "integer",
+                    "example": 200000
+                  },
+                  "quota_total": {
+                    "type": "integer",
+                    "example": 100
+                  },
+                  "valid_from": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "valid_to": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/revenue/promos/{id}": {
+      "put": {
+        "operationId": "put_revenue_promos_id",
+        "tags": [
+          "Revenue Management"
+        ],
+        "summary": "Perbarui Kampanye Promo",
+        "description": "Mengubah parameter kode promo atau menonaktifkan promo.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Promo diperbarui"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/staff/channel-sync-issues": {
+      "get": {
+        "operationId": "get_staff_channel_sync_issues",
+        "tags": [
+          "Channel Integration"
+        ],
+        "summary": "Daftar Isu Sinkronisasi & Karantina OTA",
+        "description": "Menampilkan daftar reservasi OTA yang masuk karantina akibat kuota kamar habis. Dilindungi 'ff_channel_sync_integration'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar isu sinkronisasi"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "partner",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "AGODA"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "QUARANTINED_CONFLICT"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/staff/channel-sync-issues/{id}/resolve": {
+      "post": {
+        "operationId": "post_staff_channel_sync_issues_id_resolve",
+        "tags": [
+          "Channel Integration"
+        ],
+        "summary": "1-Click Resolusi Isu Overbooking OTA (Upgrade/Reject/Force)",
+        "description": "Menyelesaikan konflik overbooking kanal OTA: COMPLIMENTARY_UPGRADE (pemotongan inventori target atomik FOR UPDATE), REJECT_AND_CANCEL, atau FORCE_OVERBOOK_CONFIRMED. Dilindungi 'ff_last_room_safeguards'.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Isu berhasil diselesaikan"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Konflik status data atau kuota habis",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "COMPLIMENTARY_UPGRADE",
+                      "REJECT_AND_CANCEL",
+                      "FORCE_OVERBOOK_CONFIRMED"
+                    ]
+                  },
+                  "target_room_type_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Wajib untuk COMPLIMENTARY_UPGRADE"
+                  },
+                  "notes": {
+                    "type": "string",
+                    "example": "Complimentary upgrade to Executive Suite"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/staff/channel-partners/{code}": {
+      "get": {
+        "operationId": "get_staff_channel_partners_code",
+        "tags": [
+          "Channel Integration"
+        ],
+        "summary": "Detail Konfigurasi Mitra Kanal OTA",
+        "description": "Mengambil konfigurasi mitra OTA termasuk safety_buffer LRDA.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Konfigurasi mitra kanal"
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Fitur dinonaktifkan sementara (Feature Flag)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "AGODA"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/feature-flags": {
+      "get": {
+        "operationId": "get_admin_feature_flags",
+        "tags": [
+          "Feature Flags"
+        ],
+        "summary": "Daftar Seluruh Feature Flags Runtime",
+        "description": "Mengambil snapshot seluruh toggle feature flags hotel beserta allowed_roles dan audit trail. Hanya untuk gm_admin.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daftar feature flags",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "flags": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FeatureFlag"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/feature-flags/{key}": {
+      "put": {
+        "operationId": "put_admin_feature_flags_key",
+        "tags": [
+          "Feature Flags"
+        ],
+        "summary": "Toggle / Pembaruan Status Feature Flag",
+        "description": "Mengaktifkan atau menonaktifkan fitur secara instan (zero-downtime kill-switch). Hanya untuk gm_admin.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Feature flag berhasil diperbarui"
+          },
+          "400": {
+            "description": "Permintaan tidak valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Akses ditolak oleh otorisasi Casbin RBAC",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "ff_channel_sync_integration"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "allowed_roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fake-pay/{ref}": {
+      "post": {
+        "operationId": "post_fake_pay_ref",
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Simulasi Pembayaran Sukses (Dev Only)",
+        "description": "Endpoint khusus lingkungan development untuk simulasi pembayaran gateway Xendit.",
+        "security": [
+          {
+            "StaffBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Simulasi bayar sukses"
+          },
+          "404": {
+            "description": "Entitas tidak ditemukan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "StaffBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Token sesi staf hotel (format: stf_xxx) dari POST /api/v1/auth/staff/login"
+      },
+      "GuestSessionAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Token sesi tamu (format: gst_sess_xxx) dari POST /api/v1/auth/guest/verify"
+      },
+      "ChannelWebhookHMAC": {
+        "type": "apiKey",
+        "name": "X-Channel-Signature",
+        "in": "header",
+        "description": "HMAC-SHA256 signature dari payload reservasi kanal OTA"
+      }
+    },
+    "schemas": {
+      "ProblemDetails": {
+        "type": "object",
+        "description": "Format standar error RFC 7807 Problem Details",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "about:blank"
+          },
+          "title": {
+            "type": "string",
+            "example": "Bad Request"
+          },
+          "status": {
+            "type": "integer",
+            "example": 400
+          },
+          "detail": {
+            "type": "string",
+            "example": "Deskripsi rincian masalah."
+          },
+          "code": {
+            "type": "string",
+            "example": "INVALID_ARGUMENT"
+          },
+          "request_id": {
+            "type": "string",
+            "example": "185304c4397040eb82afde876425f4d1"
+          }
+        },
+        "required": [
+          "title",
+          "status"
+        ]
+      },
+      "SuccessMessage": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "message": {
+            "type": "string",
+            "example": "Operasi berhasil dilakukan."
+          }
+        }
+      },
+      "Booking": {
+        "type": "object",
+        "description": "Agregat reservasi kamar hotel",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "0192e21b-0000-7000-8000-000000000001"
+          },
+          "room_type_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "check_in": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-11-10"
+          },
+          "check_out": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-11-12"
+          },
+          "num_rooms": {
+            "type": "integer",
+            "example": 1
+          },
+          "num_guests": {
+            "type": "integer",
+            "example": 2
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "checked_in",
+              "checked_out",
+              "cancelled",
+              "expired",
+              "failed",
+              "no_show"
+            ],
+            "example": "confirmed"
+          },
+          "quote_id": {
+            "type": "string",
+            "example": "quot_123"
+          },
+          "rate_plan_code": {
+            "type": "string",
+            "example": "BAR"
+          },
+          "cancellation_policy": {
+            "type": "string",
+            "example": "FREE_CANCELLATION"
+          },
+          "cancellation_description": {
+            "type": "string",
+            "example": "Pembatalan gratis hingga 24 jam sebelum check-in"
+          },
+          "room_subtotal_minor": {
+            "type": "integer",
+            "example": 180000000
+          },
+          "breakfast_charge_minor": {
+            "type": "integer",
+            "example": 0
+          },
+          "discount_minor": {
+            "type": "integer",
+            "example": 0
+          },
+          "tax_minor": {
+            "type": "integer",
+            "example": 18000000
+          },
+          "total_price_minor": {
+            "type": "integer",
+            "example": 198000000
+          },
+          "currency": {
+            "type": "string",
+            "example": "IDR"
+          },
+          "guest_name": {
+            "type": "string",
+            "example": "Budi Santoso"
+          },
+          "guest_email": {
+            "type": "string",
+            "format": "email",
+            "example": "budi@example.com"
+          },
+          "guest_phone": {
+            "type": "string",
+            "example": "+6281234567890"
+          },
+          "estimated_arrival_time": {
+            "type": "string",
+            "example": "14:00"
+          },
+          "special_requests": {
+            "type": "string",
+            "example": "Non-smoking room, high floor"
+          },
+          "guest_token": {
+            "type": "string",
+            "example": "gst_tok_abc"
+          },
+          "terms_accepted": {
+            "type": "boolean",
+            "example": true
+          },
+          "terms_accepted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RoomType": {
+        "type": "object",
+        "description": "Varian kamar dalam katalog hotel",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "code": {
+            "type": "string",
+            "example": "sup-king"
+          },
+          "name": {
+            "type": "string",
+            "example": "Superior King"
+          },
+          "family_name": {
+            "type": "string",
+            "example": "Superior"
+          },
+          "bed_type": {
+            "type": "string",
+            "example": "1 King Bed"
+          },
+          "room_size_sqm": {
+            "type": "integer",
+            "example": 32
+          },
+          "max_capacity": {
+            "type": "integer",
+            "example": 2
+          },
+          "max_adults": {
+            "type": "integer",
+            "example": 2
+          },
+          "max_children": {
+            "type": "integer",
+            "example": 1
+          },
+          "base_price_minor": {
+            "type": "integer",
+            "example": 85000000
+          },
+          "description": {
+            "type": "string",
+            "example": "Kamar superior nyaman dengan pemandangan kota Yogya."
+          },
+          "amenities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "alt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "FeatureFlag": {
+        "type": "object",
+        "description": "Konfigurasi status feature flag runtime",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "ff_room_move_extension"
+          },
+          "name": {
+            "type": "string",
+            "example": "Room Move & Extension"
+          },
+          "description": {
+            "type": "string",
+            "example": "Mengaktifkan endpoint modifikasi kamar dan perpanjangan masa inap"
+          },
+          "enabled": {
+            "type": "boolean",
+            "example": true
+          },
+          "allowed_roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "receptionist",
+              "gm_admin"
+            ]
+          },
+          "updated_by": {
+            "type": "string",
+            "example": "admin"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  }
+}
