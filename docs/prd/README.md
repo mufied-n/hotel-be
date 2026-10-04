@@ -33,6 +33,8 @@ PRD menjelaskan outcome, persona, authority, scope, acceptance dan keputusan bis
 - [checkout-idempotency-payment-batch-d](checkout-idempotency-payment-batch-d-2026-10-03.md) — owner checkout/idempotency/payment sedang berubah selama penulisan; dipertahankan dan harus diverifikasi source pada implementasi.
 - [hotel-rbac-casbin](hotel-rbac-casbin-2026-10-03.md) — dipertahankan; status dibaca pada dokumen owner, tidak dianggap bukti deployment.
 - [hotel-booking-parity-and-gap-remediation](hotel-booking-parity-and-gap-remediation-2026-10-03.md) — dipertahankan; status dibaca pada dokumen owner, tidak dianggap bukti deployment.
+- [Dynamic Rates, Room Allotment & Stop-Sell Engine](dynamic-rates-and-stop-sell-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk manajemen tarif musiman, batas stop-sell, dan kuota promo.
+- [Official PDF Confirmation Voucher & PBJT Tax Invoice Engine](official-pdf-voucher-and-tax-invoice-2026-10-04.md) — spesifikasi baru (4 Okt 2026) untuk faktur pajak PBJT 10% Sleman dan voucher QR code.
 
 Referensi pasangan: [SRS registry](../srs/README.md).
 [Shared contract dan register konflik](../srs/00-shared-contracts-and-decisions-2026-10-03.md); [OpenAPI target proposal](../srs/contracts/booking-roadmap-proposal.openapi.json).

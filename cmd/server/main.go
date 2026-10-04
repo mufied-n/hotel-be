@@ -82,8 +82,12 @@ func main() {
 		"01900000-0000-7000-8000-000000000007": 3_500_000, // Presidential Suite
 	}
 	valkeyQuoteStore := rates.NewValkeyQuoteStore(redisClient, 15*time.Minute)
+	calendarStore := rates.NewPostgresCalendarStore(pool)
+	promoStore := rates.NewPostgresPromoStore(pool)
 	rateEngine := rates.NewEngineWithQuoteStore(baseRates, 1.25, valkeyQuoteStore)
 	rateEngine.SetBaseRateSource(catalogStore)
+	rateEngine.SetCalendarStore(calendarStore)
+	rateEngine.SetPromoStore(promoStore)
 
 	var payGateway booking.PaymentGateway
 	var xenditGw *payment.XenditGateway
@@ -324,6 +328,8 @@ func main() {
 		FrontDeskSvc:        frontdeskSvc,
 		StaySvc:             staySvc,
 		AssistanceSvc:       assistanceSvc,
+		CalendarStore:       calendarStore,
+		PromoStore:          promoStore,
 		FeatureFlag:         ffManager,
 		NotifierMode:        notifierMode,
 		ReadyCheck: func(ctx context.Context) error {

@@ -139,6 +139,15 @@ var (
 		{rates.ErrUnknownRoomType, http.StatusNotFound, "ROOM_NOT_FOUND", "tipe kamar tidak ditemukan"},
 		{rates.ErrUnpricedRoomType, http.StatusBadRequest, "RATE_UNAVAILABLE", "tarif dasar kamar belum dikonfigurasi"},
 		{rates.ErrSaveQuoteFailed, http.StatusInternalServerError, "INTERNAL_ERROR", "gagal menyimpan kuotasi harga"},
+		{rates.ErrStopSellApplied, http.StatusBadRequest, "ROOM_STOP_SELL", "penjualan kamar ditutup sementara untuk tanggal yang dipilih"},
+		{rates.ErrClosedToArrival, http.StatusBadRequest, "CLOSED_TO_ARRIVAL", "check-in tidak diperbolehkan pada tanggal yang dipilih"},
+		{rates.ErrClosedToDeparture, http.StatusBadRequest, "CLOSED_TO_DEPARTURE", "check-out tidak diperbolehkan pada tanggal yang dipilih"},
+		{rates.ErrMinLengthOfStay, http.StatusBadRequest, "MIN_LENGTH_OF_STAY_VIOLATED", "durasi menginap kurang dari batas minimum yang ditentukan"},
+		{rates.ErrMaxLengthOfStay, http.StatusBadRequest, "MAX_LENGTH_OF_STAY_VIOLATED", "durasi menginap melebihi batas maksimum yang ditentukan"},
+		{rates.ErrPromoQuotaExhausted, http.StatusBadRequest, "PROMO_QUOTA_EXHAUSTED", "kuota kode promo telah habis"},
+		{rates.ErrPromoExpired, http.StatusBadRequest, "PROMO_EXPIRED", "kode promo belum berlaku atau sudah kedaluwarsa"},
+		{rates.ErrPromoMinStayNotMet, http.StatusBadRequest, "PROMO_MIN_STAY_VIOLATED", "durasi menginap tidak memenuhi syarat minimum kode promo"},
+		{rates.ErrPromoRoomNotApplicable, http.StatusBadRequest, "PROMO_NOT_APPLICABLE", "kode promo tidak berlaku untuk tipe kamar yang dipilih"},
 	}
 	calculateQuoteFallback = errRule{status: http.StatusBadRequest, code: "BAD_REQUEST"}
 )

@@ -106,7 +106,20 @@ func SearchAvailability(ctx context.Context, cat CatalogReader, inv inventory.Av
 		quotes, err := r.Quote(ctx, v.ID, q.CheckIn, q.CheckOut)
 		if err != nil || len(quotes) == 0 {
 			item.Available = false
-			item.UnavailableReason = "RATE_UNAVAILABLE"
+			switch {
+			case errors.Is(err, rates.ErrStopSellApplied):
+				item.UnavailableReason = rates.ReasonStopSell
+			case errors.Is(err, rates.ErrClosedToArrival):
+				item.UnavailableReason = rates.ReasonClosedToArrival
+			case errors.Is(err, rates.ErrClosedToDeparture):
+				item.UnavailableReason = rates.ReasonClosedToDeparture
+			case errors.Is(err, rates.ErrMinLengthOfStay):
+				item.UnavailableReason = rates.ReasonMinLengthOfStayViolated
+			case errors.Is(err, rates.ErrMaxLengthOfStay):
+				item.UnavailableReason = rates.ReasonMaxLengthOfStayViolated
+			default:
+				item.UnavailableReason = rates.ReasonRateUnavailable
+			}
 			results = append(results, item)
 			continue
 		}
@@ -114,7 +127,7 @@ func SearchAvailability(ctx context.Context, cat CatalogReader, inv inventory.Av
 		item.TotalPriceMinor = sumQuotes(quotes) * int64(q.Rooms)
 		if item.TotalPriceMinor <= 0 {
 			item.Available = false
-			item.UnavailableReason = "RATE_UNAVAILABLE"
+			item.UnavailableReason = rates.ReasonRateUnavailable
 			results = append(results, item)
 			continue
 		}

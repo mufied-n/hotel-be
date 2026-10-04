@@ -18,11 +18,6 @@ const (
 	DefaultQuoteTTL = 15 * time.Minute
 )
 
-var (
-	// ErrSaveQuoteFailed dikembalikan saat persistensi kuotasi ke storage gagal (BE-R11).
-	ErrSaveQuoteFailed = errors.New("rates: failed to save quote")
-)
-
 // ValkeyQuoteStore mengimplementasikan QuoteStore menggunakan Redis/Valkey untuk
 // ketahanan kuotasi lintas instance dan container restart (BE-R11).
 type ValkeyQuoteStore struct {

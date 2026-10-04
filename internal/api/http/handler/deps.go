@@ -47,6 +47,8 @@ type Deps struct {
 	StaySvc             stay.Service
 	AssistanceSvc       assistance.Service
 	FeatureFlag         featureflag.Manager
+	CalendarStore       rates.RateCalendarStore
+	PromoStore          rates.PromoStore
 	NotifierMode        string
 	AuthRateLimiter     *middleware.RateLimiter
 	TrustedProxies      []string

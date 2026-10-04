@@ -256,6 +256,19 @@ func setupTestRouterWithStore(store IdempotencyStore) (http.Handler, *mockTx) {
 		"std":                                  500_000,
 		"01900000-0000-7000-8000-000000000001": 550_000,
 	}, 1.25)
+	pStore := rates.NewMemoryPromoStore()
+	_, _ = pStore.CreateCampaign(context.Background(), rates.PromoCampaign{
+		Code:          "OCTOBREAK",
+		Name:          "October Break Flash Sale",
+		DiscountType:  "PERCENT",
+		DiscountValue: 15,
+		MinStayNights: 1,
+		QuotaTotal:    1000,
+		ValidFrom:     time.Now().Add(-24 * time.Hour),
+		ValidTo:       time.Now().Add(24 * 365 * time.Hour),
+		IsActive:      true,
+	})
+	rateEngine.SetPromoStore(pStore)
 	quoteStore := rateEngine.QuoteStore()
 	bkSvc.SetQuoteStore(quoteStore)
 

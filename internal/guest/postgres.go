@@ -420,20 +420,48 @@ func (s *PostgresStore) GetBookingDetailByEmail(ctx context.Context, email, book
 }
 
 func (s *PostgresStore) GetBookingReceiptData(ctx context.Context, email, bookingID string) (*ReceiptDTO, error) {
-	query := `
-		SELECT b.id, b.room_type_id, COALESCE(r.name, 'Room'),
-		       to_char(b.check_in, 'YYYY-MM-DD'), to_char(b.check_out, 'YYYY-MM-DD'),
-		       (b.check_out - b.check_in) AS total_nights,
-		       b.num_rooms, b.num_guests, b.status,
-		       b.room_subtotal_minor, b.breakfast_charge_minor, b.discount_minor, b.tax_minor, b.total_price_minor,
-		       b.currency, b.guest_name, b.guest_email, COALESCE(b.guest_phone, ''),
-		       COALESCE(b.special_requests, ''),
-		       b.rate_plan_code, b.cancellation_policy, b.cancellation_desc,
-		       b.created_at
-		FROM bookings b
-		LEFT JOIN room_types r ON r.id = b.room_type_id
-		WHERE b.id = $1 AND LOWER(TRIM(b.guest_email)) = $2
-	`
+	cleanID := strings.TrimSpace(bookingID)
+	if strings.HasPrefix(strings.ToUpper(cleanID), "PKU-") {
+		parts := strings.Split(cleanID, "-")
+		if len(parts) >= 3 {
+			cleanID = parts[2]
+		}
+	}
+
+	var row pgx.Row
+	if strings.TrimSpace(email) == "" {
+		query := `
+			SELECT b.id, b.room_type_id, COALESCE(r.name, 'Room'),
+			       to_char(b.check_in, 'YYYY-MM-DD'), to_char(b.check_out, 'YYYY-MM-DD'),
+			       (b.check_out - b.check_in) AS total_nights,
+			       b.num_rooms, b.num_guests, b.status,
+			       b.room_subtotal_minor, b.breakfast_charge_minor, b.discount_minor, b.tax_minor, b.total_price_minor,
+			       b.currency, b.guest_name, b.guest_email, COALESCE(b.guest_phone, ''),
+			       COALESCE(b.special_requests, ''),
+			       b.rate_plan_code, b.cancellation_policy, b.cancellation_desc,
+			       b.created_at
+			FROM bookings b
+			LEFT JOIN room_types r ON r.id = b.room_type_id
+			WHERE (b.id::text = $1 OR b.id::text ILIKE $1 || '%')
+		`
+		row = s.pool.QueryRow(ctx, query, cleanID)
+	} else {
+		query := `
+			SELECT b.id, b.room_type_id, COALESCE(r.name, 'Room'),
+			       to_char(b.check_in, 'YYYY-MM-DD'), to_char(b.check_out, 'YYYY-MM-DD'),
+			       (b.check_out - b.check_in) AS total_nights,
+			       b.num_rooms, b.num_guests, b.status,
+			       b.room_subtotal_minor, b.breakfast_charge_minor, b.discount_minor, b.tax_minor, b.total_price_minor,
+			       b.currency, b.guest_name, b.guest_email, COALESCE(b.guest_phone, ''),
+			       COALESCE(b.special_requests, ''),
+			       b.rate_plan_code, b.cancellation_policy, b.cancellation_desc,
+			       b.created_at
+			FROM bookings b
+			LEFT JOIN room_types r ON r.id = b.room_type_id
+			WHERE (b.id::text = $1 OR b.id::text ILIKE $1 || '%') AND LOWER(TRIM(b.guest_email)) = $2
+		`
+		row = s.pool.QueryRow(ctx, query, cleanID, strings.ToLower(strings.TrimSpace(email)))
+	}
 	var (
 		id                   string
 		roomTypeID           string
@@ -460,7 +488,7 @@ func (s *PostgresStore) GetBookingReceiptData(ctx context.Context, email, bookin
 		createdAt            time.Time
 	)
 
-	err := s.pool.QueryRow(ctx, query, bookingID, email).Scan(
+	err := row.Scan(
 		&id, &roomTypeID, &roomTypeName,
 		&checkInDate, &checkOutDate,
 		&totalNights,

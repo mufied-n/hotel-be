@@ -28,6 +28,9 @@ Tanggal: 3 Oktober 2026 (Asia/Jakarta). Status: PROPOSED / REQUIRES ARCHITECTURE
 - [Checkout/payment Batch D owner](checkout-idempotency-payment-architecture-2026-10-03.md).
 - [Casbin/RBAC owner](hotel-rbac-casbin-architecture-2026-10-03.md).
 - [Migration runner owner](database-migrations-and-runner-2026-10-03.md).
+- [Router Refactor & Transport Modularization](router-refactor-architecture-2026-10-04.md).
+- [Dynamic Rates, Room Allotment & Stop-Sell Architecture](dynamic-rates-and-stop-sell-architecture-2026-10-04.md).
+- [Official PDF Confirmation Voucher & PBJT Tax Invoice Architecture](official-pdf-voucher-and-tax-invoice-architecture-2026-10-04.md).
 - [Register konflik C01–C14](../srs/00-shared-contracts-and-decisions-2026-10-03.md).
 - [PRD registry](../prd/README.md) dan [SRS registry](../srs/README.md).
 

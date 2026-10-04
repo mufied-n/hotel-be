@@ -64,12 +64,30 @@ func TestSearchAndQuote_TableDriven(t *testing.T) {
 		"var-1": 500_000,
 	}, 1.25)
 
+	memCal := rates.NewMemoryCalendarStore()
+	isStopSell := true
+	_, _ = memCal.BulkUpsertOverrides(context.Background(), rates.BulkCalendarUpdateRequest{
+		RoomTypeIDs: []string{"var-1"},
+		StartDate:   "2026-10-20",
+		EndDate:     "2026-10-20",
+		IsStopSell:  &isStopSell,
+	})
+	minStay3 := 3
+	_, _ = memCal.BulkUpsertOverrides(context.Background(), rates.BulkCalendarUpdateRequest{
+		RoomTypeIDs: []string{"var-1"},
+		StartDate:   "2026-10-25",
+		EndDate:     "2026-10-27",
+		MinLOS:      &minStay3,
+	})
+	rateEngine.SetCalendarStore(memCal)
+
 	deps := Deps{
-		CatalogStore: catStore,
-		InvStore:     invStore,
-		RateEngine:   rateEngine,
-		RateSvc:      rateEngine,
-		QuoteStore:   rateEngine.QuoteStore(),
+		CatalogStore:  catStore,
+		InvStore:      invStore,
+		RateEngine:    rateEngine,
+		RateSvc:       rateEngine,
+		QuoteStore:    rateEngine.QuoteStore(),
+		CalendarStore: memCal,
 	}
 
 	r := gin.New()
@@ -193,6 +211,26 @@ func TestSearchAndQuote_TableDriven(t *testing.T) {
 			url:        "/api/v1/quotes",
 			body:       `{"room_type_id":"var-1","check_in":"2026-10-14","check_out":"2026-10-16","num_rooms":1,"num_guests":2,"promo_code":"DISCOUNT50"}`,
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "quote stop sell restriction returns 400",
+			method:     http.MethodPost,
+			url:        "/api/v1/quotes",
+			body:       `{"room_type_id":"var-1","check_in":"2026-10-20","check_out":"2026-10-22","num_rooms":1,"num_guests":2}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "quote min length of stay violated returns 400",
+			method:     http.MethodPost,
+			url:        "/api/v1/quotes",
+			body:       `{"room_type_id":"var-1","check_in":"2026-10-25","check_out":"2026-10-26","num_rooms":1,"num_guests":2}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "search on stop sold date returns 200 with room unavailable",
+			method:     http.MethodGet,
+			url:        "/api/v1/search?check_in=2026-10-20&check_out=2026-10-22&rooms=1&adults=2",
+			wantStatus: http.StatusOK,
 		},
 	}
 
