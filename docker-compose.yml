@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: booking
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
       # Postgres 18 async I/O aktif default; io_method di-set eksplisit untuk kejelasan.
       POSTGRES_INITDB_ARGS: "--data-checksums"
     command: postgres -c io_method=worker
@@ -36,7 +36,7 @@ services:
     build: .
     entrypoint: ["migrate", "-dir=/migrations", "up"]
     environment:
-      DATABASE_URL: postgres://postgres:dev@postgres:5432/booking?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:${POSTGRES_PASSWORD:-dev}@postgres:5432/booking?sslmode=disable}
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,12 +45,25 @@ services:
   app:
     build: .
     environment:
+      APP_ENV: ${APP_ENV:-development}
       APP_PORT: "8080"
-      DATABASE_URL: postgres://postgres:dev@postgres:5432/booking?sslmode=disable
-      VALKEY_ADDR: valkey:6379
-      NATS_URL: nats://nats:4222
-      HOLD_TIMEOUT: 30m
-      FAKE_PAY_BASE_URL: http://localhost:18080   # agar payment_url bisa dibuka dari host
+      DATABASE_URL: ${DATABASE_URL:-postgres://postgres:${POSTGRES_PASSWORD:-dev}@postgres:5432/booking?sslmode=disable}
+      VALKEY_ADDR: ${VALKEY_ADDR:-valkey:6379}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      HOLD_TIMEOUT: ${HOLD_TIMEOUT:-30m}
+      FAKE_PAY_BASE_URL: ${FAKE_PAY_BASE_URL:-http://localhost:18080}   # agar payment_url bisa dibuka dari host
+      # Penyedia Eksternal (otomatis membaca dari file .env jika disediakan, default aman tanpa rahasia)
+      XENDIT_BASE_URL: ${XENDIT_BASE_URL:-https://api.xendit.co}
+      XENDIT_SECRET_KEY: ${XENDIT_SECRET_KEY:-}
+      XENDIT_WEBHOOK_TOKEN: ${XENDIT_WEBHOOK_TOKEN:-}
+      RESEND_BASE_URL: ${RESEND_BASE_URL:-https://api.resend.com}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-log}
+      WHATSAPP_API_KEY: ${WHATSAPP_API_KEY:-}
+      WHATSAPP_BASE_URL: ${WHATSAPP_BASE_URL:-}
+      WHATSAPP_ACCOUNT_SID: ${WHATSAPP_ACCOUNT_SID:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_FROM_PHONE: ${WHATSAPP_FROM_PHONE:-+6281234567890}
     depends_on:
       postgres:
         condition: service_healthy

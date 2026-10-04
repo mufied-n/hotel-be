@@ -1,19 +1,49 @@
-# Binary
+# Binary & Build Executables
 /server
 /migrate
+/staffadmin
+/bin/
+/dist/
 /out/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
-# Go
+# Test, Profiling & Coverage Artifacts
 *.test
 *.out
 coverage.txt
+coverage.html
+profile.out
 
-# Env lokal
+# Environment Variables & Secrets (Semua variasi .env diabaikan)
 .env
-.env.local
+.env.*
+*.env
+*.local
+!*.env.example
+!*.env.template
 
-# OS/IDE/Tool
+# Cryptographic Keys, Certs & Private Tokens
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# OS, IDE & Tool Artifacts
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 .pi/
+*.swp
+*.swo
+*~
+
+# Logs & Runtime Dumps
+*.log
+nohup.out
